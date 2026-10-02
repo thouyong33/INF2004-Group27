@@ -35,6 +35,9 @@ make -j$(nproc)
 # Output:
 mtk3pico_smp0_uart.uf2
 
+# Clean up between builds
+make clean
+
 # Dual-core SMP build
 make SMP=1 -j16
 # OR
