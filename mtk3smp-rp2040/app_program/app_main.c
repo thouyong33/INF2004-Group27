@@ -504,16 +504,26 @@ LOCAL T_CFLG cflg = {
  *                            forward then reverse and prints each
  *                            wheel's steady speed. Open-loop motor
  *                            map for PID feed-forward and dead band.
+ *   MOTION_TEST_PI_STEP    - closed-loop step response: 300, 500, 150,
+ *                            0 mm/s forward, then -300 and 0. Logged in
+ *                            RAM and printed afterwards as [TRACE] CSV
+ *                            plus a [PI] summary per step.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
 #define MOTION_TEST_DISTANCE     2
 #define MOTION_TEST_HAND         3
 #define MOTION_TEST_DUTY_SWEEP   4
+#define MOTION_TEST_PI_STEP      5
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         MOTION_TEST_DUTY_SWEEP
+#define MOTION_TEST_MODE         MOTION_TEST_PI_STEP
 #endif
+
+#define PI_HOLD_MS               1500
+#define PI_MEASURE_MS            500
+#define PI_STOP_MS               1000
+#define PI_MAX_STEPS             4
 
 #define SWEEP_STEP_PCT           10
 #define SWEEP_SETTLE_MS          800
@@ -612,6 +622,66 @@ LOCAL void motion_test_duty_sweep(void)
     motion_sweep_direction(-1, "rev");
 
     tm_printf((UB *)"\n=== Duty sweep complete ===\n");
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
+/* Run a list of speed steps under PI control. Nothing is printed while the
+   motors run (usermain outranks the motion task, so a blocking print would
+   stall the loop); edge counts over the last PI_MEASURE_MS of each hold are
+   saved and printed with the trace once the car has stopped. */
+LOCAL void motion_pi_steps(const char *name, const int16_t *steps, INT n)
+{
+    INT i;
+    /* static: usermain's stack is only 1 KB */
+    static enc_diag_t l0[PI_MAX_STEPS], r0[PI_MAX_STEPS];
+    static enc_diag_t l1[PI_MAX_STEPS], r1[PI_MAX_STEPS];
+    INT l_mm_s, r_mm_s, diff_pct;
+
+    if(n > PI_MAX_STEPS) {
+        n = PI_MAX_STEPS;
+    }
+
+    motion_reset_odometry();
+    motion_trace_start();
+
+    for(i = 0; i < n; i++) {
+        motion_set_velocity(steps[i], steps[i]);
+        tk_dly_tsk(PI_HOLD_MS - PI_MEASURE_MS);
+        motion_get_encoder_diag(&l0[i], &r0[i]);
+        tk_dly_tsk(PI_MEASURE_MS);
+        motion_get_encoder_diag(&l1[i], &r1[i]);
+    }
+
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(PI_STOP_MS);
+
+    tm_printf((UB *)"\n[PI] %s trace:\n", name);
+    motion_trace_dump();
+
+    for(i = 0; i < n; i++) {
+        /* edges over PI_MEASURE_MS -> mm/s at 322 um/edge */
+        l_mm_s = (INT)(((l1[i].hw_count - l0[i].hw_count) * 1000 / PI_MEASURE_MS)
+                       * SWEEP_UM_PER_EDGE / 1000);
+        r_mm_s = (INT)(((r1[i].hw_count - r0[i].hw_count) * 1000 / PI_MEASURE_MS)
+                       * SWEEP_UM_PER_EDGE / 1000);
+        diff_pct = (l_mm_s != 0) ? ((r_mm_s - l_mm_s) * 100 / l_mm_s) : 0;
+        tm_printf((UB *)"[PI] %s target=%4d mm/s  L=%4d  R=%4d mm/s  R-L=%d%%\n",
+                  name, (INT)steps[i], l_mm_s, r_mm_s, diff_pct);
+    }
+}
+
+LOCAL void motion_test_pi_step(void)
+{
+    static const int16_t fwd_steps[] = { 300, 500, 150 };
+    static const int16_t rev_steps[] = { -300 };
+
+    tm_printf((UB *)"\n[TEST] PI step response: keep the wheels LIFTED\n");
+    tm_printf((UB *)"[TEST] Starting in 5 s\n");
+    tk_dly_tsk(5000);
+
+    motion_pi_steps("fwd", fwd_steps, 3);
+    motion_pi_steps("rev", rev_steps, 1);
+
+    tm_printf((UB *)"\n=== PI step test complete ===\n");
 }
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
 /* Motors are never commanded, so the only edges are from hand turning. */
@@ -748,6 +818,8 @@ EXPORT INT usermain(void)
     motion_test_fixed_time();
 #elif MOTION_TEST_MODE == MOTION_TEST_DUTY_SWEEP
     motion_test_duty_sweep();
+#elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
+    motion_test_pi_step();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

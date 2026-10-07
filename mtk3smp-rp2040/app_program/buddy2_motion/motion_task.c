@@ -113,6 +113,48 @@ static int8_t g_hw_right_dir = 1;
 static int16_t g_applied_left_x10 = 0;
 static int16_t g_applied_right_x10 = 0;
 
+/* Duty the ramp moves toward: the open-loop command, or the PI output */
+static int16_t g_target_left_x10 = 0;
+static int16_t g_target_right_x10 = 0;
+
+/*----------------------------------------------------------------------------
+ * Closed-loop speed control: per-wheel PI with feed-forward
+ *
+ * Feed-forward slopes come from the lifted duty sweep (2026-10-07): both
+ * motors are linear at ~25 edges/s per 1 % duty with almost no dead band.
+ * The left motor saturates at ~750 mm/s (lifted), so targets are capped
+ * below that to leave the PI headroom to hold both wheels equal.
+ *---------------------------------------------------------------------------*/
+#define PID_PERIOD_MS             20u
+#define PID_MAX_SPEED_MM_S        550
+#define FF_EPS_PER_PCT_X10_L      245L  /* 24.5 edges/s per 1 % duty */
+#define FF_EPS_PER_PCT_X10_R      258L  /* 25.8 edges/s per 1 % duty */
+#define PID_KP_X1000              300L  /* duty_x10 per (edge/s) of error */
+#define PID_KI_X1000              60L   /* duty_x10 per (edge/s) per period */
+#define PID_I_LIMIT_X10           300L  /* integral clamp: +/- 30 % duty */
+#define PID_SLEW_EPS              50L   /* setpoint change per period */
+
+typedef struct {
+    int32_t target_eps;    /* requested speed, edges/s */
+    int32_t setpoint_eps;  /* slewed toward target to limit inrush */
+    int32_t meas_eps;      /* measured over the last period */
+    int32_t integ_x10;     /* integral term, duty x10 */
+    int32_t last_count;    /* hw count at the last period */
+    int16_t duty_x10;      /* PI output */
+} wheel_pi_t;
+
+static bool g_closed_loop = false;
+static wheel_pi_t g_pi_left;
+static wheel_pi_t g_pi_right;
+static uint32_t g_last_pi_ms = 0u;
+
+/* RAM trace of control periods, printed after a test */
+#define TRACE_LEN                 300u  /* 6 s at 20 ms */
+static motion_trace_t g_trace[TRACE_LEN];
+static volatile uint32_t g_trace_n = 0u;
+static volatile bool g_trace_on = false;
+static uint32_t g_trace_t0_ms = 0u;
+
 /* Speed state */
 static int32_t g_last_left_count = 0;
 static int32_t g_last_right_count = 0;
@@ -120,9 +162,9 @@ static int32_t g_left_speed_tenths_cm_s = 0;   /* scaled x10 */
 static int32_t g_right_speed_tenths_cm_s = 0;  /* scaled x10 */
 static uint32_t g_last_speed_calc_ms = 0u;
 
-/* Current commanded state */
-static int8_t g_current_left_speed_cmd = 0;
-static int8_t g_current_right_speed_cmd = 0;
+/* Current commanded state (% duty or mm/s, see g_closed_loop) */
+static int16_t g_current_left_speed_cmd = 0;
+static int16_t g_current_right_speed_cmd = 0;
 
 static const int8_t g_quad_decode_table[16] = {
     0,  -1,   1,   0,
@@ -306,16 +348,138 @@ motor_ramp(int16_t applied_x10, int16_t target_x10)
     return applied_x10;
 }
 
+/* Open loop: ramp toward the commanded duty. Closed loop: apply the PI
+ * output directly, since the PI setpoint is already slew-limited and a
+ * ramp inside the loop would only add lag. */
 static void
 motor_ramp_update(void)
 {
-    g_applied_left_x10 = motor_ramp(g_applied_left_x10,
-                                    (int16_t)(g_current_left_speed_cmd * 10));
-    g_applied_right_x10 = motor_ramp(g_applied_right_x10,
-                                     (int16_t)(g_current_right_speed_cmd * 10));
+    if (g_closed_loop)
+    {
+        g_applied_left_x10 = g_target_left_x10;
+        g_applied_right_x10 = g_target_right_x10;
+    }
+    else
+    {
+        g_applied_left_x10 = motor_ramp(g_applied_left_x10, g_target_left_x10);
+        g_applied_right_x10 = motor_ramp(g_applied_right_x10, g_target_right_x10);
+    }
 
     motor_pwm_apply(MOTOR_LEFT_FWD, g_applied_left_x10);
     motor_pwm_apply(MOTOR_RIGHT_FWD, g_applied_right_x10);
+}
+
+/*----------------------------------------------------------------------------
+ * Closed-loop PI
+ *---------------------------------------------------------------------------*/
+static int32_t
+clamp_i32(int32_t value, int32_t lo, int32_t hi)
+{
+    return (value < lo) ? lo : ((value > hi) ? hi : value);
+}
+
+static int32_t
+mm_s_to_eps(int32_t mm_s)
+{
+    return (mm_s * 1000L) / UM_PER_EDGE;
+}
+
+/* Restart a wheel's loop from its current speed so switching mode or
+ * target does not kick the motor. */
+static void
+pi_reset(wheel_pi_t *p_pi, int32_t count_now)
+{
+    p_pi->setpoint_eps = p_pi->meas_eps;
+    p_pi->integ_x10 = 0;
+    p_pi->last_count = count_now;
+}
+
+static void
+pi_step(wheel_pi_t *p_pi, int32_t count_now, uint32_t dt_ms,
+        int32_t ff_eps_per_pct_x10)
+{
+    int32_t err;
+    int32_t out;
+
+    p_pi->meas_eps = ((count_now - p_pi->last_count) * 1000L) / (int32_t)dt_ms;
+    p_pi->last_count = count_now;
+
+    p_pi->setpoint_eps += clamp_i32(p_pi->target_eps - p_pi->setpoint_eps,
+                                    -PID_SLEW_EPS, PID_SLEW_EPS);
+
+    if ((0 == p_pi->setpoint_eps) && (0 == p_pi->target_eps))
+    {
+        /* Stopped: coast, and do not let the integral wind up */
+        p_pi->integ_x10 = 0;
+        p_pi->duty_x10 = 0;
+        return;
+    }
+
+    err = p_pi->setpoint_eps - p_pi->meas_eps;
+
+    p_pi->integ_x10 += (err * PID_KI_X1000) / 1000L;
+    p_pi->integ_x10 = clamp_i32(p_pi->integ_x10, -PID_I_LIMIT_X10, PID_I_LIMIT_X10);
+
+    out = (p_pi->setpoint_eps * 100L) / ff_eps_per_pct_x10
+        + (err * PID_KP_X1000) / 1000L
+        + p_pi->integ_x10;
+
+    /* Never drive against the setpoint direction: the edge counter takes
+     * its sign from the applied duty, so a sign flip while the wheel still
+     * turns would corrupt the measurement. Let it coast down instead. */
+    if (p_pi->setpoint_eps > 0)
+    {
+        out = clamp_i32(out, 0, MOTOR_DUTY_MAX_X10);
+    }
+    else
+    {
+        out = clamp_i32(out, -MOTOR_DUTY_MAX_X10, 0);
+    }
+
+    p_pi->duty_x10 = (int16_t)out;
+}
+
+static void
+trace_record(uint32_t now_ms)
+{
+    motion_trace_t *p_t;
+
+    if ((!g_trace_on) || (g_trace_n >= TRACE_LEN))
+    {
+        g_trace_on = false;
+        return;
+    }
+
+    p_t = &g_trace[g_trace_n];
+    p_t->t_ms = (uint16_t)(now_ms - g_trace_t0_ms);
+    p_t->sp_l = (int16_t)g_pi_left.setpoint_eps;
+    p_t->meas_l = (int16_t)g_pi_left.meas_eps;
+    p_t->duty_l = g_pi_left.duty_x10;
+    p_t->sp_r = (int16_t)g_pi_right.setpoint_eps;
+    p_t->meas_r = (int16_t)g_pi_right.meas_eps;
+    p_t->duty_r = g_pi_right.duty_x10;
+    g_trace_n++;
+}
+
+static void
+pi_update(uint32_t now_ms)
+{
+    uint32_t dt_ms;
+
+    dt_ms = now_ms - g_last_pi_ms;
+    if (dt_ms < PID_PERIOD_MS)
+    {
+        return;
+    }
+    g_last_pi_ms = now_ms;
+
+    pi_step(&g_pi_left, g_hw_left_count, dt_ms, FF_EPS_PER_PCT_X10_L);
+    pi_step(&g_pi_right, g_hw_right_count, dt_ms, FF_EPS_PER_PCT_X10_R);
+
+    g_target_left_x10 = g_pi_left.duty_x10;
+    g_target_right_x10 = g_pi_right.duty_x10;
+
+    trace_record(now_ms);
 }
 
 
@@ -577,13 +741,43 @@ motion_task_main(INT stacd, void *exinf)
             g_current_left_speed_cmd = cmd.left_speed;
             g_current_right_speed_cmd = cmd.right_speed;
 
-            tm_printf((UB *)"[MOTOR] Cmd received: L=%d R=%d\n",
+            if (0u != cmd.closed_loop)
+            {
+                if (!g_closed_loop)
+                {
+                    tk_get_tim(&now);
+                    g_last_pi_ms = now.lo;
+                    pi_reset(&g_pi_left, g_hw_left_count);
+                    pi_reset(&g_pi_right, g_hw_right_count);
+                    g_closed_loop = true;
+                }
+
+                g_pi_left.target_eps = mm_s_to_eps(
+                    clamp_i32(cmd.left_speed, -PID_MAX_SPEED_MM_S, PID_MAX_SPEED_MM_S));
+                g_pi_right.target_eps = mm_s_to_eps(
+                    clamp_i32(cmd.right_speed, -PID_MAX_SPEED_MM_S, PID_MAX_SPEED_MM_S));
+            }
+            else
+            {
+                g_closed_loop = false;
+                g_target_left_x10 = (int16_t)(clamp_i32(cmd.left_speed, -100, 100) * 10);
+                g_target_right_x10 = (int16_t)(clamp_i32(cmd.right_speed, -100, 100) * 10);
+            }
+
+            tm_printf((UB *)"[MOTOR] Cmd received: L=%d R=%d %s\n",
                       (int)cmd.left_speed,
-                      (int)cmd.right_speed);
+                      (int)cmd.right_speed,
+                      (0u != cmd.closed_loop) ? "mm/s (PI)" : "% duty");
         }
         else if (E_TMOUT != msg_size)
         {
             tm_printf((UB *)"[MOTOR] tk_rcv_mbf error: %d\n", msg_size);
+        }
+
+        if (g_closed_loop)
+        {
+            tk_get_tim(&now);
+            pi_update(now.lo);
         }
 
         motor_ramp_update();
@@ -603,7 +797,9 @@ motion_task_main(INT stacd, void *exinf)
             speed_calculate(now.lo - g_last_speed_calc_ms);
             g_last_speed_calc_ms = now.lo;
 
-            if (((loop_count / (SPEED_CALC_INTERVAL_MS / TASK_PERIOD_MS)) % print_divider) == 0u)
+            /* Skip the slow status print while a trace is recording */
+            if ((!g_trace_on) &&
+                (((loop_count / (SPEED_CALC_INTERVAL_MS / TASK_PERIOD_MS)) % print_divider) == 0u))
             {
                 dist_cm_int = distance_cm_from_counts();
 
@@ -702,8 +898,11 @@ motion_task_create(void)
     return E_OK;
 }
 
-ER
-motion_set_speed(int8_t left, int8_t right)
+/* The motion task prints each command it receives. No print here: callers
+ * may run at a higher priority than the motion task, and a blocking UART
+ * print would stall the control loop. */
+static ER
+motion_send_cmd(int16_t left, int16_t right, uint8_t closed_loop)
 {
     motor_cmd_t cmd;
     ER err;
@@ -715,20 +914,58 @@ motion_set_speed(int8_t left, int8_t right)
 
     cmd.left_speed = left;
     cmd.right_speed = right;
+    cmd.closed_loop = closed_loop;
 
     err = tk_snd_mbf(motion_msgbuf_id, &cmd, (INT)sizeof(cmd), TMO_FEVR);
     if (E_OK != err)
     {
         tm_printf((UB *)"[MOTOR] tk_snd_mbf failed: %d\n", err);
     }
-    else
-    {
-        tm_printf((UB *)"[MOTOR] Cmd sent: L=%d R=%d\n",
-                  (int)left,
-                  (int)right);
-    }
 
     return err;
+}
+
+ER
+motion_set_speed(int8_t left, int8_t right)
+{
+    return motion_send_cmd((int16_t)left, (int16_t)right, 0u);
+}
+
+ER
+motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s)
+{
+    return motion_send_cmd(left_mm_s, right_mm_s, 1u);
+}
+
+void
+motion_trace_start(void)
+{
+    SYSTIM now;
+
+    tk_get_tim(&now);
+    g_trace_n = 0u;
+    g_trace_t0_ms = now.lo;
+    g_trace_on = true;
+}
+
+void
+motion_trace_dump(void)
+{
+    uint32_t i;
+    motion_trace_t *p_t;
+
+    g_trace_on = false;
+
+    tm_printf((UB *)"[TRACE] t_ms,sp_l,meas_l,duty_l,sp_r,meas_r,duty_r"
+              "  (speeds in edges/s, duty in tenths of a percent)\n");
+    for (i = 0u; i < g_trace_n; i++)
+    {
+        p_t = &g_trace[i];
+        tm_printf((UB *)"[TRACE] %u,%d,%d,%d,%d,%d,%d\n",
+                  (unsigned int)p_t->t_ms,
+                  (int)p_t->sp_l, (int)p_t->meas_l, (int)p_t->duty_l,
+                  (int)p_t->sp_r, (int)p_t->meas_r, (int)p_t->duty_r);
+    }
 }
 
 ER
@@ -781,6 +1018,11 @@ motion_reset_odometry(void)
     g_hw_right_edges = 0u;
     g_hw_left_count = 0;
     g_hw_right_count = 0;
+
+    /* Keep the PI's last-count in step, or its next speed sample would
+     * see the reset as a huge jump */
+    g_pi_left.last_count = 0;
+    g_pi_right.last_count = 0;
 
     tm_printf((UB *)"[ODOM] Reset\n");
 }

@@ -14,9 +14,24 @@
  * @brief Motor command structure.
  */
 typedef struct {
-    int8_t left_speed;  /**< -100 to +100 % PWM duty (open loop) */
-    int8_t right_speed; /**< -100 to +100 % PWM duty (open loop) */
+    int16_t left_speed;   /**< % duty (open loop) or mm/s (closed loop) */
+    int16_t right_speed;  /**< % duty (open loop) or mm/s (closed loop) */
+    uint8_t closed_loop;  /**< 0 = open-loop duty, 1 = PI speed control */
 } motor_cmd_t;
+
+/**
+ * @brief One closed-loop control period, recorded by the motion task.
+ * Speeds are in encoder edges/s, duty in tenths of a percent.
+ */
+typedef struct {
+    uint16_t t_ms;     /**< ms since motion_trace_start() */
+    int16_t  sp_l;     /**< Left setpoint (slewed) */
+    int16_t  meas_l;   /**< Left measured speed */
+    int16_t  duty_l;   /**< Left PWM duty x10 */
+    int16_t  sp_r;
+    int16_t  meas_r;
+    int16_t  duty_r;
+} motion_trace_t;
 
 /**
  * @brief Odometry data structure.
@@ -59,6 +74,26 @@ ER motion_task_create(void);
  * Values are % PWM duty, open loop; the motion task ramps toward them.
  */
 ER motion_set_speed(int8_t left, int8_t right);
+
+/**
+ * @brief Set wheel speeds in mm/s under closed-loop PI control (non-blocking).
+ *
+ * Each wheel has its own PI loop with feed-forward from the open-loop duty
+ * sweep. Targets are clamped to +/- the max PI speed (left motor headroom).
+ */
+ER motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s);
+
+/**
+ * @brief Start recording one motion_trace_t per control period into RAM.
+ * Recording stops when the buffer is full.
+ */
+void motion_trace_start(void);
+
+/**
+ * @brief Stop recording and print the trace as CSV lines prefixed "[TRACE]".
+ * Call only once the motors are stopped: printing is slow.
+ */
+void motion_trace_dump(void);
 
 /**
  * @brief Get current odometry data.
