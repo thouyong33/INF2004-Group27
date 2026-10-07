@@ -497,14 +497,20 @@ LOCAL T_CFLG cflg = {
  *   MOTION_TEST_FIXED_TIME - encoder diagnostics: 1 s full-speed runs,
  *                            5 with wheels lifted, then 5 on the floor.
  *   MOTION_TEST_DISTANCE   - original 3 s fwd/rev and 50/30 cm moves.
+ *   MOTION_TEST_HAND       - motors stay OFF; prints encoder counters
+ *                            every second while the wheels are turned
+ *                            by hand. Ground truth with no motor noise.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
 #define MOTION_TEST_DISTANCE     2
+#define MOTION_TEST_HAND         3
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         MOTION_TEST_FIXED_TIME
+#define MOTION_TEST_MODE         MOTION_TEST_HAND
 #endif
+
+#define HAND_PRINT_MS            1000
 
 #define FIXED_RUN_COUNT          5
 #define FIXED_RUN_MS             1000
@@ -553,6 +559,20 @@ LOCAL void motion_test_fixed_time(void)
     motion_fixed_time_runs("FLOOR");
 
     tm_printf((UB *)"\n=== Encoder diagnostics complete ===\n");
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_HAND
+/* Motors are never commanded, so the only edges are from hand turning. */
+LOCAL void motion_test_hand(void)
+{
+    tm_printf((UB *)"\n[TEST] Hand-turn test: motors OFF\n");
+    tm_printf((UB *)"[TEST] Mark each wheel. Turn it 10 full turns FORWARD,"
+              " note cnt, then 10 turns BACK. Reset to zero the counters.\n");
+
+    motion_reset_odometry();
+    while(1) {
+        tk_dly_tsk(HAND_PRINT_MS);
+        motion_print_encoder_diag("HAND");
+    }
 }
 #else
 LOCAL void motion_test_distance(void)
@@ -673,6 +693,8 @@ EXPORT INT usermain(void)
 
 #if MOTION_TEST_MODE == MOTION_TEST_FIXED_TIME
     motion_test_fixed_time();
+#elif MOTION_TEST_MODE == MOTION_TEST_HAND
+    motion_test_hand();
 #else
     motion_test_distance();
 #endif
