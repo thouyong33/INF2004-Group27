@@ -130,7 +130,7 @@ static int16_t g_target_right_x10 = 0;
 #define FF_EPS_PER_PCT_X10_L      245L  /* 24.5 edges/s per 1 % duty */
 #define FF_EPS_PER_PCT_X10_R      258L  /* 25.8 edges/s per 1 % duty */
 #define PID_KP_X1000              300L  /* duty_x10 per (edge/s) of error */
-#define PID_KI_X1000              60L   /* duty_x10 per (edge/s) per period */
+#define PID_KI_X1000              120L  /* duty_x10 per (edge/s) per period */
 #define PID_I_LIMIT_X10           300L  /* integral clamp: +/- 30 % duty */
 #define PID_SLEW_EPS              50L   /* setpoint change per period */
 
