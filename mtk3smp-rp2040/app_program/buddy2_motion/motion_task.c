@@ -22,15 +22,14 @@
 /*----------------------------------------------------------------------------
  * Calibrated Encoder / Wheel Constants
  *---------------------------------------------------------------------------*/
-#define COUNTS_PER_REV_LEFT       21u
-#define COUNTS_PER_REV_RIGHT      21u
+/* Hardware edge counter: rising edges of one encoder channel per wheel turn.
+ * Measured 2026-10-07, 10 hand turns x 2 per wheel: L 6301/6363, R 6349/6333. */
+#define EDGES_PER_REV             634u
 #define WHEEL_DIAMETER_MM         65u
 #define WHEEL_CIRCUMFERENCE_MM    204u
 
-/* Measured from manual calibration */
-#define MM_PER_COUNT_LEFT_X100    953L   /* 9.53 mm/count */
-#define MM_PER_COUNT_RIGHT_X100   976L   /* 9.76 mm/count */
-#define MM_PER_COUNT_AVG_X100     ((MM_PER_COUNT_LEFT_X100 + MM_PER_COUNT_RIGHT_X100) / 2L)
+/* 204 mm / 634 edges = 0.322 mm per edge */
+#define UM_PER_EDGE               322L
 
 /*----------------------------------------------------------------------------
  * Configuration Constants
@@ -175,8 +174,8 @@ minimum_progress_counts(void)
     int32_t left_progress;
     int32_t right_progress;
 
-    left_progress = abs_i32(g_enc_left_count);
-    right_progress = abs_i32(g_enc_right_count);
+    left_progress = abs_i32(g_hw_left_count);
+    right_progress = abs_i32(g_hw_right_count);
 
     return min_i32(left_progress, right_progress);
 }
@@ -295,9 +294,9 @@ encoder_init(void)
     g_enc_left_last_state = (uint8_t)((l_a << 1) | l_b);
     g_enc_right_last_state = (uint8_t)((r_a << 1) | r_b);
 
-    tm_printf((UB *)"[MOTION] Encoders initialized (L=%u R=%u counts/rev)\n",
-              COUNTS_PER_REV_LEFT,
-              COUNTS_PER_REV_RIGHT);
+    tm_printf((UB *)"[MOTION] Encoders initialized (%u edges/rev, %ld um/edge)\n",
+              EDGES_PER_REV,
+              UM_PER_EDGE);
 }
 
 /* State is (A << 1) | B. Count each channel's edges separately, and flag
@@ -462,30 +461,27 @@ speed_calculate(uint32_t dt_ms)
         return;
     }
 
-    delta_left = g_enc_left_count - g_last_left_count;
-    delta_right = g_enc_right_count - g_last_right_count;
+    delta_left = g_hw_left_count - g_last_left_count;
+    delta_right = g_hw_right_count - g_last_right_count;
 
-    /* speed_tenths_cm_s = (delta_counts * mm_per_count * 1000 ms/s) / (dt_ms * 10 mm/cm * 100 scale)
-     * Simplified:
-     * speed_x10_cm_s = (delta_counts * mm_per_count_x100) / dt_ms
-     */
-    g_left_speed_tenths_cm_s = (delta_left * MM_PER_COUNT_LEFT_X100) / (int32_t)dt_ms;
-    g_right_speed_tenths_cm_s = (delta_right * MM_PER_COUNT_RIGHT_X100) / (int32_t)dt_ms;
+    /* edges * um/edge / ms = mm/s, which is also tenths of cm/s */
+    g_left_speed_tenths_cm_s = (delta_left * UM_PER_EDGE) / (int32_t)dt_ms;
+    g_right_speed_tenths_cm_s = (delta_right * UM_PER_EDGE) / (int32_t)dt_ms;
 
-    g_last_left_count = g_enc_left_count;
-    g_last_right_count = g_enc_right_count;
+    g_last_left_count = g_hw_left_count;
+    g_last_right_count = g_hw_right_count;
 }
 
 static int32_t
 distance_cm_from_counts(void)
 {
     int32_t avg_counts;
-    int32_t distance_mm_x100;
+    int32_t distance_um;
     int32_t distance_cm;
 
-    avg_counts = (g_enc_left_count + g_enc_right_count) / 2;
-    distance_mm_x100 = avg_counts * MM_PER_COUNT_AVG_X100;
-    distance_cm = distance_mm_x100 / 1000L;
+    avg_counts = (g_hw_left_count + g_hw_right_count) / 2;
+    distance_um = avg_counts * UM_PER_EDGE;
+    distance_cm = distance_um / 10000L;
 
     return distance_cm;
 }
@@ -580,8 +576,8 @@ motion_task_main(INT stacd, void *exinf)
                           (right_abs != g_right_speed_tenths_cm_s) ? "-" : "",
                           right_whole,
                           right_frac,
-                          g_enc_left_count,
-                          g_enc_right_count,
+                          g_hw_left_count,
+                          g_hw_right_count,
                           (int)g_current_left_speed_cmd,
                           (int)g_current_right_speed_cmd);
             }
@@ -694,22 +690,22 @@ motion_get_odometry(odometry_t *p_odom)
 {
     SYSTIM now;
     int32_t avg_counts;
-    int32_t distance_mm_x100;
+    int32_t distance_um;
 
     if (NULL == p_odom)
     {
         return E_PAR;
     }
 
-    p_odom->left_pulses = g_enc_left_count;
-    p_odom->right_pulses = g_enc_right_count;
+    p_odom->left_pulses = g_hw_left_count;
+    p_odom->right_pulses = g_hw_right_count;
 
     p_odom->left_speed_cm_s = ((float)g_left_speed_tenths_cm_s) / 10.0f;
     p_odom->right_speed_cm_s = ((float)g_right_speed_tenths_cm_s) / 10.0f;
 
-    avg_counts = (g_enc_left_count + g_enc_right_count) / 2;
-    distance_mm_x100 = avg_counts * MM_PER_COUNT_AVG_X100;
-    p_odom->distance_cm = ((float)distance_mm_x100) / 1000.0f;
+    avg_counts = (g_hw_left_count + g_hw_right_count) / 2;
+    distance_um = avg_counts * UM_PER_EDGE;
+    p_odom->distance_cm = ((float)distance_um) / 10000.0f;
 
     tk_get_tim(&now);
     p_odom->timestamp_ms = now.lo;
@@ -811,7 +807,7 @@ motion_move_forward_cm(uint16_t distance_cm, uint8_t speed)
     }
 
     distance_mm = (int32_t)distance_cm * 10;
-    target_counts = (distance_mm * 100L) / MM_PER_COUNT_AVG_X100;
+    target_counts = (distance_mm * 1000L) / UM_PER_EDGE;
 
     if (target_counts <= 0)
     {
@@ -822,9 +818,9 @@ motion_move_forward_cm(uint16_t distance_cm, uint8_t speed)
     tm_printf((UB *)"[MOTION] move_forward_cm: target=%u cm, speed=%u\n",
               distance_cm,
               speed);
-    tm_printf((UB *)"[MOTION] Target counts=%ld avg_mm_per_count_x100=%ld\n",
+    tm_printf((UB *)"[MOTION] Target edges=%ld um_per_edge=%ld\n",
               target_counts,
-              MM_PER_COUNT_AVG_X100);
+              UM_PER_EDGE);
 
     motion_reset_odometry();
 
@@ -855,8 +851,8 @@ motion_move_forward_cm(uint16_t distance_cm, uint8_t speed)
     }
 
     tm_printf((UB *)"[MOTION] Target reached. Final: L=%ld R=%ld Min=%ld\n",
-              g_enc_left_count,
-              g_enc_right_count,
+              g_hw_left_count,
+              g_hw_right_count,
               min_progress);
     motion_print_encoder_diag("move_forward_cm");
 

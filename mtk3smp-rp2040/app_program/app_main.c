@@ -507,7 +507,7 @@ LOCAL T_CFLG cflg = {
 #define MOTION_TEST_HAND         3
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         MOTION_TEST_HAND
+#define MOTION_TEST_MODE         MOTION_TEST_FIXED_TIME
 #endif
 
 #define HAND_PRINT_MS            1000
