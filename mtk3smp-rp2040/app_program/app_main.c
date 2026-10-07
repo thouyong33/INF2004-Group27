@@ -500,15 +500,25 @@ LOCAL T_CFLG cflg = {
  *   MOTION_TEST_HAND       - motors stay OFF; prints encoder counters
  *                            every second while the wheels are turned
  *                            by hand. Ground truth with no motor noise.
+ *   MOTION_TEST_DUTY_SWEEP - wheels LIFTED; steps PWM duty 10..100 %
+ *                            forward then reverse and prints each
+ *                            wheel's steady speed. Open-loop motor
+ *                            map for PID feed-forward and dead band.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
 #define MOTION_TEST_DISTANCE     2
 #define MOTION_TEST_HAND         3
+#define MOTION_TEST_DUTY_SWEEP   4
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         MOTION_TEST_FIXED_TIME
+#define MOTION_TEST_MODE         MOTION_TEST_DUTY_SWEEP
 #endif
+
+#define SWEEP_STEP_PCT           10
+#define SWEEP_SETTLE_MS          800
+#define SWEEP_MEASURE_MS         500
+#define SWEEP_UM_PER_EDGE        322
 
 #define HAND_PRINT_MS            1000
 
@@ -559,6 +569,49 @@ LOCAL void motion_test_fixed_time(void)
     motion_fixed_time_runs("FLOOR");
 
     tm_printf((UB *)"\n=== Encoder diagnostics complete ===\n");
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_DUTY_SWEEP
+/* Hold each duty long enough to reach steady speed, then count edges over
+   a fixed window. Edge rate x 0.322 mm/edge gives wheel speed in mm/s. */
+LOCAL void motion_sweep_direction(INT sign, const char *name)
+{
+    INT duty;
+    enc_diag_t l0, r0, l1, r1;
+    UW l_rate, r_rate, l_mm_s, r_mm_s, ratio_pct;
+
+    for(duty = SWEEP_STEP_PCT; duty <= 100; duty += SWEEP_STEP_PCT) {
+        motion_set_speed((int8_t)(sign * duty), (int8_t)(sign * duty));
+        tk_dly_tsk(SWEEP_SETTLE_MS);
+
+        motion_get_encoder_diag(&l0, &r0);
+        tk_dly_tsk(SWEEP_MEASURE_MS);
+        motion_get_encoder_diag(&l1, &r1);
+
+        l_rate = (l1.hw_edges - l0.hw_edges) * 1000 / SWEEP_MEASURE_MS;
+        r_rate = (r1.hw_edges - r0.hw_edges) * 1000 / SWEEP_MEASURE_MS;
+        l_mm_s = l_rate * SWEEP_UM_PER_EDGE / 1000;
+        r_mm_s = r_rate * SWEEP_UM_PER_EDGE / 1000;
+        ratio_pct = (l_rate > 0) ? (r_rate * 100 / l_rate) : 0;
+
+        tm_printf((UB *)"[SWEEP] %s duty=%3d%%  L=%4u edges/s (%3u mm/s)"
+                  "  R=%4u edges/s (%3u mm/s)  R/L=%u%%\n",
+                  name, duty, l_rate, l_mm_s, r_rate, r_mm_s, ratio_pct);
+    }
+
+    motion_set_speed(0, 0);
+    tk_dly_tsk(1500);
+}
+
+LOCAL void motion_test_duty_sweep(void)
+{
+    tm_printf((UB *)"\n[TEST] Duty sweep: keep the wheels LIFTED\n");
+    tm_printf((UB *)"[TEST] Starting in 5 s\n");
+    tk_dly_tsk(5000);
+
+    motion_sweep_direction(1, "fwd");
+    motion_sweep_direction(-1, "rev");
+
+    tm_printf((UB *)"\n=== Duty sweep complete ===\n");
 }
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
 /* Motors are never commanded, so the only edges are from hand turning. */
@@ -693,6 +746,8 @@ EXPORT INT usermain(void)
 
 #if MOTION_TEST_MODE == MOTION_TEST_FIXED_TIME
     motion_test_fixed_time();
+#elif MOTION_TEST_MODE == MOTION_TEST_DUTY_SWEEP
+    motion_test_duty_sweep();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

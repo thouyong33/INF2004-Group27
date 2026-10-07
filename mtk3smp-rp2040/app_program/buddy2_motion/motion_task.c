@@ -3,11 +3,11 @@
  * @brief Motion control with speed calculation and distance tracking
  *
  * Current implementation notes:
- * - Motor drive is DIGITAL only, not PWM yet.
- * - Any positive command = full forward.
- * - Any negative command = full reverse.
- * - Zero = stop.
- * - Distance move currently uses encoder count progress only.
+ * - Motor drive is open-loop 20 kHz PWM: command -100..100 = % duty,
+ *   ramped at MOTOR_RAMP_STEP_X10 per loop to limit inrush. No PID yet.
+ * - Odometry uses PWM-slice hardware edge counters (one channel per
+ *   wheel), signed by the applied motor direction.
+ * - Distance move uses encoder count progress only.
  */
 
 #include <stdint.h>
@@ -104,6 +104,15 @@ static volatile int32_t g_hw_right_count = 0;
 static int8_t g_hw_left_dir = 1;
 static int8_t g_hw_right_dir = 1;
 
+/* Motor PWM: Robo Pico driver PWM is specified at 20 kHz */
+#define MOTOR_PWM_FREQ_HZ         20000u
+#define MOTOR_PWM_TOP             ((SYSCLK * 1000000u / MOTOR_PWM_FREQ_HZ) - 1u)
+#define MOTOR_DUTY_MAX_X10        1000
+#define MOTOR_RAMP_STEP_X10       5     /* 0.5 % per loop, 0-100 % in ~200 loops */
+
+static int16_t g_applied_left_x10 = 0;
+static int16_t g_applied_right_x10 = 0;
+
 /* Speed state */
 static int32_t g_last_left_count = 0;
 static int32_t g_last_right_count = 0;
@@ -162,6 +171,12 @@ format_signed_tenths(int32_t value_x10, int32_t *whole, int32_t *frac)
     *frac = abs_value % 10;
 }
 
+static int8_t
+sign_i16(int16_t value)
+{
+    return (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+}
+
 static int32_t
 min_i32(int32_t a, int32_t b)
 {
@@ -181,94 +196,128 @@ minimum_progress_counts(void)
 }
 
 /*----------------------------------------------------------------------------
- * Motor Control
+ * Motor Control (PWM)
+ *
+ * Each motor uses one PWM slice: channel A on the FWD pin, channel B on the
+ * REV pin. Forward drives A with the duty and holds B low; reverse is the
+ * opposite. Duty is in tenths of a percent (0..1000). The applied duty is
+ * ramped toward the command every loop to limit inrush (brownouts).
  *---------------------------------------------------------------------------*/
+#if ((MOTOR_LEFT_FWD & 1) != 0) || (MOTOR_LEFT_REV != (MOTOR_LEFT_FWD + 1)) || \
+    ((MOTOR_RIGHT_FWD & 1) != 0) || (MOTOR_RIGHT_REV != (MOTOR_RIGHT_FWD + 1))
+#error "Motor FWD/REV pins must be the A/B pair of one PWM slice"
+#endif
+
+static void
+pwm_block_release(void)
+{
+    /* USE_PTMR is 0, so the kernel leaves the PWM block in reset */
+    if (0u != (in_w(RESETS_RESET) & RESETS_RESET_PWM))
+    {
+        clr_w(RESETS_RESET, RESETS_RESET_PWM);
+    }
+
+    while (0u == (in_w(RESETS_RESET_DONE) & RESETS_RESET_PWM))
+    {
+        ;
+    }
+}
+
+static void
+motor_pwm_slice_init(uint8_t fwd_pin)
+{
+    uint32_t slice;
+
+    slice = PWM_SLICE_OF(fwd_pin);
+
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_CSR), 0u);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_DIV), PWM_DIV_INT_1);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_TOP), MOTOR_PWM_TOP);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_CC), 0u);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_CTR), 0u);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_CSR), PWM_CSR_EN);
+
+    out_w(GPIO_CTRL(fwd_pin), GPIO_CTRL_FUNCSEL_PWM);
+    out_w(GPIO_CTRL(fwd_pin + 1u), GPIO_CTRL_FUNCSEL_PWM);
+}
+
+static void
+motor_pwm_apply(uint8_t fwd_pin, int16_t duty_x10)
+{
+    uint32_t level;
+    uint32_t cc;
+
+    if (duty_x10 > MOTOR_DUTY_MAX_X10)
+    {
+        duty_x10 = MOTOR_DUTY_MAX_X10;
+    }
+    else if (duty_x10 < -MOTOR_DUTY_MAX_X10)
+    {
+        duty_x10 = -MOTOR_DUTY_MAX_X10;
+    }
+
+    if (duty_x10 >= 0)
+    {
+        level = ((uint32_t)duty_x10 * (MOTOR_PWM_TOP + 1u)) / 1000u;
+        cc = level;                     /* A = FWD */
+    }
+    else
+    {
+        level = ((uint32_t)(-duty_x10) * (MOTOR_PWM_TOP + 1u)) / 1000u;
+        cc = level << 16;               /* B = REV */
+    }
+
+    out_w(PWM_SLICE_REG(PWM_SLICE_OF(fwd_pin), PWM_CHx_CC), cc);
+}
+
 static void
 motor_gpio_init(void)
 {
-    out_w(GPIO_CTRL(MOTOR_LEFT_FWD), GPIO_FUNCTION_SIO);
-    out_w(GPIO_CTRL(MOTOR_LEFT_REV), GPIO_FUNCTION_SIO);
-    out_w(GPIO_CTRL(MOTOR_RIGHT_FWD), GPIO_FUNCTION_SIO);
-    out_w(GPIO_CTRL(MOTOR_RIGHT_REV), GPIO_FUNCTION_SIO);
+    pwm_block_release();
 
-    out_w(GPIO_OE_SET,
-          (1u << MOTOR_LEFT_FWD) |
-          (1u << MOTOR_LEFT_REV) |
-          (1u << MOTOR_RIGHT_FWD) |
-          (1u << MOTOR_RIGHT_REV));
+    motor_pwm_slice_init(MOTOR_LEFT_FWD);
+    motor_pwm_slice_init(MOTOR_RIGHT_FWD);
 
-    out_w(GPIO_OUT_CLR,
-          (1u << MOTOR_LEFT_FWD) |
-          (1u << MOTOR_LEFT_REV) |
-          (1u << MOTOR_RIGHT_FWD) |
-          (1u << MOTOR_RIGHT_REV));
+    tm_printf((UB *)"[MOTION] Motor PWM initialized (%u Hz, TOP=%u)\n",
+              MOTOR_PWM_FREQ_HZ, MOTOR_PWM_TOP);
+}
 
-    tm_printf((UB *)"[MOTION] GPIO initialized\n");
+/* Move one applied duty a step toward its target. */
+static int16_t
+motor_ramp(int16_t applied_x10, int16_t target_x10)
+{
+    if (applied_x10 < target_x10)
+    {
+        applied_x10 += MOTOR_RAMP_STEP_X10;
+        if (applied_x10 > target_x10)
+        {
+            applied_x10 = target_x10;
+        }
+    }
+    else if (applied_x10 > target_x10)
+    {
+        applied_x10 -= MOTOR_RAMP_STEP_X10;
+        if (applied_x10 < target_x10)
+        {
+            applied_x10 = target_x10;
+        }
+    }
+
+    return applied_x10;
 }
 
 static void
-motor_gpio_stop(void)
+motor_ramp_update(void)
 {
-    out_w(GPIO_OUT_CLR,
-          (1u << MOTOR_LEFT_FWD) |
-          (1u << MOTOR_LEFT_REV) |
-          (1u << MOTOR_RIGHT_FWD) |
-          (1u << MOTOR_RIGHT_REV));
+    g_applied_left_x10 = motor_ramp(g_applied_left_x10,
+                                    (int16_t)(g_current_left_speed_cmd * 10));
+    g_applied_right_x10 = motor_ramp(g_applied_right_x10,
+                                     (int16_t)(g_current_right_speed_cmd * 10));
+
+    motor_pwm_apply(MOTOR_LEFT_FWD, g_applied_left_x10);
+    motor_pwm_apply(MOTOR_RIGHT_FWD, g_applied_right_x10);
 }
 
-static void
-motor_gpio_set(int8_t left, int8_t right)
-{
-    if (left > 100)
-    {
-        left = 100;
-    }
-    else if (left < -100)
-    {
-        left = -100;
-    }
-
-    if (right > 100)
-    {
-        right = 100;
-    }
-    else if (right < -100)
-    {
-        right = -100;
-    }
-
-    /* Left motor */
-    if (left > 0)
-    {
-        out_w(GPIO_OUT_SET, (1u << MOTOR_LEFT_FWD));
-        out_w(GPIO_OUT_CLR, (1u << MOTOR_LEFT_REV));
-    }
-    else if (left < 0)
-    {
-        out_w(GPIO_OUT_CLR, (1u << MOTOR_LEFT_FWD));
-        out_w(GPIO_OUT_SET, (1u << MOTOR_LEFT_REV));
-    }
-    else
-    {
-        out_w(GPIO_OUT_CLR, (1u << MOTOR_LEFT_FWD) | (1u << MOTOR_LEFT_REV));
-    }
-
-    /* Right motor */
-    if (right > 0)
-    {
-        out_w(GPIO_OUT_SET, (1u << MOTOR_RIGHT_FWD));
-        out_w(GPIO_OUT_CLR, (1u << MOTOR_RIGHT_REV));
-    }
-    else if (right < 0)
-    {
-        out_w(GPIO_OUT_CLR, (1u << MOTOR_RIGHT_FWD));
-        out_w(GPIO_OUT_SET, (1u << MOTOR_RIGHT_REV));
-    }
-    else
-    {
-        out_w(GPIO_OUT_CLR, (1u << MOTOR_RIGHT_FWD) | (1u << MOTOR_RIGHT_REV));
-    }
-}
 
 /*----------------------------------------------------------------------------
  * Encoder Handling
@@ -388,12 +437,7 @@ encoder_hw_slice_init(uint8_t pin)
 static void
 encoder_hw_init(void)
 {
-    /* USE_PTMR is 0, so the kernel leaves the PWM block in reset */
-    clr_w(RESETS_RESET, RESETS_RESET_PWM);
-    while (0u == (in_w(RESETS_RESET_DONE) & RESETS_RESET_PWM))
-    {
-        ;
-    }
+    pwm_block_release();
 
     encoder_hw_slice_init(ENC_HW_LEFT_PIN);
     encoder_hw_slice_init(ENC_HW_RIGHT_PIN);
@@ -439,11 +483,13 @@ encoder_hw_read(uint8_t pin, uint16_t *p_last_ctr, int8_t cmd, int8_t *p_dir,
 static void
 encoder_hw_update(void)
 {
+    /* Sign edges by the duty actually applied, not the target, so a wheel
+     * still ramping down after a reversal command keeps its old sign */
     encoder_hw_read(ENC_HW_LEFT_PIN, &g_hw_left_last_ctr,
-                    g_current_left_speed_cmd, &g_hw_left_dir,
+                    sign_i16(g_applied_left_x10), &g_hw_left_dir,
                     &g_hw_left_edges, &g_hw_left_count);
     encoder_hw_read(ENC_HW_RIGHT_PIN, &g_hw_right_last_ctr,
-                    g_current_right_speed_cmd, &g_hw_right_dir,
+                    sign_i16(g_applied_right_x10), &g_hw_right_dir,
                     &g_hw_right_edges, &g_hw_right_count);
 }
 
@@ -528,7 +574,6 @@ motion_task_main(INT stacd, void *exinf)
         msg_size = tk_rcv_mbf(motion_msgbuf_id, &cmd, TMO_POL);
         if ((INT)sizeof(cmd) == msg_size)
         {
-            motor_gpio_set(cmd.left_speed, cmd.right_speed);
             g_current_left_speed_cmd = cmd.left_speed;
             g_current_right_speed_cmd = cmd.right_speed;
 
@@ -541,6 +586,7 @@ motion_task_main(INT stacd, void *exinf)
             tm_printf((UB *)"[MOTOR] tk_rcv_mbf error: %d\n", msg_size);
         }
 
+        motor_ramp_update();
         encoder_update();
 
         if ((loop_count % (SPEED_CALC_INTERVAL_MS / TASK_PERIOD_MS)) == 0u)

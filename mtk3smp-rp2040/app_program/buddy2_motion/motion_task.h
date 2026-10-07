@@ -14,8 +14,8 @@
  * @brief Motor command structure.
  */
 typedef struct {
-    int8_t left_speed;  /**< -100 to +100 (digital ON/OFF for now) */
-    int8_t right_speed; /**< -100 to +100 (digital ON/OFF for now) */
+    int8_t left_speed;  /**< -100 to +100 % PWM duty (open loop) */
+    int8_t right_speed; /**< -100 to +100 % PWM duty (open loop) */
 } motor_cmd_t;
 
 /**
@@ -56,8 +56,7 @@ ER motion_task_create(void);
 /**
  * @brief Set motor speeds (non-blocking).
  * 
- * NOTE: Digital mode only - any non-zero value = full speed.
- * Use 100/-100 for clarity until PWM is implemented.
+ * Values are % PWM duty, open loop; the motion task ramps toward them.
  */
 ER motion_set_speed(int8_t left, int8_t right);
 
@@ -84,7 +83,7 @@ void motion_print_encoder_diag(const char *p_label);
 /**
  * @brief Move forward a specified distance (blocking).
  * 
- * NOTE: Speed parameter is currently ignored (digital mode).
+ * Speed is % PWM duty, open loop (no PID yet).
  */
 ER motion_move_forward_cm(uint16_t distance_cm, uint8_t speed);
 
