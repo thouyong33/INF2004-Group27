@@ -27,6 +27,6 @@
 
 #define DEVCNF_USE_SER		1		// Serial communication device 
 #define DEVCNF_USE_ADC		1		// A/D conversion device
-#define DEVCNF_USE_IIC		1		// I2C communication device
+#define DEVCNF_USE_IIC		0		// I2C communication device (off: its unit 0 claims GP8/GP9 = left motor; Buddy 4 drives I2C1 directly)
 
 #endif	/* __DEV_CONFIG_H__ */

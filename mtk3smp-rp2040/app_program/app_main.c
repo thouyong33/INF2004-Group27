@@ -51,6 +51,7 @@
 // ADDED: Robot task includes
 #include "buddy3_line_barcode/barcode_task.h"
 #include "buddy2_motion/motion_task.h"
+#include "buddy4_imu/imu.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -509,6 +510,9 @@ LOCAL T_CFLG cflg = {
  *                            0 mm/s forward, then -300 and 0. Logged in
  *                            RAM and printed afterwards as [TRACE] CSV
  *                            plus a [PI] summary per step.
+ *   IMU_TEST_BRINGUP       - Buddy 4 step 1: I2C1 bus scan on GP2/GP3,
+ *                            GY-511 ID registers, then 5 s of raw accel
+ *                            (mg) and mag (counts). Motors stay off.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -516,10 +520,14 @@ LOCAL T_CFLG cflg = {
 #define MOTION_TEST_HAND         3
 #define MOTION_TEST_DUTY_SWEEP   4
 #define MOTION_TEST_PI_STEP      5
+#define IMU_TEST_BRINGUP         6
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         MOTION_TEST_DISTANCE
+#define MOTION_TEST_MODE         IMU_TEST_BRINGUP
 #endif
+
+#define IMU_SAMPLE_COUNT         20
+#define IMU_SAMPLE_MS            250
 
 #define DIST_PAUSE_S             10
 
@@ -625,6 +633,67 @@ LOCAL void motion_test_duty_sweep(void)
     motion_sweep_direction(-1, "rev");
 
     tm_printf((UB *)"\n=== Duty sweep complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_BRINGUP
+/* Buddy 4 step 1: prove the wiring and the I2C driver before any maths. */
+LOCAL void imu_test_bringup(void)
+{
+    UB addr;
+    INT found = 0;
+    INT i;
+    uint8_t id[3];
+    imu_raw_t r;
+    ER err;
+
+    tm_printf((UB *)"\n[IMU] I2C1 scan on GP2 (SDA) / GP3 (SCL), 100 kHz\n");
+    i2c1_init();
+
+    for(addr = 0x08; addr < 0x78; addr++) {
+        if(E_OK == i2c1_probe(addr)) {
+            tm_printf((UB *)"[IMU] found device at 0x%02x\n", addr);
+            found++;
+        }
+    }
+    tm_printf((UB *)"[IMU] %d device(s); expect 0x19 (accel) and 0x1e (mag)\n",
+              found);
+
+    /* Magnetometer identification registers IRA/IRB/IRC = 'H' '4' '3' */
+    err = i2c1_read_regs(IMU_MAG_ADDR, 0x0A, id, 3u);
+    if(E_OK == err) {
+        tm_printf((UB *)"[IMU] mag ID = 0x%02x 0x%02x 0x%02x (expect 0x48 0x34 0x33 = \"H43\")\n",
+                  id[0], id[1], id[2]);
+    } else {
+        tm_printf((UB *)"[IMU] mag ID read failed: %d\n", err);
+    }
+
+    /* Not documented for the DLHC, but many parts answer 0x33 here */
+    err = i2c1_read_regs(IMU_ACCEL_ADDR, 0x0F, id, 1u);
+    if(E_OK == err) {
+        tm_printf((UB *)"[IMU] accel reg 0x0F = 0x%02x (often 0x33)\n", id[0]);
+    } else {
+        tm_printf((UB *)"[IMU] accel read failed: %d\n", err);
+    }
+
+    err = imu_init();
+    if(E_OK != err) {
+        tm_printf((UB *)"[IMU] imu_init failed: %d\n", err);
+        return;
+    }
+    tk_dly_tsk(100);
+
+    tm_printf((UB *)"[IMU] raw samples: accel in mg, mag in counts. Keep the car flat and still.\n");
+    for(i = 0; i < IMU_SAMPLE_COUNT; i++) {
+        err = imu_read_raw(&r);
+        if(E_OK == err) {
+            tm_printf((UB *)"[IMU] a=(%5d,%5d,%5d) mg  m=(%5d,%5d,%5d)\n",
+                      r.ax, r.ay, r.az, r.mx, r.my, r.mz);
+        } else {
+            tm_printf((UB *)"[IMU] read failed: %d\n", err);
+        }
+        tk_dly_tsk(IMU_SAMPLE_MS);
+    }
+
+    tm_printf((UB *)"\n=== IMU bring-up complete ===\n");
 }
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
@@ -793,6 +862,8 @@ EXPORT INT usermain(void)
     motion_test_duty_sweep();
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
     motion_test_pi_step();
+#elif MOTION_TEST_MODE == IMU_TEST_BRINGUP
+    imu_test_bringup();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
