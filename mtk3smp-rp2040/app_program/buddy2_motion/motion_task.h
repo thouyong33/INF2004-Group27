@@ -43,6 +43,7 @@ typedef struct {
     uint32_t a_edges;  /**< Raw transitions seen on channel A */
     uint32_t b_edges;  /**< Raw transitions seen on channel B */
     uint32_t invalid;  /**< Polls where both channels changed */
+    uint32_t polls;    /**< Encoder polls since reset (same for both) */
 } enc_diag_t;
 
 /**

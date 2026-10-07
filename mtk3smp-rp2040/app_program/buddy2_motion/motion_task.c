@@ -35,7 +35,7 @@
 /*----------------------------------------------------------------------------
  * Configuration Constants
  *---------------------------------------------------------------------------*/
-#define TASK_PERIOD_MS            5u
+#define TASK_PERIOD_MS            1u
 #define SPEED_CALC_INTERVAL_MS    100u
 #define ODOM_PRINT_INTERVAL_MS    500u
 #define MOTOR_BRAKE_DELAY_MS      500u
@@ -78,6 +78,7 @@ static volatile uint32_t g_enc_right_a_edges = 0u;
 static volatile uint32_t g_enc_right_b_edges = 0u;
 static volatile uint32_t g_enc_left_invalid = 0u;
 static volatile uint32_t g_enc_right_invalid = 0u;
+static volatile uint32_t g_enc_polls = 0u;
 
 /* Speed state */
 static int32_t g_last_left_count = 0;
@@ -338,6 +339,7 @@ encoder_update(void)
 
     g_enc_left_last_state = left_state;
     g_enc_right_last_state = right_state;
+    g_enc_polls++;
 }
 
 /*----------------------------------------------------------------------------
@@ -620,6 +622,7 @@ motion_reset_odometry(void)
     g_enc_right_b_edges = 0u;
     g_enc_left_invalid = 0u;
     g_enc_right_invalid = 0u;
+    g_enc_polls = 0u;
 
     tm_printf((UB *)"[ODOM] Reset\n");
 }
@@ -641,6 +644,8 @@ motion_get_encoder_diag(enc_diag_t *p_left, enc_diag_t *p_right)
     p_right->a_edges = g_enc_right_a_edges;
     p_right->b_edges = g_enc_right_b_edges;
     p_right->invalid = g_enc_right_invalid;
+    p_left->polls = g_enc_polls;
+    p_right->polls = g_enc_polls;
 
     return E_OK;
 }
@@ -654,10 +659,11 @@ motion_print_encoder_diag(const char *p_label)
     (void)motion_get_encoder_diag(&left, &right);
 
     tm_printf((UB *)"[ENC] %s L: cnt=%ld A=%lu B=%lu inv=%lu | "
-              "R: cnt=%ld A=%lu B=%lu inv=%lu\n",
+              "R: cnt=%ld A=%lu B=%lu inv=%lu | polls=%lu\n",
               (NULL != p_label) ? p_label : "",
               left.count, left.a_edges, left.b_edges, left.invalid,
-              right.count, right.a_edges, right.b_edges, right.invalid);
+              right.count, right.a_edges, right.b_edges, right.invalid,
+              left.polls);
 }
 
 ER
