@@ -531,7 +531,7 @@ LOCAL T_CFLG cflg = {
 #define SWEEP_STEP_PCT           10
 #define SWEEP_SETTLE_MS          800
 #define SWEEP_MEASURE_MS         500
-#define SWEEP_UM_PER_EDGE        322
+#define SWEEP_UM_PER_EDGE        328  /* keep in step with UM_PER_EDGE */
 
 #define HAND_PRINT_MS            1000
 

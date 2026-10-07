@@ -28,8 +28,11 @@
 #define WHEEL_DIAMETER_MM         65u
 #define WHEEL_CIRCUMFERENCE_MM    204u
 
-/* 204 mm / 634 edges = 0.322 mm per edge */
-#define UM_PER_EDGE               322L
+/* Nominal 204 mm / 634 edges = 0.322 mm per edge, but floor tape tests
+ * (2026-10-07: 509/501, 305/298, 516/507 mm tape/encoder) show the car
+ * travels 1.9 % further, i.e. an effective rolling circumference of
+ * ~208 mm on the floor. */
+#define UM_PER_EDGE               328L
 
 /*----------------------------------------------------------------------------
  * Configuration Constants
