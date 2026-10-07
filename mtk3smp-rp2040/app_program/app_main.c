@@ -528,6 +528,9 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_BRINGUP       - Buddy 4 step 1: I2C1 bus scan on GP2/GP3,
  *                            LSM303D WHO_AM_I, then 5 s of raw accel
  *                            (mg) and mag (counts). Motors stay off.
+ *   IMU_TEST_ACCEL_6FACE   - Buddy 4 step 3: hold the car still in six
+ *                            orientations (prompted); averages each and
+ *                            prints per-axis offset and scale.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -536,13 +539,20 @@ LOCAL T_CFLG cflg = {
 #define MOTION_TEST_DUTY_SWEEP   4
 #define MOTION_TEST_PI_STEP      5
 #define IMU_TEST_BRINGUP         6
+#define IMU_TEST_ACCEL_6FACE     7
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_BRINGUP
+#define MOTION_TEST_MODE         IMU_TEST_ACCEL_6FACE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
 #define IMU_SAMPLE_MS            250
+
+#define FACE_COUNT               6
+#define FACE_MOVE_S              10    /* time to reposition the car */
+#define FACE_SAMPLES             100   /* averaged per face */
+#define FACE_SAMPLE_MS           20    /* 2 s per face */
+#define FACE_DOMINANT_MG         700   /* one axis must read > 0.7 g */
 
 #define DIST_PAUSE_S             10
 
@@ -720,6 +730,141 @@ LOCAL void imu_test_bringup(void)
 
     tm_printf((UB *)"\n=== IMU bring-up complete ===\n");
 }
+#elif MOTION_TEST_MODE == IMU_TEST_ACCEL_6FACE
+LOCAL INT iabs(INT v)
+{
+    return (v < 0) ? -v : v;
+}
+
+LOCAL UW isqrt_u32(UW v)
+{
+    UW r = 0;
+    UW bit = 1UL << 30;
+
+    while(bit > v) {
+        bit >>= 2;
+    }
+    while(bit != 0) {
+        if(v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    return r;
+}
+
+/* Buddy 4 step 3. Each face should put +1 g or -1 g on exactly one axis.
+   The axis and sign are detected from the data, so the order and the way
+   the board is mounted do not matter. For each axis:
+     offset = (+1 g reading + -1 g reading) / 2
+     scale  = 1000 / ((+1 g reading - -1 g reading) / 2)
+   so that corrected = (raw - offset) * scale reads exactly +/-1000 mg. */
+LOCAL void imu_test_accel_6face(void)
+{
+    static const char *const faces[FACE_COUNT] = {
+        "UPRIGHT (wheels on the table)",
+        "UPSIDE DOWN (wheels in the air)",
+        "NOSE UP (front of the car pointing at the ceiling)",
+        "NOSE DOWN (front of the car pointing at the table)",
+        "LEFT SIDE DOWN",
+        "RIGHT SIDE DOWN",
+    };
+    static const char axis_name[3] = { 'X', 'Y', 'Z' };
+    static INT avg[FACE_COUNT][3];
+    INT pos[3] = { 0, 0, 0 };
+    INT neg[3] = { 0, 0, 0 };
+    BOOL have_pos[3], have_neg[3];
+    INT f, s, a, n_ok, best, off, half;
+    W sum[3];
+    imu_raw_t r;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[CAL] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    tm_printf((UB *)"\n[CAL] Accelerometer 6-face calibration. Motors stay off.\n");
+    tm_printf((UB *)"[CAL] For each face: move the car when asked, then keep it\n");
+    tm_printf((UB *)"[CAL] completely still (hands off) while it says HOLD.\n");
+
+    for(a = 0; a < 3; a++) {
+        have_pos[a] = FALSE;
+        have_neg[a] = FALSE;
+    }
+
+    for(f = 0; f < FACE_COUNT; f++) {
+        tm_printf((UB *)"\n[CAL] Face %d/6: put the car %s\n", f + 1, faces[f]);
+        for(s = FACE_MOVE_S; s > 0; s--) {
+            tm_printf((UB *)"[CAL]   measuring in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        tm_printf((UB *)"[CAL]   HOLD STILL...\n");
+
+        sum[0] = sum[1] = sum[2] = 0;
+        n_ok = 0;
+        for(s = 0; s < FACE_SAMPLES; s++) {
+            if(E_OK == imu_read_raw(&r)) {
+                sum[0] += r.ax;
+                sum[1] += r.ay;
+                sum[2] += r.az;
+                n_ok++;
+            }
+            tk_dly_tsk(FACE_SAMPLE_MS);
+        }
+        if(0 == n_ok) {
+            tm_printf((UB *)"[CAL]   no samples read, skipping face\n");
+            continue;
+        }
+
+        for(a = 0; a < 3; a++) {
+            avg[f][a] = (INT)(sum[a] / n_ok);
+        }
+
+        best = 0;
+        for(a = 1; a < 3; a++) {
+            if(iabs(avg[f][a]) > iabs(avg[f][best])) {
+                best = a;
+            }
+        }
+
+        tm_printf((UB *)"[CAL]   avg=(%5d,%5d,%5d) mg  |a|=%u mg  -> %c%c\n",
+                  avg[f][0], avg[f][1], avg[f][2],
+                  isqrt_u32((UW)(avg[f][0] * avg[f][0] + avg[f][1] * avg[f][1]
+                                 + avg[f][2] * avg[f][2])),
+                  (avg[f][best] >= 0) ? '+' : '-', axis_name[best]);
+
+        if(iabs(avg[f][best]) < FACE_DOMINANT_MG) {
+            tm_printf((UB *)"[CAL]   WARNING: no axis above %d mg, car was not square"
+                      " on this face; result not used\n", FACE_DOMINANT_MG);
+        } else if(avg[f][best] > 0) {
+            pos[best] = avg[f][best];
+            have_pos[best] = TRUE;
+        } else {
+            neg[best] = avg[f][best];
+            have_neg[best] = TRUE;
+        }
+    }
+
+    tm_printf((UB *)"\n[CAL] Result (corrected = (raw - offset) * scale):\n");
+    for(a = 0; a < 3; a++) {
+        if(have_pos[a] && have_neg[a]) {
+            off = (pos[a] + neg[a]) / 2;
+            half = (pos[a] - neg[a]) / 2;
+            tm_printf((UB *)"[CAL] %c: +1g=%5d  -1g=%5d  offset=%4d mg  scale=%d/1000\n",
+                      axis_name[a], pos[a], neg[a], off,
+                      (half > 0) ? (1000 * 1000 / half) : 0);
+        } else {
+            tm_printf((UB *)"[CAL] %c: missing %s face, cannot calibrate\n",
+                      axis_name[a], have_pos[a] ? "-1g" : "+1g");
+        }
+    }
+
+    tm_printf((UB *)"\n=== Accel 6-face calibration complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -894,6 +1039,8 @@ EXPORT INT usermain(void)
     motion_test_pi_step();
 #elif MOTION_TEST_MODE == IMU_TEST_BRINGUP
     imu_test_bringup();
+#elif MOTION_TEST_MODE == IMU_TEST_ACCEL_6FACE
+    imu_test_accel_6face();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
