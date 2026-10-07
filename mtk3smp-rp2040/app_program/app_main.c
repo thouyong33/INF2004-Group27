@@ -491,55 +491,73 @@ LOCAL T_CFLG cflg = {
 };
 
 /* ------------------------------------------------------------------ *
- * Entry point
+ * Robot motion tests (Buddy 2)
+ *
+ * MOTION_TEST_MODE picks which test usermain() runs:
+ *   MOTION_TEST_FIXED_TIME - encoder diagnostics: 1 s full-speed runs,
+ *                            5 with wheels lifted, then 5 on the floor.
+ *   MOTION_TEST_DISTANCE   - original 3 s fwd/rev and 50/30 cm moves.
+ * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
+#define MOTION_TEST_FIXED_TIME   1
+#define MOTION_TEST_DISTANCE     2
 
-/* Create an object, or say which one failed and stop. A silent object
-   failure here would surface much later as a mysterious hang. */
-LOCAL BOOL made(const char *what, ID id)
-{
-    if(id <= E_OK) {
-        tm_printf((UB *)"[init] tk_cre_%s failed, er=%d\n", what, id);
-        return FALSE;
-    }
-    return TRUE;
-}
-
-EXPORT INT usermain(void)
-{
-    ID tid;
-    ER err;
-
-    mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
-    mtxid = tk_cre_mtx(&cmtx); if(!made("mtx", mtxid)) return 1;
-    mbfid = tk_cre_mbf(&cmbf); if(!made("mbf", mbfid)) return 1;
-    semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
-    flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
-
-    tid = tk_cre_tsk(&ctsk_blink); if(made("tsk(blink)", tid)) tk_sta_tsk(tid, 0);
-    tid = tk_cre_tsk(&ctsk_monitor); if(made("tsk(monitor)", tid)) tk_sta_tsk(tid, 0);
-    tid = tk_cre_tsk(&ctsk_consumer); if(made("tsk(consumer)", tid)) tk_sta_tsk(tid, 0);
-    tid = tk_cre_tsk(&ctsk_producer); if(made("tsk(producer)", tid)) tk_sta_tsk(tid, 0);
-#if TM_WIFI_CYW43
-    tid = tk_cre_tsk(&ctsk_wifi); if(made("tsk(wifi)", tid)) tk_sta_tsk(tid, 0);
+#ifndef MOTION_TEST_MODE
+#define MOTION_TEST_MODE         MOTION_TEST_FIXED_TIME
 #endif
 
-    /* ------------------------------------------------------------------ *
-     * ROBOT MOTION SUBSYSTEM TEST
-     * ------------------------------------------------------------------ */
+#define FIXED_RUN_COUNT          5
+#define FIXED_RUN_MS             1000
+#define FIXED_SETTLE_MS          1000
+#define FIXED_PHASE_GAP_S        15
 
-    tm_printf((UB *)"\n=== Starting Motion Subsystem Test ===\n");
+#if MOTION_TEST_MODE == MOTION_TEST_FIXED_TIME
+/* One batch of fixed-time runs. Runs alternate forward and reverse so the
+   car stays roughly in place on the floor. Counters are read after the
+   wheels have coasted to a stop, so every edge of the run is included. */
+LOCAL void motion_fixed_time_runs(const char *phase)
+{
+    INT run;
+    int8_t dir;
+    char label[32];
 
-    // Create motion task
-    err = motion_task_create();
-    if (E_OK != err)
-    {
-        tm_printf((UB *)"[MAIN] Motion task creation failed: %d\n", err);
-        return 1;
+    for(run = 1; run <= FIXED_RUN_COUNT; run++) {
+        dir = ((run % 2) == 1) ? 100 : -100;
+
+        motion_reset_odometry();
+        motion_set_speed(dir, dir);
+        tk_dly_tsk(FIXED_RUN_MS);
+        motion_set_speed(0, 0);
+        tk_dly_tsk(FIXED_SETTLE_MS);
+
+        tm_sprintf((UB *)label, (UB *)"%s run %d %s", phase, run,
+                   (dir > 0) ? "fwd" : "rev");
+        motion_print_encoder_diag(label);
     }
+}
 
-    // Wait for motion task to initialize
-    tk_dly_tsk(2000);
+LOCAL void motion_test_fixed_time(void)
+{
+    INT s;
+
+    tm_printf((UB *)"\n[TEST] Encoder diagnostics: %d x %d ms runs per phase\n",
+              FIXED_RUN_COUNT, FIXED_RUN_MS);
+    tm_printf((UB *)"[TEST] PHASE 1: wheels LIFTED off the ground\n");
+    motion_fixed_time_runs("LIFTED");
+
+    tm_printf((UB *)"\n[TEST] PHASE 2: put the car ON THE FLOOR now\n");
+    for(s = FIXED_PHASE_GAP_S; s > 0; s--) {
+        tm_printf((UB *)"[TEST] floor runs start in %d s\n", s);
+        tk_dly_tsk(1000);
+    }
+    motion_fixed_time_runs("FLOOR");
+
+    tm_printf((UB *)"\n=== Encoder diagnostics complete ===\n");
+}
+#else
+LOCAL void motion_test_distance(void)
+{
+    ER err;
 
     // Test 1: Run forward for 3 seconds at full speed
     tm_printf((UB *)"\n[TEST] Test 1: Forward 3 sec (digital full speed)\n");
@@ -600,6 +618,64 @@ EXPORT INT usermain(void)
     tm_printf((UB *)"\n=== Motion Test Complete ===\n");
     tm_printf((UB *)"Demo tasks (producer/consumer/monitor/blink) continue running.\n");
     tm_printf((UB *)"Odometry updates every 500ms.\n\n");
+}
+#endif
+
+/* ------------------------------------------------------------------ *
+ * Entry point
+ * ------------------------------------------------------------------ */
+
+/* Create an object, or say which one failed and stop. A silent object
+   failure here would surface much later as a mysterious hang. */
+LOCAL BOOL made(const char *what, ID id)
+{
+    if(id <= E_OK) {
+        tm_printf((UB *)"[init] tk_cre_%s failed, er=%d\n", what, id);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+EXPORT INT usermain(void)
+{
+    ID tid;
+    ER err;
+
+    mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
+    mtxid = tk_cre_mtx(&cmtx); if(!made("mtx", mtxid)) return 1;
+    mbfid = tk_cre_mbf(&cmbf); if(!made("mbf", mbfid)) return 1;
+    semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
+    flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
+
+    tid = tk_cre_tsk(&ctsk_blink); if(made("tsk(blink)", tid)) tk_sta_tsk(tid, 0);
+    tid = tk_cre_tsk(&ctsk_monitor); if(made("tsk(monitor)", tid)) tk_sta_tsk(tid, 0);
+    tid = tk_cre_tsk(&ctsk_consumer); if(made("tsk(consumer)", tid)) tk_sta_tsk(tid, 0);
+    tid = tk_cre_tsk(&ctsk_producer); if(made("tsk(producer)", tid)) tk_sta_tsk(tid, 0);
+#if TM_WIFI_CYW43
+    tid = tk_cre_tsk(&ctsk_wifi); if(made("tsk(wifi)", tid)) tk_sta_tsk(tid, 0);
+#endif
+
+    /* ------------------------------------------------------------------ *
+     * ROBOT MOTION SUBSYSTEM TEST
+     * ------------------------------------------------------------------ */
+
+    tm_printf((UB *)"\n=== Starting Motion Subsystem Test ===\n");
+
+    err = motion_task_create();
+    if (E_OK != err)
+    {
+        tm_printf((UB *)"[MAIN] Motion task creation failed: %d\n", err);
+        return 1;
+    }
+
+    // Wait for motion task to initialize
+    tk_dly_tsk(2000);
+
+#if MOTION_TEST_MODE == MOTION_TEST_FIXED_TIME
+    motion_test_fixed_time();
+#else
+    motion_test_distance();
+#endif
 
     /* The initial task has nothing left to do. It must not return: on
        return the kernel shuts the system down. */

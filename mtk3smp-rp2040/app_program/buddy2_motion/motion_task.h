@@ -31,6 +31,21 @@ typedef struct {
 } odometry_t;
 
 /**
+ * @brief Encoder diagnostic counters (reset with motion_reset_odometry).
+ *
+ * For a clean quadrature signal, a_edges + b_edges equals the number of
+ * valid steps, so it should match |count| when the wheel turned one way.
+ * invalid counts polls where A and B both changed at once: a skipped
+ * state (polling too slow) or noise. Those polls add 0 to count.
+ */
+typedef struct {
+    int32_t  count;    /**< Signed quadrature count */
+    uint32_t a_edges;  /**< Raw transitions seen on channel A */
+    uint32_t b_edges;  /**< Raw transitions seen on channel B */
+    uint32_t invalid;  /**< Polls where both channels changed */
+} enc_diag_t;
+
+/**
  * @brief Initialize and start motion control task.
  */
 ER motion_task_create(void);
@@ -52,6 +67,16 @@ ER motion_get_odometry(odometry_t *p_odom);
  * @brief Reset odometry counters to zero.
  */
 void motion_reset_odometry(void);
+
+/**
+ * @brief Snapshot encoder diagnostic counters for both wheels.
+ */
+ER motion_get_encoder_diag(enc_diag_t *p_left, enc_diag_t *p_right);
+
+/**
+ * @brief Print encoder diagnostic counters for both wheels on one line.
+ */
+void motion_print_encoder_diag(const char *p_label);
 
 /**
  * @brief Move forward a specified distance (blocking).

@@ -71,6 +71,14 @@ static volatile int32_t g_enc_right_count = 0;
 static uint8_t g_enc_left_last_state = 0u;
 static uint8_t g_enc_right_last_state = 0u;
 
+/* Encoder diagnostics: raw per-channel edges and invalid (both-changed) polls */
+static volatile uint32_t g_enc_left_a_edges = 0u;
+static volatile uint32_t g_enc_left_b_edges = 0u;
+static volatile uint32_t g_enc_right_a_edges = 0u;
+static volatile uint32_t g_enc_right_b_edges = 0u;
+static volatile uint32_t g_enc_left_invalid = 0u;
+static volatile uint32_t g_enc_right_invalid = 0u;
+
 /* Speed state */
 static int32_t g_last_left_count = 0;
 static int32_t g_last_right_count = 0;
@@ -266,6 +274,35 @@ encoder_init(void)
               COUNTS_PER_REV_RIGHT);
 }
 
+/* State is (A << 1) | B. Count each channel's edges separately, and flag
+ * polls where both channels changed: quadrature never does that in one
+ * step, so it means a state was skipped or a line glitched. */
+static void
+encoder_diag_update(uint8_t prev_state, uint8_t curr_state,
+                    volatile uint32_t *p_a_edges,
+                    volatile uint32_t *p_b_edges,
+                    volatile uint32_t *p_invalid)
+{
+    uint8_t changed;
+
+    changed = (uint8_t)(prev_state ^ curr_state);
+
+    if (0u != (changed & 0x2u))
+    {
+        (*p_a_edges)++;
+    }
+
+    if (0u != (changed & 0x1u))
+    {
+        (*p_b_edges)++;
+    }
+
+    if (0x3u == changed)
+    {
+        (*p_invalid)++;
+    }
+}
+
 static void
 encoder_update(void)
 {
@@ -288,6 +325,13 @@ encoder_update(void)
 
     left_delta = quadrature_decode(g_enc_left_last_state, left_state);
     right_delta = quadrature_decode(g_enc_right_last_state, right_state);
+
+    encoder_diag_update(g_enc_left_last_state, left_state,
+                        &g_enc_left_a_edges, &g_enc_left_b_edges,
+                        &g_enc_left_invalid);
+    encoder_diag_update(g_enc_right_last_state, right_state,
+                        &g_enc_right_a_edges, &g_enc_right_b_edges,
+                        &g_enc_right_invalid);
 
     g_enc_left_count += (int32_t)left_delta;
     g_enc_right_count += (int32_t)right_delta;
@@ -570,7 +614,50 @@ motion_reset_odometry(void)
     g_left_speed_tenths_cm_s = 0;
     g_right_speed_tenths_cm_s = 0;
 
+    g_enc_left_a_edges = 0u;
+    g_enc_left_b_edges = 0u;
+    g_enc_right_a_edges = 0u;
+    g_enc_right_b_edges = 0u;
+    g_enc_left_invalid = 0u;
+    g_enc_right_invalid = 0u;
+
     tm_printf((UB *)"[ODOM] Reset\n");
+}
+
+ER
+motion_get_encoder_diag(enc_diag_t *p_left, enc_diag_t *p_right)
+{
+    if ((NULL == p_left) || (NULL == p_right))
+    {
+        return E_PAR;
+    }
+
+    p_left->count = g_enc_left_count;
+    p_left->a_edges = g_enc_left_a_edges;
+    p_left->b_edges = g_enc_left_b_edges;
+    p_left->invalid = g_enc_left_invalid;
+
+    p_right->count = g_enc_right_count;
+    p_right->a_edges = g_enc_right_a_edges;
+    p_right->b_edges = g_enc_right_b_edges;
+    p_right->invalid = g_enc_right_invalid;
+
+    return E_OK;
+}
+
+void
+motion_print_encoder_diag(const char *p_label)
+{
+    enc_diag_t left;
+    enc_diag_t right;
+
+    (void)motion_get_encoder_diag(&left, &right);
+
+    tm_printf((UB *)"[ENC] %s L: cnt=%ld A=%lu B=%lu inv=%lu | "
+              "R: cnt=%ld A=%lu B=%lu inv=%lu\n",
+              (NULL != p_label) ? p_label : "",
+              left.count, left.a_edges, left.b_edges, left.invalid,
+              right.count, right.a_edges, right.b_edges, right.invalid);
 }
 
 ER
@@ -640,6 +727,7 @@ motion_move_forward_cm(uint16_t distance_cm, uint8_t speed)
               g_enc_left_count,
               g_enc_right_count,
               min_progress);
+    motion_print_encoder_diag("move_forward_cm");
 
     return E_OK;
 }
