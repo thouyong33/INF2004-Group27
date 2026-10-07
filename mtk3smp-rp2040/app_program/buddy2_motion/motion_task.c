@@ -80,6 +80,31 @@ static volatile uint32_t g_enc_left_invalid = 0u;
 static volatile uint32_t g_enc_right_invalid = 0u;
 static volatile uint32_t g_enc_polls = 0u;
 
+/* Hardware edge counters: a PWM slice in "B pin rising edge" mode counts
+ * one encoder channel in hardware; the task only reads the counter. The
+ * pin must be a PWM B pin (odd GPIO). Direction comes from the motor
+ * command, so these are only signed correctly while the motor is driven. */
+#define ENC_HW_LEFT_PIN           ENC_LEFT_B    /* GP19 = PWM1 B */
+#define ENC_HW_RIGHT_PIN          ENC_RIGHT_A   /* GP15 = PWM7 B */
+#define PWM_SLICE_OF(pin)         (((pin) >> 1) & 0x7u)
+#define PWM_CSR_EN                (1u << 0)
+#define PWM_CSR_DIVMODE_B_RISE    (2u << 4)
+#define PWM_DIV_INT_1             (1u << 4)
+#define PWM_SLICE_REG(slice, off) (PWM_BASE + ((slice) * 0x14u) + (off))
+
+#if ((ENC_HW_LEFT_PIN & 1) == 0) || ((ENC_HW_RIGHT_PIN & 1) == 0)
+#error "Hardware encoder pins must be PWM B pins (odd GPIO numbers)"
+#endif
+
+static uint16_t g_hw_left_last_ctr = 0u;
+static uint16_t g_hw_right_last_ctr = 0u;
+static volatile uint32_t g_hw_left_edges = 0u;
+static volatile uint32_t g_hw_right_edges = 0u;
+static volatile int32_t g_hw_left_count = 0;
+static volatile int32_t g_hw_right_count = 0;
+static int8_t g_hw_left_dir = 1;
+static int8_t g_hw_right_dir = 1;
+
 /* Speed state */
 static int32_t g_last_left_count = 0;
 static int32_t g_last_right_count = 0;
@@ -342,6 +367,87 @@ encoder_update(void)
     g_enc_polls++;
 }
 
+static void
+encoder_hw_slice_init(uint8_t pin)
+{
+    uint32_t slice;
+
+    slice = PWM_SLICE_OF(pin);
+
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_CSR), 0u);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_DIV), PWM_DIV_INT_1);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_TOP), 0xFFFFu);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_CTR), 0u);
+    out_w(PWM_SLICE_REG(slice, PWM_CHx_CSR),
+          PWM_CSR_DIVMODE_B_RISE | PWM_CSR_EN);
+
+    /* Route the pin to PWM. SIO GPIO_IN still reads the pad, so the
+     * polled decoder keeps working on this pin for comparison. */
+    out_w(GPIO_CTRL(pin), GPIO_CTRL_FUNCSEL_PWM);
+}
+
+static void
+encoder_hw_init(void)
+{
+    /* USE_PTMR is 0, so the kernel leaves the PWM block in reset */
+    clr_w(RESETS_RESET, RESETS_RESET_PWM);
+    while (0u == (in_w(RESETS_RESET_DONE) & RESETS_RESET_PWM))
+    {
+        ;
+    }
+
+    encoder_hw_slice_init(ENC_HW_LEFT_PIN);
+    encoder_hw_slice_init(ENC_HW_RIGHT_PIN);
+
+    g_hw_left_last_ctr = (uint16_t)in_w(
+        PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_LEFT_PIN), PWM_CHx_CTR));
+    g_hw_right_last_ctr = (uint16_t)in_w(
+        PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_RIGHT_PIN), PWM_CHx_CTR));
+
+    tm_printf((UB *)"[MOTION] HW edge counters: L=GP%u (PWM%u) R=GP%u (PWM%u)\n",
+              ENC_HW_LEFT_PIN, PWM_SLICE_OF(ENC_HW_LEFT_PIN),
+              ENC_HW_RIGHT_PIN, PWM_SLICE_OF(ENC_HW_RIGHT_PIN));
+}
+
+/* Read one hardware counter and fold the edges since the last read into
+ * the totals. 16-bit wrap is handled by the unsigned subtraction; it only
+ * needs reading more often than every 65535 edges. */
+static void
+encoder_hw_read(uint8_t pin, uint16_t *p_last_ctr, int8_t cmd, int8_t *p_dir,
+                volatile uint32_t *p_edges, volatile int32_t *p_count)
+{
+    uint16_t ctr;
+    uint16_t delta;
+
+    ctr = (uint16_t)in_w(PWM_SLICE_REG(PWM_SLICE_OF(pin), PWM_CHx_CTR));
+    delta = (uint16_t)(ctr - *p_last_ctr);
+    *p_last_ctr = ctr;
+
+    /* Keep the last driven direction so coasting after a stop is signed */
+    if (cmd > 0)
+    {
+        *p_dir = 1;
+    }
+    else if (cmd < 0)
+    {
+        *p_dir = -1;
+    }
+
+    *p_edges += (uint32_t)delta;
+    *p_count += (int32_t)(*p_dir) * (int32_t)delta;
+}
+
+static void
+encoder_hw_update(void)
+{
+    encoder_hw_read(ENC_HW_LEFT_PIN, &g_hw_left_last_ctr,
+                    g_current_left_speed_cmd, &g_hw_left_dir,
+                    &g_hw_left_edges, &g_hw_left_count);
+    encoder_hw_read(ENC_HW_RIGHT_PIN, &g_hw_right_last_ctr,
+                    g_current_right_speed_cmd, &g_hw_right_dir,
+                    &g_hw_right_edges, &g_hw_right_count);
+}
+
 /*----------------------------------------------------------------------------
  * Speed / Odometry
  *---------------------------------------------------------------------------*/
@@ -401,6 +507,7 @@ motion_task_main(INT stacd, void *exinf)
 
     motor_gpio_init();
     encoder_init();
+    encoder_hw_init();
 
     tm_printf((UB *)"[MOTION] Task started (period=%u ms)\n", TASK_PERIOD_MS);
     tm_printf((UB *)"[MOTION] Wheel: %u mm diameter, %u mm circumference\n",
@@ -418,6 +525,10 @@ motion_task_main(INT stacd, void *exinf)
 
     while (1)
     {
+        /* Read hardware counters before a new command can change the
+         * direction used to sign them */
+        encoder_hw_update();
+
         msg_size = tk_rcv_mbf(motion_msgbuf_id, &cmd, TMO_POL);
         if ((INT)sizeof(cmd) == msg_size)
         {
@@ -624,6 +735,11 @@ motion_reset_odometry(void)
     g_enc_right_invalid = 0u;
     g_enc_polls = 0u;
 
+    g_hw_left_edges = 0u;
+    g_hw_right_edges = 0u;
+    g_hw_left_count = 0;
+    g_hw_right_count = 0;
+
     tm_printf((UB *)"[ODOM] Reset\n");
 }
 
@@ -647,6 +763,11 @@ motion_get_encoder_diag(enc_diag_t *p_left, enc_diag_t *p_right)
     p_left->polls = g_enc_polls;
     p_right->polls = g_enc_polls;
 
+    p_left->hw_edges = g_hw_left_edges;
+    p_left->hw_count = g_hw_left_count;
+    p_right->hw_edges = g_hw_right_edges;
+    p_right->hw_count = g_hw_right_count;
+
     return E_OK;
 }
 
@@ -664,6 +785,10 @@ motion_print_encoder_diag(const char *p_label)
               left.count, left.a_edges, left.b_edges, left.invalid,
               right.count, right.a_edges, right.b_edges, right.invalid,
               left.polls);
+    tm_printf((UB *)"[HW]  %s L: edges=%lu cnt=%ld | R: edges=%lu cnt=%ld\n",
+              (NULL != p_label) ? p_label : "",
+              left.hw_edges, left.hw_count,
+              right.hw_edges, right.hw_count);
 }
 
 ER

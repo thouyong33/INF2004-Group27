@@ -44,6 +44,8 @@ typedef struct {
     uint32_t b_edges;  /**< Raw transitions seen on channel B */
     uint32_t invalid;  /**< Polls where both channels changed */
     uint32_t polls;    /**< Encoder polls since reset (same for both) */
+    uint32_t hw_edges; /**< Rising edges counted by the PWM slice */
+    int32_t  hw_count; /**< hw_edges signed by commanded direction */
 } enc_diag_t;
 
 /**
