@@ -496,7 +496,8 @@ LOCAL T_CFLG cflg = {
  * MOTION_TEST_MODE picks which test usermain() runs:
  *   MOTION_TEST_FIXED_TIME - encoder diagnostics: 1 s full-speed runs,
  *                            5 with wheels lifted, then 5 on the floor.
- *   MOTION_TEST_DISTANCE   - original 3 s fwd/rev and 50/30 cm moves.
+ *   MOTION_TEST_DISTANCE   - floor: 50 cm and 30 cm at 300 mm/s, then 50 cm
+ *                            at 500 mm/s under PI, 10 s apart to measure.
  *   MOTION_TEST_HAND       - motors stay OFF; prints encoder counters
  *                            every second while the wheels are turned
  *                            by hand. Ground truth with no motor noise.
@@ -517,8 +518,10 @@ LOCAL T_CFLG cflg = {
 #define MOTION_TEST_PI_STEP      5
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         MOTION_TEST_PI_STEP
+#define MOTION_TEST_MODE         MOTION_TEST_DISTANCE
 #endif
+
+#define DIST_PAUSE_S             10
 
 #define PI_HOLD_MS               1500
 #define PI_MEASURE_MS            500
@@ -701,67 +704,36 @@ LOCAL void motion_test_hand(void)
 #else
 LOCAL void motion_test_distance(void)
 {
+    static const struct {
+        uint16_t cm;
+        uint16_t mm_s;
+    } moves[] = {
+        { 50, 300 },
+        { 30, 300 },
+        { 50, 500 },
+    };
+    INT i;
+    INT s;
     ER err;
 
-    // Test 1: Run forward for 3 seconds at full speed
-    tm_printf((UB *)"\n[TEST] Test 1: Forward 3 sec (digital full speed)\n");
-    err = motion_set_speed(100, 100);
-    if (E_OK != err)
-    {
-        tm_printf((UB *)"[TEST] motion_set_speed failed: %d\n", err);
-    }
-    tk_dly_tsk(3000);
+    tm_printf((UB *)"\n[TEST] Distance test on the floor (PI control)\n");
+    tm_printf((UB *)"[TEST] Mark the car's front before each move, then"
+              " tape-measure how far it went\n");
 
-    // Brake delay before reversing (brownout protection)
-    tm_printf((UB *)"\n[TEST] Braking (500ms delay)...\n");
-    motion_set_speed(0, 0);
-    tk_dly_tsk(500);
+    for(i = 0; i < (INT)(sizeof(moves) / sizeof(moves[0])); i++) {
+        for(s = DIST_PAUSE_S; s > 0; s--) {
+            tm_printf((UB *)"[TEST] Move %d (%u cm at %u mm/s) in %d s\n",
+                      i + 1, moves[i].cm, moves[i].mm_s, s);
+            tk_dly_tsk(1000);
+        }
 
-    // Test 2: Run reverse for 3 seconds
-    tm_printf((UB *)"\n[TEST] Test 2: Reverse 3 sec\n");
-    err = motion_set_speed(-100, -100);
-    if (E_OK != err)
-    {
-        tm_printf((UB *)"[TEST] motion_set_speed failed: %d\n", err);
-    }
-    tk_dly_tsk(3000);
-
-    // Stop
-    tm_printf((UB *)"\n[TEST] Stopping...\n");
-    motion_set_speed(0, 0);
-    tk_dly_tsk(2000);
-
-    // Test 3: Distance-based movement (50 cm)
-    tm_printf((UB *)"\n[TEST] Test 3: Distance-based 50 cm forward\n");
-    motion_reset_odometry();
-    err = motion_move_forward_cm(50, 100);  // Speed currently ignored (digital mode)
-    if (E_OK == err)
-    {
-        tm_printf((UB *)"[TEST] Distance movement complete!\n");
-    }
-    else
-    {
-        tm_printf((UB *)"[TEST] Distance movement failed: %d\n", err);
+        err = motion_move_forward_cm(moves[i].cm, moves[i].mm_s);
+        if(E_OK != err) {
+            tm_printf((UB *)"[TEST] Move %d failed: %d\n", i + 1, err);
+        }
     }
 
-    tk_dly_tsk(2000);
-
-    // Test 4: Another distance test (30 cm)
-    tm_printf((UB *)"\n[TEST] Test 4: Distance-based 30 cm forward\n");
-    motion_reset_odometry();
-    err = motion_move_forward_cm(30, 100);
-    if (E_OK == err)
-    {
-        tm_printf((UB *)"[TEST] Distance movement complete!\n");
-    }
-    else
-    {
-        tm_printf((UB *)"[TEST] Distance movement failed: %d\n", err);
-    }
-
-    tm_printf((UB *)"\n=== Motion Test Complete ===\n");
-    tm_printf((UB *)"Demo tasks (producer/consumer/monitor/blink) continue running.\n");
-    tm_printf((UB *)"Odometry updates every 500ms.\n\n");
+    tm_printf((UB *)"\n=== Distance test complete ===\n");
 }
 #endif
 

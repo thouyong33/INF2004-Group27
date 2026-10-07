@@ -116,10 +116,12 @@ ER motion_get_encoder_diag(enc_diag_t *p_left, enc_diag_t *p_right);
 void motion_print_encoder_diag(const char *p_label);
 
 /**
- * @brief Move forward a specified distance (blocking).
- * 
- * Speed is % PWM duty, open loop (no PID yet).
+ * @brief Drive straight forward a specified distance (blocking).
+ *
+ * Runs under PI speed control at speed_mm_s (clamped to 50..550 mm/s) and
+ * starts braking early by the computed stopping distance. Prints the
+ * encoder-measured distance and error once the wheels have stopped.
  */
-ER motion_move_forward_cm(uint16_t distance_cm, uint8_t speed);
+ER motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s);
 
 #endif /* MOTION_TASK_H */
