@@ -62,6 +62,12 @@
  * Tunables
  * ------------------------------------------------------------------ */
 
+/* The producer/consumer/monitor pipeline is the port's IPC demo. It is
+   off for the robot build: set APP_DEMO_PIPELINE to 1 to bring it back.
+   The blink task is independent and always runs. */
+#define APP_DEMO_PIPELINE 0
+
+#if APP_DEMO_PIPELINE
 #define N_RECORDS   4      /* blocks in the fixed memory pool */
 #define CREDITS     2      /* messages in flight at once */
 #define PRODUCE_MS  500    /* one record every half second */
@@ -69,6 +75,7 @@
 
 #define FLG_PRODUCED (1U << 0)
 #define FLG_CONSUMED (1U << 1)
+#endif /* APP_DEMO_PIPELINE */
 
 /* Every task uses 4096 bytes. The SMP kernel path is deeper than the
    single-core one -- each critical section runs the global ready-queue
@@ -76,6 +83,7 @@
    for a task that makes blocking kernel calls. */
 #define STACK_SZ 4096
 
+#if APP_DEMO_PIPELINE
 /* ------------------------------------------------------------------ *
  * One record travelling through the pipeline
  * ------------------------------------------------------------------ */
@@ -241,6 +249,8 @@ LOCAL void monitor_task(INT stacd, void *exinf)
         tk_dly_tsk(REPORT_MS);
     }
 }
+
+#endif /* APP_DEMO_PIPELINE */
 
 #if TM_WIFI_CYW43
 /* ------------------------------------------------------------------ *
@@ -424,6 +434,7 @@ LOCAL T_CTSK ctsk_wifi = {
  * Task and object definitions
  * ------------------------------------------------------------------ */
 
+#if APP_DEMO_PIPELINE
 LOCAL T_CTSK ctsk_producer = {
     .itskpri = 5,
     .stksz = STACK_SZ,
@@ -455,6 +466,8 @@ LOCAL T_CTSK ctsk_monitor = {
     .tskatr = TA_HLNG | TA_RNG3,
 };
 
+#endif /* APP_DEMO_PIPELINE */
+
 LOCAL T_CTSK ctsk_blink = {
     .itskpri = 10,
     .stksz = STACK_SZ,
@@ -462,6 +475,7 @@ LOCAL T_CTSK ctsk_blink = {
     .tskatr = TA_HLNG | TA_RNG3,
 };
 
+#if APP_DEMO_PIPELINE
 LOCAL T_CMPF cmpf = {
     .mpfatr = TA_TFIFO | TA_RNG3,
     .mpfcnt = N_RECORDS,
@@ -490,6 +504,7 @@ LOCAL T_CFLG cflg = {
     .flgatr = TA_TFIFO | TA_WMUL,
     .iflgptn = 0,
 };
+#endif /* APP_DEMO_PIPELINE */
 
 /* ------------------------------------------------------------------ *
  * Robot motion tests (Buddy 2)
@@ -635,6 +650,26 @@ LOCAL void motion_test_duty_sweep(void)
     tm_printf((UB *)"\n=== Duty sweep complete ===\n");
 }
 #elif MOTION_TEST_MODE == IMU_TEST_BRINGUP
+/* Print the ID registers that tell common accel/mag chips apart:
+     0x0F WHO_AM_I: 0x49 LSM303D, 0x41 LSM303C accel, 0x33 LSM303DLHC/AGR
+                    accel, 0x3D LSM303C/LIS3MDL mag, 0x40 LSM303AGR mag
+     0x00:          0xE5 ADXL345
+     0x0D:          0x2A MMA8452Q, 0x1A MMA8451Q */
+LOCAL void imu_identify(UB addr)
+{
+    static const UB regs[] = { 0x00, 0x0D, 0x0F };
+    INT i;
+    uint8_t v;
+
+    for(i = 0; i < (INT)sizeof(regs); i++) {
+        if(E_OK == i2c1_read_regs(addr, regs[i], &v, 1u)) {
+            tm_printf((UB *)"[IMU]   0x%02x reg 0x%02x = 0x%02x\n", addr, regs[i], v);
+        } else {
+            tm_printf((UB *)"[IMU]   0x%02x reg 0x%02x = (no answer)\n", addr, regs[i]);
+        }
+    }
+}
+
 /* Buddy 4 step 1: prove the wiring and the I2C driver before any maths. */
 LOCAL void imu_test_bringup(void)
 {
@@ -652,6 +687,7 @@ LOCAL void imu_test_bringup(void)
         if(E_OK == i2c1_probe(addr)) {
             tm_printf((UB *)"[IMU] found device at 0x%02x\n", addr);
             found++;
+            imu_identify(addr);
         }
     }
     tm_printf((UB *)"[IMU] %d device(s); expect 0x19 (accel) and 0x1e (mag)\n",
@@ -826,16 +862,21 @@ EXPORT INT usermain(void)
     ID tid;
     ER err;
 
+#if APP_DEMO_PIPELINE
     mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
     mtxid = tk_cre_mtx(&cmtx); if(!made("mtx", mtxid)) return 1;
     mbfid = tk_cre_mbf(&cmbf); if(!made("mbf", mbfid)) return 1;
     semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
     flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
 
+#endif
+
     tid = tk_cre_tsk(&ctsk_blink); if(made("tsk(blink)", tid)) tk_sta_tsk(tid, 0);
+#if APP_DEMO_PIPELINE
     tid = tk_cre_tsk(&ctsk_monitor); if(made("tsk(monitor)", tid)) tk_sta_tsk(tid, 0);
     tid = tk_cre_tsk(&ctsk_consumer); if(made("tsk(consumer)", tid)) tk_sta_tsk(tid, 0);
     tid = tk_cre_tsk(&ctsk_producer); if(made("tsk(producer)", tid)) tk_sta_tsk(tid, 0);
+#endif
 #if TM_WIFI_CYW43
     tid = tk_cre_tsk(&ctsk_wifi); if(made("tsk(wifi)", tid)) tk_sta_tsk(tid, 0);
 #endif
