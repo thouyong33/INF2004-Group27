@@ -1,0 +1,63 @@
+/**
+ * @file motion_task.h
+ * @brief Motion control with speed calculation and distance tracking
+ */
+
+#ifndef MOTION_TASK_H
+#define MOTION_TASK_H
+
+#include <stdint.h>
+#include <tk/tkernel.h>
+#include <stdbool.h>
+
+/**
+ * @brief Motor command structure.
+ */
+typedef struct {
+    int8_t left_speed;  /**< -100 to +100 (digital ON/OFF for now) */
+    int8_t right_speed; /**< -100 to +100 (digital ON/OFF for now) */
+} motor_cmd_t;
+
+/**
+ * @brief Odometry data structure.
+ */
+typedef struct {
+    int32_t left_pulses;        /**< Cumulative left encoder pulses */
+    int32_t right_pulses;       /**< Cumulative right encoder pulses */
+    float left_speed_cm_s;      /**< Left wheel speed in cm/s */
+    float right_speed_cm_s;     /**< Right wheel speed in cm/s */
+    float distance_cm;          /**< Average distance traveled in cm */
+    uint32_t timestamp_ms;      /**< Timestamp of measurement */
+} odometry_t;
+
+/**
+ * @brief Initialize and start motion control task.
+ */
+ER motion_task_create(void);
+
+/**
+ * @brief Set motor speeds (non-blocking).
+ * 
+ * NOTE: Digital mode only - any non-zero value = full speed.
+ * Use 100/-100 for clarity until PWM is implemented.
+ */
+ER motion_set_speed(int8_t left, int8_t right);
+
+/**
+ * @brief Get current odometry data.
+ */
+ER motion_get_odometry(odometry_t *p_odom);
+
+/**
+ * @brief Reset odometry counters to zero.
+ */
+void motion_reset_odometry(void);
+
+/**
+ * @brief Move forward a specified distance (blocking).
+ * 
+ * NOTE: Speed parameter is currently ignored (digital mode).
+ */
+ER motion_move_forward_cm(uint16_t distance_cm, uint8_t speed);
+
+#endif /* MOTION_TASK_H */
