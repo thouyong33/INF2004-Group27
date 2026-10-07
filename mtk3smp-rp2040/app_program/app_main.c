@@ -526,7 +526,7 @@ LOCAL T_CFLG cflg = {
  *                            RAM and printed afterwards as [TRACE] CSV
  *                            plus a [PI] summary per step.
  *   IMU_TEST_BRINGUP       - Buddy 4 step 1: I2C1 bus scan on GP2/GP3,
- *                            GY-511 ID registers, then 5 s of raw accel
+ *                            LSM303D WHO_AM_I, then 5 s of raw accel
  *                            (mg) and mag (counts). Motors stay off.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
@@ -676,7 +676,7 @@ LOCAL void imu_test_bringup(void)
     UB addr;
     INT found = 0;
     INT i;
-    uint8_t id[3];
+    uint8_t id[1];
     imu_raw_t r;
     ER err;
 
@@ -690,24 +690,13 @@ LOCAL void imu_test_bringup(void)
             imu_identify(addr);
         }
     }
-    tm_printf((UB *)"[IMU] %d device(s); expect 0x19 (accel) and 0x1e (mag)\n",
-              found);
+    tm_printf((UB *)"[IMU] %d device(s); expect 0x1d (LSM303D)\n", found);
 
-    /* Magnetometer identification registers IRA/IRB/IRC = 'H' '4' '3' */
-    err = i2c1_read_regs(IMU_MAG_ADDR, 0x0A, id, 3u);
+    err = imu_who_am_i(&id[0]);
     if(E_OK == err) {
-        tm_printf((UB *)"[IMU] mag ID = 0x%02x 0x%02x 0x%02x (expect 0x48 0x34 0x33 = \"H43\")\n",
-                  id[0], id[1], id[2]);
+        tm_printf((UB *)"[IMU] WHO_AM_I = 0x%02x (expect 0x49 = LSM303D)\n", id[0]);
     } else {
-        tm_printf((UB *)"[IMU] mag ID read failed: %d\n", err);
-    }
-
-    /* Not documented for the DLHC, but many parts answer 0x33 here */
-    err = i2c1_read_regs(IMU_ACCEL_ADDR, 0x0F, id, 1u);
-    if(E_OK == err) {
-        tm_printf((UB *)"[IMU] accel reg 0x0F = 0x%02x (often 0x33)\n", id[0]);
-    } else {
-        tm_printf((UB *)"[IMU] accel read failed: %d\n", err);
+        tm_printf((UB *)"[IMU] WHO_AM_I read failed: %d\n", err);
     }
 
     err = imu_init();

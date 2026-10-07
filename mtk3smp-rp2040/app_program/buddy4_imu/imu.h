@@ -1,6 +1,10 @@
 /**
  * @file imu.h
- * @brief Buddy 4: GY-511 (LSM303DLHC) accelerometer + magnetometer on I2C1.
+ * @brief Buddy 4: LSM303D accelerometer + magnetometer on I2C1.
+ *
+ * The board is sold as a GY-511 (LSM303DLHC), but the part fitted answers
+ * WHO_AM_I = 0x49 at 0x1D: an LSM303D, with accel and mag on one address.
+ * (Identified 2026-10-07 by bus scan; nothing answers at 0x19/0x1E.)
  *
  * Polled register-level I2C1 on GP2 (SDA) / GP3 (SCL). No interrupts, no
  * kernel sample driver (that driver's unit 0 claims the motor pins).
@@ -12,13 +16,13 @@
 #include <stdint.h>
 #include <tk/tkernel.h>
 
-#define IMU_ACCEL_ADDR   0x19u   /**< LSM303DLHC linear acceleration */
-#define IMU_MAG_ADDR     0x1Eu   /**< LSM303DLHC magnetic field */
+#define IMU_ADDR             0x1Du   /**< LSM303D, SA0 high */
+#define IMU_WHO_AM_I_VALUE   0x49u
 
 /**
  * @brief Raw sensor sample.
- * Accel in mg (high-resolution, +/-2 g, 1 mg/LSB).
- * Mag in raw counts (+/-1.3 gauss: 1100 LSB/gauss X/Y, 980 LSB/gauss Z).
+ * Accel in mg (+/-2 g, 0.061 mg/LSB).
+ * Mag in raw counts (+/-2 gauss, 0.080 mgauss/LSB).
  */
 typedef struct {
     int16_t ax;
@@ -44,7 +48,14 @@ ER i2c1_write_reg(uint8_t addr, uint8_t reg, uint8_t value);
 /** @brief Read n consecutive bytes starting at reg (n <= 16). */
 ER i2c1_read_regs(uint8_t addr, uint8_t reg, uint8_t *p_buf, uint32_t n);
 
-/** @brief Configure accel (100 Hz, HR, +/-2 g) and mag (75 Hz, +/-1.3 G, continuous). */
+/** @brief Read the LSM303D WHO_AM_I register (expect 0x49). */
+ER imu_who_am_i(uint8_t *p_id);
+
+/**
+ * @brief Check WHO_AM_I, then configure accel (100 Hz, +/-2 g) and mag
+ * (50 Hz high resolution, +/-2 gauss, continuous).
+ * @return E_NOEXS if the chip is not an LSM303D.
+ */
 ER imu_init(void);
 
 /** @brief Read one accel + mag sample. */

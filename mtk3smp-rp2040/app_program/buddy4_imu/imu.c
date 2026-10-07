@@ -1,6 +1,6 @@
 /**
  * @file imu.c
- * @brief Buddy 4: polled I2C1 master and LSM303DLHC access.
+ * @brief Buddy 4: polled I2C1 master and LSM303D access.
  *
  * The RP2040 I2C block is a Synopsys DW_apb_i2c. This driver polls its
  * status registers; timeouts use the kernel clock (1 ms tick), because the
@@ -63,22 +63,26 @@
 #define I2C_MAX_READ             16u
 
 /*----------------------------------------------------------------------------
- * LSM303DLHC registers
+ * LSM303D registers (accel and mag share one address)
  *---------------------------------------------------------------------------*/
-#define LSM_CTRL_REG1_A          0x20u
-#define LSM_CTRL_REG4_A          0x23u
-#define LSM_OUT_X_L_A            0x28u
-#define LSM_AUTO_INC             0x80u   /* accel: set MSB of reg for burst */
-#define LSM_CRA_REG_M            0x00u
-#define LSM_CRB_REG_M            0x01u
-#define LSM_MR_REG_M             0x02u
-#define LSM_OUT_X_H_M            0x03u   /* order: X_H X_L Z_H Z_L Y_H Y_L */
+#define LSM_WHO_AM_I             0x0Fu
+#define LSM_OUT_X_L_M            0x08u   /* mag X, Y, Z little-endian */
+#define LSM_CTRL1                0x20u
+#define LSM_CTRL2                0x21u
+#define LSM_CTRL5                0x24u
+#define LSM_CTRL6                0x25u
+#define LSM_CTRL7                0x26u
+#define LSM_OUT_X_L_A            0x28u   /* accel X, Y, Z little-endian */
+#define LSM_AUTO_INC             0x80u   /* set MSB of reg for burst reads */
 
-#define LSM_A_100HZ_XYZ          0x57u   /* ODR 100 Hz, normal, X/Y/Z on */
-#define LSM_A_HR_2G              0x08u   /* +/-2 g, high resolution */
-#define LSM_M_75HZ               0x18u   /* DO = 75 Hz */
-#define LSM_M_GAIN_1_3           0x20u   /* +/-1.3 gauss */
-#define LSM_M_CONTINUOUS         0x00u
+#define LSM_A_100HZ_XYZ          0x67u   /* AODR 100 Hz, X/Y/Z on */
+#define LSM_A_2G                 0x00u   /* +/-2 g, 773 Hz anti-alias */
+#define LSM_M_HIRES_50HZ         0x70u   /* M_RES high, M_ODR 50 Hz, temp off */
+#define LSM_M_2GAUSS             0x00u   /* +/-2 gauss */
+#define LSM_M_CONTINUOUS         0x00u   /* MD = 00 */
+
+/* +/-2 g: 0.061 mg/LSB */
+#define LSM_A_UG_PER_LSB         61L
 
 /*----------------------------------------------------------------------------
  * I2C1
@@ -269,32 +273,54 @@ i2c1_read_regs(uint8_t addr, uint8_t reg, uint8_t *p_buf, uint32_t n)
 }
 
 /*----------------------------------------------------------------------------
- * LSM303DLHC
+ * LSM303D
  *---------------------------------------------------------------------------*/
+ER
+imu_who_am_i(uint8_t *p_id)
+{
+    return i2c1_read_regs(IMU_ADDR, LSM_WHO_AM_I, p_id, 1u);
+}
+
 ER
 imu_init(void)
 {
     ER err;
+    uint8_t id;
 
-    err = i2c1_write_reg(IMU_ACCEL_ADDR, LSM_CTRL_REG1_A, LSM_A_100HZ_XYZ);
+    err = imu_who_am_i(&id);
+    if ((E_OK == err) && (IMU_WHO_AM_I_VALUE != id))
+    {
+        err = E_NOEXS;
+    }
+
     if (E_OK == err)
     {
-        err = i2c1_write_reg(IMU_ACCEL_ADDR, LSM_CTRL_REG4_A, LSM_A_HR_2G);
+        err = i2c1_write_reg(IMU_ADDR, LSM_CTRL1, LSM_A_100HZ_XYZ);
     }
     if (E_OK == err)
     {
-        err = i2c1_write_reg(IMU_MAG_ADDR, LSM_CRA_REG_M, LSM_M_75HZ);
+        err = i2c1_write_reg(IMU_ADDR, LSM_CTRL2, LSM_A_2G);
     }
     if (E_OK == err)
     {
-        err = i2c1_write_reg(IMU_MAG_ADDR, LSM_CRB_REG_M, LSM_M_GAIN_1_3);
+        err = i2c1_write_reg(IMU_ADDR, LSM_CTRL5, LSM_M_HIRES_50HZ);
     }
     if (E_OK == err)
     {
-        err = i2c1_write_reg(IMU_MAG_ADDR, LSM_MR_REG_M, LSM_M_CONTINUOUS);
+        err = i2c1_write_reg(IMU_ADDR, LSM_CTRL6, LSM_M_2GAUSS);
+    }
+    if (E_OK == err)
+    {
+        err = i2c1_write_reg(IMU_ADDR, LSM_CTRL7, LSM_M_CONTINUOUS);
     }
 
     return err;
+}
+
+static int16_t
+le16(const uint8_t *p)
+{
+    return (int16_t)((uint16_t)p[1] << 8 | p[0]);
 }
 
 ER
@@ -309,27 +335,25 @@ imu_read_raw(imu_raw_t *p_raw)
         return E_PAR;
     }
 
-    err = i2c1_read_regs(IMU_ACCEL_ADDR, LSM_OUT_X_L_A | LSM_AUTO_INC, a, 6u);
+    err = i2c1_read_regs(IMU_ADDR, LSM_OUT_X_L_A | LSM_AUTO_INC, a, 6u);
     if (E_OK != err)
     {
         return err;
     }
 
-    err = i2c1_read_regs(IMU_MAG_ADDR, LSM_OUT_X_H_M, m, 6u);
+    err = i2c1_read_regs(IMU_ADDR, LSM_OUT_X_L_M | LSM_AUTO_INC, m, 6u);
     if (E_OK != err)
     {
         return err;
     }
 
-    /* Accel: little-endian, 12-bit left-justified -> mg at +/-2 g HR */
-    p_raw->ax = (int16_t)((int16_t)((uint16_t)a[1] << 8 | a[0]) >> 4);
-    p_raw->ay = (int16_t)((int16_t)((uint16_t)a[3] << 8 | a[2]) >> 4);
-    p_raw->az = (int16_t)((int16_t)((uint16_t)a[5] << 8 | a[4]) >> 4);
+    p_raw->ax = (int16_t)(((int32_t)le16(&a[0]) * LSM_A_UG_PER_LSB) / 1000L);
+    p_raw->ay = (int16_t)(((int32_t)le16(&a[2]) * LSM_A_UG_PER_LSB) / 1000L);
+    p_raw->az = (int16_t)(((int32_t)le16(&a[4]) * LSM_A_UG_PER_LSB) / 1000L);
 
-    /* Mag: big-endian, register order X, Z, Y */
-    p_raw->mx = (int16_t)((uint16_t)m[0] << 8 | m[1]);
-    p_raw->mz = (int16_t)((uint16_t)m[2] << 8 | m[3]);
-    p_raw->my = (int16_t)((uint16_t)m[4] << 8 | m[5]);
+    p_raw->mx = le16(&m[0]);
+    p_raw->my = le16(&m[2]);
+    p_raw->mz = le16(&m[4]);
 
     return E_OK;
 }
