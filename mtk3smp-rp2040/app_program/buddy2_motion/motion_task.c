@@ -417,7 +417,14 @@ pi_step(wheel_pi_t *p_pi, int32_t count_now, uint32_t dt_ms,
 
     err = p_pi->setpoint_eps - p_pi->meas_eps;
 
-    p_pi->integ_x10 += (err * PID_KI_X1000) / 1000L;
+    /* Integrate only once the setpoint has stopped slewing. While it ramps,
+     * the wheel always lags it, and integrating that lag wound the integral
+     * up, giving ~7 % overshoot that took ~0.5 s to bleed off (lifted step
+     * test, 2026-10-07). Feed-forward carries the ramp instead. */
+    if (p_pi->setpoint_eps == p_pi->target_eps)
+    {
+        p_pi->integ_x10 += (err * PID_KI_X1000) / 1000L;
+    }
     p_pi->integ_x10 = clamp_i32(p_pi->integ_x10, -PID_I_LIMIT_X10, PID_I_LIMIT_X10);
 
     out = (p_pi->setpoint_eps * 100L) / ff_eps_per_pct_x10

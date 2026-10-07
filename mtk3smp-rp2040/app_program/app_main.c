@@ -674,9 +674,10 @@ LOCAL void motion_test_pi_step(void)
     static const int16_t fwd_steps[] = { 300, 500, 150 };
     static const int16_t rev_steps[] = { -300 };
 
-    tm_printf((UB *)"\n[TEST] PI step response: keep the wheels LIFTED\n");
-    tm_printf((UB *)"[TEST] Starting in 5 s\n");
-    tk_dly_tsk(5000);
+    tm_printf((UB *)"\n[TEST] PI step response, lifted or on the floor\n");
+    tm_printf((UB *)"[TEST] On the floor: ~1.6 m forward then ~0.5 m back\n");
+    tm_printf((UB *)"[TEST] Starting in 10 s\n");
+    tk_dly_tsk(10000);
 
     motion_pi_steps("fwd", fwd_steps, 3);
     motion_pi_steps("rev", rev_steps, 1);
