@@ -550,6 +550,9 @@ LOCAL T_CFLG cflg = {
  *                            mean/spread/misses per point, linear fit.
  *   SERVO_TEST_JOG         - Buddy 5 step 2: jog the scan servo with keys
  *                            and mark centre and the safe limits.
+ *   SERVO_TEST_MAP         - Buddy 5 step 3: sweep a narrow target, turn the
+ *                            car a measured angle, sweep again: us/deg,
+ *                            window in degrees and beam width.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -565,9 +568,10 @@ LOCAL T_CFLG cflg = {
 #define IMU_TEST_TERRAIN         11
 #define ULTRA_TEST_RANGE         12
 #define SERVO_TEST_JOG           13
+#define SERVO_TEST_MAP           14
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         SERVO_TEST_JOG
+#define MOTION_TEST_MODE         SERVO_TEST_MAP
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -615,6 +619,14 @@ LOCAL T_CFLG cflg = {
 #define SERVO_JOG_START_US       1500  /* nominal servo neutral */
 #define SERVO_JOG_SMALL_US       10
 #define SERVO_JOG_BIG_US         50
+
+#define MAP_STEP_US              10
+#define MAP_SETTLE_MS            120
+#define MAP_TARGET_CM            25
+#define MAP_NEAR_CM              40    /* closer than this = the target */
+#define MAP_TURN_DEG             15
+#define MAP_TURN_MM_S            50
+#define MAP_TURN_BRAKE_EDGES     8
 
 #define DIST_PAUSE_S             10
 
@@ -1944,6 +1956,168 @@ LOCAL void servo_test_jog(void)
     }
     tm_printf((UB *)"\n=== Servo jog complete (servo relaxed) ===\n");
 }
+#elif MOTION_TEST_MODE == SERVO_TEST_MAP
+/* Buddy 5 step 3: what the scanning sensor actually sees.
+   Sweep 1: range at every 10 us across the safe window with a narrow
+   target in front. The stretch where the target is seen gives the beam
+   width (in us); its middle is where the target is.
+   Then the car turns left on the spot by a measured angle (encoders,
+   validated against the compass) and sweeps again: the target's shift in
+   us divided by the angle turned is the servo's us per degree. */
+LOCAL INT map_median3(void)
+{
+    UW e;
+    INT v[3];
+    INT n = 0;
+    INT i, t;
+
+    for(i = 0; i < 3; i++) {
+        if(E_OK == ultrasonic_read_us(&e)) {
+            v[n++] = (INT)ultrasonic_us_to_mm(e);
+        }
+        tk_dly_tsk(US_PERIOD_MS);
+    }
+    if(0 == n) {
+        return -1;
+    }
+    if(n < 3) {
+        return v[0];
+    }
+    if(v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    if(v[1] > v[2]) { t = v[1]; v[1] = v[2]; v[2] = t; }
+    if(v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    return v[1];
+}
+
+/* Sweep right to left. Prints every step; returns the middle pulse of the
+   stretch seen within near_mm, and its width, or -1 if never seen. */
+LOCAL INT map_sweep(const char *name, INT near_mm, INT *p_width_us)
+{
+    INT pulse, mm;
+    INT first = -1;
+    INT last = -1;
+
+    tm_printf((UB *)"\n[MAP] %s: pulse_us,range_mm (target counted if < %d mm)\n",
+              name, near_mm);
+    (void)servo_set_us(SERVO_RIGHT_US);
+    tk_dly_tsk(400);
+    for(pulse = SERVO_RIGHT_US; pulse <= (INT)SERVO_LEFT_US; pulse += MAP_STEP_US) {
+        (void)servo_set_us((uint16_t)pulse);
+        tk_dly_tsk(MAP_SETTLE_MS);
+        mm = map_median3();
+        tm_printf((UB *)"[MAP] %d,%d\n", pulse, mm);
+        if((mm > 0) && (mm < near_mm)) {
+            if(first < 0) {
+                first = pulse;
+            }
+            last = pulse;
+        }
+    }
+    (void)servo_set_us(SERVO_CENTRE_US);
+
+    if(first < 0) {
+        tm_printf((UB *)"[MAP] %s: target never seen\n", name);
+        *p_width_us = 0;
+        return -1;
+    }
+    *p_width_us = last - first;
+    tm_printf((UB *)"[MAP] %s: target seen from %d to %d us (span %d us), middle %d us"
+              " (%d us from centre)\n", name, first, last, last - first,
+              (first + last) / 2, ((first + last) / 2) - (INT)SERVO_CENTRE_US);
+    return (first + last) / 2;
+}
+
+LOCAL INT map_dist_avg_abs(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count < 0) ? -l.hw_count : l.hw_count)
+                + ((r.hw_count < 0) ? -r.hw_count : r.hw_count)) / 2);
+}
+
+LOCAL void servo_test_map(void)
+{
+    INT mid1, mid2, w1, w2, key, target_edges, edges, turned_cdeg, s;
+    INT near_mm;
+    INT per10;
+    UW echo_us;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+
+    tm_printf((UB *)"\n[MAP] Servo window %d..%d us, centre %d us (left = larger pulse).\n",
+              SERVO_RIGHT_US, SERVO_LEFT_US, SERVO_CENTRE_US);
+    tm_printf((UB *)"[MAP] Car ON THE FLOOR. Put a NARROW, tall target (bottle, can,\n");
+    tm_printf((UB *)"[MAP] table leg) about %d cm straight ahead of the sensor, nothing\n",
+              MAP_TARGET_CM);
+    tm_printf((UB *)"[MAP] else within ~%d cm. Leave ~20 cm clear around the car: it\n",
+              MAP_NEAR_CM);
+    tm_printf((UB *)"[MAP] will turn on the spot by about %d deg. Press a key to start.\n",
+              MAP_TURN_DEG);
+
+    console_flush_input();
+    key = -1;
+    while(key < 0) {
+        tk_dly_tsk(500);
+        if(E_OK == ultrasonic_read_us(&echo_us)) {
+            tm_printf((UB *)"[MAP]   centre reads %d mm\n", (INT)ultrasonic_us_to_mm(echo_us));
+        }
+        key = console_try_getc();
+    }
+
+    near_mm = MAP_NEAR_CM * 10;
+    mid1 = map_sweep("Sweep 1 (car facing the target)", near_mm, &w1);
+
+    /* Turn left on the spot: left wheel back, right wheel forward. One
+       degree is pi x 114 mm / 360 of wheel travel = 0.995 mm. */
+    target_edges = (INT)(((float)MAP_TURN_DEG * 3.14159265f * (float)HDG_TRACK_MM * 1000.0f)
+                         / (360.0f * (float)SWEEP_UM_PER_EDGE));
+    tm_printf((UB *)"\n[MAP] turning left %d deg (%d edges per wheel)...\n",
+              MAP_TURN_DEG, target_edges);
+    tk_dly_tsk(500);
+    motion_reset_odometry();
+    motion_set_velocity(-MAP_TURN_MM_S, MAP_TURN_MM_S);
+    for(s = 0; s < 400; s++) {
+        if(map_dist_avg_abs() >= (target_edges - MAP_TURN_BRAKE_EDGES)) {
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(1000);
+
+    edges = map_dist_avg_abs();
+    turned_cdeg = (INT)(((float)edges * (float)SWEEP_UM_PER_EDGE * 36000.0f)
+                        / (3.14159265f * (float)HDG_TRACK_MM * 1000.0f));
+    tm_printf((UB *)"[MAP] turned %d.%02d deg by the encoders (%d edges)\n",
+              turned_cdeg / 100, turned_cdeg % 100, edges);
+
+    mid2 = map_sweep("Sweep 2 (car turned left)", near_mm, &w2);
+
+    tm_printf((UB *)"\n[MAP] Result:\n");
+    if((mid1 > 0) && (mid2 > 0) && (turned_cdeg > 0)) {
+        per10 = ((mid1 - mid2) * 1000) / turned_cdeg;
+        tm_printf((UB *)"[MAP]   target moved %d us for %d.%02d deg -> %d.%d us per degree\n",
+                  mid2 - mid1, turned_cdeg / 100, turned_cdeg % 100,
+                  per10 / 10, ((per10 < 0) ? -per10 : per10) % 10);
+        if(mid1 != mid2) {
+            tm_printf((UB *)"[MAP]   window: left %d deg, right %d deg from centre\n",
+                      (((INT)SERVO_LEFT_US - (INT)SERVO_CENTRE_US) * turned_cdeg)
+                          / ((mid1 - mid2) * 100),
+                      (((INT)SERVO_RIGHT_US - (INT)SERVO_CENTRE_US) * turned_cdeg)
+                          / ((mid1 - mid2) * 100));
+            tm_printf((UB *)"[MAP]   beam: target seen over %d us and %d us -> about %d deg wide\n",
+                      w1, w2, (((w1 + w2) / 2) * turned_cdeg) / ((mid1 - mid2) * 100));
+        }
+    } else {
+        tm_printf((UB *)"[MAP]   not enough to compute (target missing in a sweep)\n");
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n=== Servo map complete (servo relaxed) ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -2132,6 +2306,8 @@ EXPORT INT usermain(void)
     ultra_test_range();
 #elif MOTION_TEST_MODE == SERVO_TEST_JOG
     servo_test_jog();
+#elif MOTION_TEST_MODE == SERVO_TEST_MAP
+    servo_test_map();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

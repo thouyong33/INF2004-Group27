@@ -16,6 +16,12 @@
 #define SERVO_ABS_MIN_US   500u    /* hard clamp, the servo's widest pulse */
 #define SERVO_ABS_MAX_US   2500u
 
+/* Measured with the jog test (2026-10-09): larger pulse turns the sensor
+ * LEFT. Each limit was marked a step before the mount touches a plate. */
+#define SERVO_CENTRE_US    1540u   /* sensor straight ahead */
+#define SERVO_LEFT_US      1720u   /* left limit, +180 us */
+#define SERVO_RIGHT_US     1340u   /* right limit, -200 us */
+
 /** @brief Start 50 Hz PWM on GP12 and move to start_us. */
 void servo_init(uint16_t start_us);
 
