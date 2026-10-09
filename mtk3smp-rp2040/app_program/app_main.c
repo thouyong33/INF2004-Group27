@@ -54,6 +54,7 @@
 #include "buddy4_imu/imu.h"
 #include "buddy4_imu/terrain.h"
 #include "buddy5_ultrasonic/ultrasonic.h"
+#include "common/console_in.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -603,8 +604,7 @@ LOCAL T_CFLG cflg = {
 #define TERR_DIST_MM             600
 #define TERR_MAX_EVENTS          8
 
-#define US_POINTS                5
-#define US_MOVE_S                10    /* time to place the target */
+#define US_POINTS                6
 #define US_SAMPLES               30
 #define US_PERIOD_MS             70    /* datasheet: >= 60 ms between pings */
 
@@ -1723,43 +1723,62 @@ LOCAL UW us_isqrt(UW v)
 
 LOCAL void ultra_test_range(void)
 {
-    static const INT true_mm[US_POINTS] = { 100, 200, 300, 500, 1000 };
+    /* Point 0 has no target: it shows what the sensor sees by itself
+       (floor, table edge, clutter), which caps the useful range. */
+    static const INT true_mm[US_POINTS] = { 0, 100, 200, 300, 500, 1000 };
     static W mean_mm[US_POINTS];
     static BOOL have[US_POINTS];
     UW t0, t1, echo_us;
-    INT p, s, i, ok, miss;
-    W sum, sum_sq, mn, mx, mm, var;
+    INT p, i, ok, miss, key;
+    W mn, mx, mm;
+    float sum, sum_sq, mean_f, var_f;
     float sx, sy, sxx, sxy, n_f, a, b;
     INT n_fit;
+    UW last_live;
 
     ultrasonic_init();
 
-    /* Check the timer really runs at 1 MHz against the kernel clock */
     t0 = us_now();
     tk_dly_tsk(500);
     t1 = us_now();
     tm_printf((UB *)"\n[US] timer check: %u us over a 500 ms kernel delay"
               " (expect ~500000-502000)\n", (unsigned int)(t1 - t0));
 
-    tm_printf((UB *)"[US] Range calibration. Use a FLAT, hard target (box side, book,\n");
-    tm_printf((UB *)"[US] wall) square to the sensor, measured from the sensor's front face.\n");
+    tm_printf((UB *)"[US] Range calibration, paced by you: for each point, place the\n");
+    tm_printf((UB *)"[US] target, check the live reading, then press any key (e.g. ENTER).\n");
+    tm_printf((UB *)"[US] Lay a tape on the floor from the sensor's FRONT FACE and slide a\n");
+    tm_printf((UB *)"[US] FLAT, hard target (box side, book) along it, square to the sensor.\n");
+    tm_printf((UB *)"[US] Keep the area around the beam clear.\n");
 
     for(p = 0; p < US_POINTS; p++) {
         have[p] = FALSE;
-        tm_printf((UB *)"\n[US] Point %d/%d: put the target at %d cm\n", p + 1, US_POINTS,
-                  true_mm[p] / 10);
-        for(s = US_MOVE_S; s > 0; s--) {
-            if(E_OK == ultrasonic_read_us(&echo_us)) {
-                tm_printf((UB *)"[US]   measuring in %d s   (now reads %d mm)\n", s,
-                          (INT)ultrasonic_us_to_mm(echo_us));
-            } else {
-                tm_printf((UB *)"[US]   measuring in %d s   (now: no echo)\n", s);
-            }
-            tk_dly_tsk(1000);
+        if(0 == true_mm[p]) {
+            tm_printf((UB *)"\n[US] Point %d/%d: NO target - clear everything in front,"
+                      " then press a key\n", p + 1, US_POINTS);
+        } else {
+            tm_printf((UB *)"\n[US] Point %d/%d: target at %d cm, then press a key\n",
+                      p + 1, US_POINTS, true_mm[p] / 10);
         }
 
-        sum = 0;
-        sum_sq = 0;
+        console_flush_input();
+        last_live = 0;
+        key = -1;
+        while(key < 0) {
+            if((us_now() - last_live) > 700000u) {
+                last_live = us_now();
+                if(E_OK == ultrasonic_read_us(&echo_us)) {
+                    tm_printf((UB *)"[US]   live: %d mm\n", (INT)ultrasonic_us_to_mm(echo_us));
+                } else {
+                    tm_printf((UB *)"[US]   live: no echo\n");
+                }
+            }
+            tk_dly_tsk(50);
+            key = console_try_getc();
+        }
+        tm_printf((UB *)"[US]   measuring, hold still...\n");
+
+        sum = 0.0f;
+        sum_sq = 0.0f;
         mn = 0x7FFFFFFF;
         mx = 0;
         ok = 0;
@@ -1767,8 +1786,8 @@ LOCAL void ultra_test_range(void)
         for(i = 0; i < US_SAMPLES; i++) {
             if(E_OK == ultrasonic_read_us(&echo_us)) {
                 mm = ultrasonic_us_to_mm(echo_us);
-                sum += mm;
-                sum_sq += mm * mm;
+                sum += (float)mm;
+                sum_sq += (float)mm * (float)mm;
                 if(mm < mn) mn = mm;
                 if(mm > mx) mx = mm;
                 ok++;
@@ -1779,19 +1798,22 @@ LOCAL void ultra_test_range(void)
         }
 
         if(0 == ok) {
-            tm_printf((UB *)"[US]   no echoes at all (%d misses) - point skipped\n", miss);
+            tm_printf((UB *)"[US]   no echoes at all (%d misses)%s\n", miss,
+                      (0 == true_mm[p]) ? " - nothing in range: good" : " - point skipped");
             continue;
         }
-        mean_mm[p] = sum / ok;
-        var = (sum_sq / ok) - (mean_mm[p] * mean_mm[p]);
-        have[p] = TRUE;
-        tm_printf((UB *)"[US]   true %4d mm: mean %4d  min %4d  max %4d  sd %d mm"
-                  "  misses %d/%d\n",
-                  true_mm[p], (INT)mean_mm[p], (INT)mn, (INT)mx,
-                  (INT)us_isqrt((var > 0) ? (UW)var : 0), miss, US_SAMPLES);
+        mean_f = sum / (float)ok;
+        var_f = (sum_sq / (float)ok) - (mean_f * mean_f);
+        mean_mm[p] = (W)(mean_f + 0.5f);
+        have[p] = (0 != true_mm[p]);
+        tm_printf((UB *)"[US]   %s%4d mm: mean %4d  min %4d  max %4d  sd %d mm  misses %d/%d\n",
+                  (0 == true_mm[p]) ? "no target, sees something at " : "true ",
+                  (0 == true_mm[p]) ? (INT)mean_mm[p] : true_mm[p],
+                  (INT)mean_mm[p], (INT)mn, (INT)mx,
+                  (INT)us_isqrt((var_f > 0.0f) ? (UW)var_f : 0u), miss, US_SAMPLES);
     }
 
-    /* Least-squares fit true = a x measured + b */
+    /* Least-squares fit true = a x measured + b over the target points */
     sx = sy = sxx = sxy = 0.0f;
     n_fit = 0;
     for(p = 0; p < US_POINTS; p++) {
@@ -1812,8 +1834,10 @@ LOCAL void ultra_test_range(void)
                   (INT)((b < 0.0f) ? -b : b));
         for(p = 0; p < US_POINTS; p++) {
             if(have[p]) {
-                tm_printf((UB *)"[US]   %4d mm: corrected %4d mm (error %d mm)\n",
-                          true_mm[p], (INT)((a * (float)mean_mm[p]) + b),
+                tm_printf((UB *)"[US]   %4d mm: raw %4d (raw error %d)  corrected %4d"
+                          " (error %d mm)\n",
+                          true_mm[p], (INT)mean_mm[p], (INT)mean_mm[p] - true_mm[p],
+                          (INT)((a * (float)mean_mm[p]) + b),
                           (INT)((a * (float)mean_mm[p]) + b) - true_mm[p]);
             }
         }
