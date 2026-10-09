@@ -53,6 +53,7 @@
 #include "buddy2_motion/motion_task.h"
 #include "buddy4_imu/imu.h"
 #include "buddy4_imu/terrain.h"
+#include "buddy5_ultrasonic/ultrasonic.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -543,6 +544,8 @@ LOCAL T_CFLG cflg = {
  *                            roll, vertical accel and distance.
  *   IMU_TEST_TERRAIN       - Buddy 4 step 7: the real-time hump and
  *                            collision detector over flat, small, tall.
+ *   ULTRA_TEST_RANGE       - Buddy 5 step 1: HC-SR04 at 10/20/30/50/100 cm,
+ *                            mean/spread/misses per point, linear fit.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -556,9 +559,10 @@ LOCAL T_CFLG cflg = {
 #define IMU_TEST_HEADING         9
 #define IMU_TEST_HUMP_LOG        10
 #define IMU_TEST_TERRAIN         11
+#define ULTRA_TEST_RANGE         12
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_TERRAIN
+#define MOTION_TEST_MODE         ULTRA_TEST_RANGE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -598,6 +602,11 @@ LOCAL T_CFLG cflg = {
 #define TERR_SPEED_MM_S          200   /* validated speed for hump height */
 #define TERR_DIST_MM             600
 #define TERR_MAX_EVENTS          8
+
+#define US_POINTS                5
+#define US_MOVE_S                10    /* time to place the target */
+#define US_SAMPLES               30
+#define US_PERIOD_MS             70    /* datasheet: >= 60 ms between pings */
 
 #define DIST_PAUSE_S             10
 
@@ -1688,6 +1697,132 @@ LOCAL void imu_test_terrain(void)
 
     tm_printf((UB *)"\n=== Terrain detector test complete ===\n");
 }
+#elif MOTION_TEST_MODE == ULTRA_TEST_RANGE
+/* Buddy 5 step 1: range calibration against a flat target at known
+   distances. Uses the uncalibrated speed-of-sound conversion, then fits
+   true = scale x measured + offset over all the distances. Motors off. */
+LOCAL UW us_isqrt(UW v)
+{
+    UW r = 0;
+    UW bit = 1UL << 30;
+
+    while(bit > v) {
+        bit >>= 2;
+    }
+    while(bit != 0) {
+        if(v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    return r;
+}
+
+LOCAL void ultra_test_range(void)
+{
+    static const INT true_mm[US_POINTS] = { 100, 200, 300, 500, 1000 };
+    static W mean_mm[US_POINTS];
+    static BOOL have[US_POINTS];
+    UW t0, t1, echo_us;
+    INT p, s, i, ok, miss;
+    W sum, sum_sq, mn, mx, mm, var;
+    float sx, sy, sxx, sxy, n_f, a, b;
+    INT n_fit;
+
+    ultrasonic_init();
+
+    /* Check the timer really runs at 1 MHz against the kernel clock */
+    t0 = us_now();
+    tk_dly_tsk(500);
+    t1 = us_now();
+    tm_printf((UB *)"\n[US] timer check: %u us over a 500 ms kernel delay"
+              " (expect ~500000-502000)\n", (unsigned int)(t1 - t0));
+
+    tm_printf((UB *)"[US] Range calibration. Use a FLAT, hard target (box side, book,\n");
+    tm_printf((UB *)"[US] wall) square to the sensor, measured from the sensor's front face.\n");
+
+    for(p = 0; p < US_POINTS; p++) {
+        have[p] = FALSE;
+        tm_printf((UB *)"\n[US] Point %d/%d: put the target at %d cm\n", p + 1, US_POINTS,
+                  true_mm[p] / 10);
+        for(s = US_MOVE_S; s > 0; s--) {
+            if(E_OK == ultrasonic_read_us(&echo_us)) {
+                tm_printf((UB *)"[US]   measuring in %d s   (now reads %d mm)\n", s,
+                          (INT)ultrasonic_us_to_mm(echo_us));
+            } else {
+                tm_printf((UB *)"[US]   measuring in %d s   (now: no echo)\n", s);
+            }
+            tk_dly_tsk(1000);
+        }
+
+        sum = 0;
+        sum_sq = 0;
+        mn = 0x7FFFFFFF;
+        mx = 0;
+        ok = 0;
+        miss = 0;
+        for(i = 0; i < US_SAMPLES; i++) {
+            if(E_OK == ultrasonic_read_us(&echo_us)) {
+                mm = ultrasonic_us_to_mm(echo_us);
+                sum += mm;
+                sum_sq += mm * mm;
+                if(mm < mn) mn = mm;
+                if(mm > mx) mx = mm;
+                ok++;
+            } else {
+                miss++;
+            }
+            tk_dly_tsk(US_PERIOD_MS);
+        }
+
+        if(0 == ok) {
+            tm_printf((UB *)"[US]   no echoes at all (%d misses) - point skipped\n", miss);
+            continue;
+        }
+        mean_mm[p] = sum / ok;
+        var = (sum_sq / ok) - (mean_mm[p] * mean_mm[p]);
+        have[p] = TRUE;
+        tm_printf((UB *)"[US]   true %4d mm: mean %4d  min %4d  max %4d  sd %d mm"
+                  "  misses %d/%d\n",
+                  true_mm[p], (INT)mean_mm[p], (INT)mn, (INT)mx,
+                  (INT)us_isqrt((var > 0) ? (UW)var : 0), miss, US_SAMPLES);
+    }
+
+    /* Least-squares fit true = a x measured + b */
+    sx = sy = sxx = sxy = 0.0f;
+    n_fit = 0;
+    for(p = 0; p < US_POINTS; p++) {
+        if(have[p]) {
+            sx += (float)mean_mm[p];
+            sy += (float)true_mm[p];
+            sxx += (float)mean_mm[p] * (float)mean_mm[p];
+            sxy += (float)mean_mm[p] * (float)true_mm[p];
+            n_fit++;
+        }
+    }
+    if(n_fit >= 2) {
+        n_f = (float)n_fit;
+        a = ((n_f * sxy) - (sx * sy)) / ((n_f * sxx) - (sx * sx));
+        b = (sy - (a * sx)) / n_f;
+        tm_printf((UB *)"\n[US] fit: true = %d/1000 x measured %c %d mm\n",
+                  (INT)(a * 1000.0f), (b < 0.0f) ? '-' : '+',
+                  (INT)((b < 0.0f) ? -b : b));
+        for(p = 0; p < US_POINTS; p++) {
+            if(have[p]) {
+                tm_printf((UB *)"[US]   %4d mm: corrected %4d mm (error %d mm)\n",
+                          true_mm[p], (INT)((a * (float)mean_mm[p]) + b),
+                          (INT)((a * (float)mean_mm[p]) + b) - true_mm[p]);
+            }
+        }
+    } else {
+        tm_printf((UB *)"\n[US] not enough points for a fit\n");
+    }
+
+    tm_printf((UB *)"\n=== Ultrasonic range test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -1872,6 +2007,8 @@ EXPORT INT usermain(void)
     imu_test_hump_log();
 #elif MOTION_TEST_MODE == IMU_TEST_TERRAIN
     imu_test_terrain();
+#elif MOTION_TEST_MODE == ULTRA_TEST_RANGE
+    ultra_test_range();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
