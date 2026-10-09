@@ -553,6 +553,8 @@ LOCAL T_CFLG cflg = {
  *   SERVO_TEST_MAP         - Buddy 5 step 3: sweep a narrow target, turn the
  *                            car a measured angle, sweep again: us/deg,
  *                            window in degrees and beam width.
+ *   ULTRA_TEST_BEAM        - Buddy 5 step 3b: servo fixed, car turns +/-45
+ *                            deg past a narrow target at 20/35/50 cm.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -569,9 +571,10 @@ LOCAL T_CFLG cflg = {
 #define ULTRA_TEST_RANGE         12
 #define SERVO_TEST_JOG           13
 #define SERVO_TEST_MAP           14
+#define ULTRA_TEST_BEAM          15
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         SERVO_TEST_MAP
+#define MOTION_TEST_MODE         ULTRA_TEST_BEAM
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -627,6 +630,12 @@ LOCAL T_CFLG cflg = {
 #define MAP_TURN_DEG             15
 #define MAP_TURN_MM_S            50
 #define MAP_TURN_BRAKE_EDGES     8
+
+#define BEAM_LOG_LEN             120
+#define BEAM_HALF_DEG            45
+#define BEAM_TURN_MM_S           60
+#define BEAM_SCAN_MM_S           25    /* ~25 deg/s: ~2 deg per ping */
+#define BEAM_BRAKE_CDEG          150
 
 #define DIST_PAUSE_S             10
 
@@ -2118,6 +2127,146 @@ LOCAL void servo_test_map(void)
     servo_relax();
     tm_printf((UB *)"\n=== Servo map complete (servo relaxed) ===\n");
 }
+#elif MOTION_TEST_MODE == ULTRA_TEST_BEAM
+/* Buddy 5 step 3b: the sensor's real beam width.
+   The servo map showed a narrow target at 33 cm is seen across the whole
+   servo window (+/-16-18 deg) and still 15 deg off to the side, so the
+   beam is wider than the servo can sweep. Here the servo stays at centre
+   and the CAR turns instead (encoder angle, checked against the compass
+   to 0.2 %): from 45 deg right of the target to 45 deg left, pinging all
+   the way. The angles over which the target is seen give the beam width,
+   measured at 20, 35 and 50 cm. */
+typedef struct {
+    int16_t angle_cdeg;   /* car heading change, left positive */
+    int16_t range_mm;     /* -1 = no echo */
+} beam_sample_t;
+
+LOCAL beam_sample_t beam_log[BEAM_LOG_LEN];
+
+/* Signed turn since the last odometry reset, left positive, x0.01 deg.
+   On the spot each wheel travels pi x track / 360 per degree. */
+LOCAL INT beam_angle_cdeg(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((float)(r.hw_count - l.hw_count) * 0.5f * (float)SWEEP_UM_PER_EDGE * 36000.0f)
+                 / (3.14159265f * (float)HDG_TRACK_MM * 1000.0f));
+}
+
+/* Turn on the spot by deg (left positive) at speed mm/s, measured */
+LOCAL void beam_turn(INT deg, INT speed)
+{
+    INT start, target, a;
+    INT brake_cdeg = BEAM_BRAKE_CDEG;
+    INT i;
+
+    start = beam_angle_cdeg();
+    target = start + deg * 100;
+    if(deg > 0) {
+        motion_set_velocity((int16_t)-speed, (int16_t)speed);
+    } else {
+        motion_set_velocity((int16_t)speed, (int16_t)-speed);
+    }
+    for(i = 0; i < 2000; i++) {
+        a = beam_angle_cdeg();
+        if(((deg > 0) && (a >= target - brake_cdeg)) || ((deg < 0) && (a <= target + brake_cdeg))) {
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(700);
+}
+
+LOCAL void beam_pass(INT target_cm)
+{
+    INT n = 0;
+    INT i, key, mm, a;
+    INT near_mm;
+    INT seen_lo = 32767;
+    INT seen_hi = -32768;
+    UW e;
+
+    tm_printf((UB *)"\n[BEAM] Put the narrow target %d cm straight ahead of the sensor\n", target_cm);
+    tm_printf((UB *)"[BEAM] (nothing else within ~%d cm), then press a key.\n", target_cm + 20);
+    console_flush_input();
+    key = -1;
+    while(key < 0) {
+        tk_dly_tsk(600);
+        if(E_OK == ultrasonic_read_us(&e)) {
+            tm_printf((UB *)"[BEAM]   ahead: %d mm\n", (INT)ultrasonic_us_to_mm(e));
+        } else {
+            tm_printf((UB *)"[BEAM]   ahead: no echo\n");
+        }
+        key = console_try_getc();
+    }
+
+    motion_reset_odometry();
+    beam_turn(-BEAM_HALF_DEG, BEAM_TURN_MM_S);                /* face right of it */
+
+    motion_set_velocity((int16_t)-BEAM_SCAN_MM_S, (int16_t)BEAM_SCAN_MM_S);
+    while(n < BEAM_LOG_LEN) {
+        a = beam_angle_cdeg();
+        if(E_OK == ultrasonic_read_us(&e)) {
+            mm = (INT)ultrasonic_us_to_mm(e);
+        } else {
+            mm = -1;
+        }
+        beam_log[n].angle_cdeg = (int16_t)a;
+        beam_log[n].range_mm = (int16_t)mm;
+        n++;
+        if(a >= BEAM_HALF_DEG * 100) {
+            break;
+        }
+        tk_dly_tsk(US_PERIOD_MS);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(700);
+    beam_turn(-BEAM_HALF_DEG, BEAM_TURN_MM_S);                /* back to facing it */
+
+    /* The target counts if within 10 cm of where it was placed */
+    near_mm = target_cm * 10 + 100;
+    tm_printf((UB *)"\n[BEAM] %d cm: angle_cdeg,range_mm (left positive)\n", target_cm);
+    for(i = 0; i < n; i++) {
+        tm_printf((UB *)"[BEAM] %d,%d\n", beam_log[i].angle_cdeg, beam_log[i].range_mm);
+        if((beam_log[i].range_mm > 0) && (beam_log[i].range_mm < near_mm)) {
+            if(beam_log[i].angle_cdeg < seen_lo) seen_lo = beam_log[i].angle_cdeg;
+            if(beam_log[i].angle_cdeg > seen_hi) seen_hi = beam_log[i].angle_cdeg;
+        }
+    }
+    if(seen_hi >= seen_lo) {
+        tm_printf((UB *)"[BEAM] %d cm summary: target seen from %d to %d (x0.01 deg)"
+                  " -> beam about %d deg wide, centred %d deg\n",
+                  target_cm, seen_lo, seen_hi, (seen_hi - seen_lo) / 100,
+                  (seen_lo + seen_hi) / 200);
+    } else {
+        tm_printf((UB *)"[BEAM] %d cm summary: target never seen within %d mm\n",
+                  target_cm, near_mm);
+    }
+}
+
+LOCAL void ultra_test_beam(void)
+{
+    static const INT dists[3] = { 20, 35, 50 };
+    INT p;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+
+    tm_printf((UB *)"\n[BEAM] Beam width test. Servo held at centre; the CAR turns on the\n");
+    tm_printf((UB *)"[BEAM] spot from %d deg right to %d deg left of the target and back.\n",
+              BEAM_HALF_DEG, BEAM_HALF_DEG);
+    tm_printf((UB *)"[BEAM] Car on the floor, ~20 cm clear around it, open space beyond.\n");
+
+    for(p = 0; p < 3; p++) {
+        beam_pass(dists[p]);
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n=== Beam width test complete (servo relaxed) ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -2308,6 +2457,8 @@ EXPORT INT usermain(void)
     servo_test_jog();
 #elif MOTION_TEST_MODE == SERVO_TEST_MAP
     servo_test_map();
+#elif MOTION_TEST_MODE == ULTRA_TEST_BEAM
+    ultra_test_beam();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
