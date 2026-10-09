@@ -531,6 +531,9 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_ACCEL_6FACE   - Buddy 4 step 3: hold the car still in six
  *                            orientations (prompted); averages each and
  *                            prints per-axis offset and scale.
+ *   IMU_TEST_MAG_CAL       - Buddy 4 step 4: mag circle turned by hand
+ *                            (motors off), then spinning in place under
+ *                            PI (motors on); prints centre/radius of each.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -540,9 +543,10 @@ LOCAL T_CFLG cflg = {
 #define MOTION_TEST_PI_STEP      5
 #define IMU_TEST_BRINGUP         6
 #define IMU_TEST_ACCEL_6FACE     7
+#define IMU_TEST_MAG_CAL         8
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_ACCEL_6FACE
+#define MOTION_TEST_MODE         IMU_TEST_MAG_CAL
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -553,6 +557,13 @@ LOCAL T_CFLG cflg = {
 #define FACE_SAMPLES             100   /* averaged per face */
 #define FACE_SAMPLE_MS           20    /* 2 s per face */
 #define FACE_DOMINANT_MG         700   /* one axis must read > 0.7 g */
+
+#define MAG_SAMPLE_MS            20    /* mag ODR is 50 Hz */
+#define MAG_HAND_MS              20000
+#define MAG_SPIN_MM_S            100   /* wheel speed: ~100 deg/s on the spot */
+#define MAG_SPIN_SETTLE_MS       800
+#define MAG_SPIN_MS              12000 /* ~3 turns */
+#define MAG_TURN_UM              358142L /* pi x 114 mm track width */
 
 #define DIST_PAUSE_S             10
 
@@ -865,6 +876,161 @@ LOCAL void imu_test_accel_6face(void)
 
     tm_printf((UB *)"\n=== Accel 6-face calibration complete ===\n");
 }
+#elif MOTION_TEST_MODE == IMU_TEST_MAG_CAL
+/* Buddy 4 step 4: magnetometer hard-iron / soft-iron check.
+
+   Turning the car through 360 degrees on a flat floor traces a circle in
+   the mag X/Y readings. Its centre is the hard-iron offset (fields fixed to
+   the car: motor magnets, steel screws, the battery); the X/Y radii
+   differing is soft-iron distortion. Phase A turns the car by hand with the
+   motors off; phase B spins it in place under PI with the motors running.
+   If the two centres differ, the motor current itself bends the field and
+   heading must only be trusted with the motors in a known state. */
+typedef struct {
+    INT min[3];
+    INT max[3];
+    INT n;
+} mag_range_t;
+
+LOCAL void mag_range_reset(mag_range_t *p)
+{
+    INT a;
+
+    for(a = 0; a < 3; a++) {
+        p->min[a] = 32767;
+        p->max[a] = -32768;
+    }
+    p->n = 0;
+}
+
+/* Sample every MAG_SAMPLE_MS for dur_ms. No printing: phase B runs this
+   while the motors are under PI, and usermain outranks the motion task. */
+LOCAL void mag_collect(mag_range_t *p, INT dur_ms)
+{
+    INT t;
+    INT a;
+    INT v[3];
+    imu_raw_t s;
+
+    for(t = 0; t < dur_ms; t += MAG_SAMPLE_MS) {
+        if(E_OK == imu_read_cal(&s)) {
+            v[0] = s.mx;
+            v[1] = s.my;
+            v[2] = s.mz;
+            for(a = 0; a < 3; a++) {
+                if(v[a] < p->min[a]) p->min[a] = v[a];
+                if(v[a] > p->max[a]) p->max[a] = v[a];
+            }
+            p->n++;
+        }
+        tk_dly_tsk(MAG_SAMPLE_MS);
+    }
+}
+
+LOCAL void mag_report(const char *name, const mag_range_t *p)
+{
+    static const char axis_name[3] = { 'X', 'Y', 'Z' };
+    INT a;
+    INT rx, ry;
+
+    tm_printf((UB *)"[MAG] %s: %d samples\n", name, p->n);
+    for(a = 0; a < 3; a++) {
+        tm_printf((UB *)"[MAG]   %c: min=%6d max=%6d  centre=%6d  radius=%5d\n",
+                  axis_name[a], p->min[a], p->max[a],
+                  (p->max[a] + p->min[a]) / 2, (p->max[a] - p->min[a]) / 2);
+    }
+    rx = (p->max[0] - p->min[0]) / 2;
+    ry = (p->max[1] - p->min[1]) / 2;
+    tm_printf((UB *)"[MAG]   X/Y radius ratio = %d%% (100%% = no soft-iron distortion)\n",
+              (ry > 0) ? (rx * 100 / ry) : 0);
+}
+
+LOCAL void imu_test_mag_cal(void)
+{
+    static mag_range_t hand;
+    static mag_range_t spin;
+    enc_diag_t l, r;
+    imu_raw_t s;
+    W sum[3];
+    INT i, n_ok, dcx, dcy, rad, avg_edges, turns_x100;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[MAG] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    /* Check the accel calibration from step 3 */
+    tk_dly_tsk(200);
+    sum[0] = sum[1] = sum[2] = 0;
+    n_ok = 0;
+    for(i = 0; i < 25; i++) {
+        if(E_OK == imu_read_cal(&s)) {
+            sum[0] += s.ax;
+            sum[1] += s.ay;
+            sum[2] += s.az;
+            n_ok++;
+        }
+        tk_dly_tsk(20);
+    }
+    if(n_ok > 0) {
+        tm_printf((UB *)"\n[MAG] calibrated accel at rest = (%d, %d, %d) mg"
+                  " (expect about 0, 0, -1000 upright)\n",
+                  (INT)(sum[0] / n_ok), (INT)(sum[1] / n_ok), (INT)(sum[2] / n_ok));
+    }
+
+    /* Phase A: by hand, motors off */
+    mag_range_reset(&hand);
+    tm_printf((UB *)"\n[MAG] Phase A (motors OFF): keep the car flat on the table and\n");
+    tm_printf((UB *)"[MAG] turn it slowly by hand through 2 full turns in %d s.\n",
+              MAG_HAND_MS / 1000);
+    for(i = 5; i > 0; i--) {
+        tm_printf((UB *)"[MAG]   start turning in %d s\n", i);
+        tk_dly_tsk(1000);
+    }
+    tm_printf((UB *)"[MAG]   TURN NOW...\n");
+    mag_collect(&hand, MAG_HAND_MS);
+    tm_printf((UB *)"[MAG]   stop\n\n");
+    mag_report("Phase A, by hand, motors off", &hand);
+
+    /* Phase B: spin in place under PI, motors on */
+    tm_printf((UB *)"\n[MAG] Phase B (motors ON): put the car on the FLOOR with\n");
+    tm_printf((UB *)"[MAG] about 30 cm clear all round. It will spin on the spot.\n");
+    for(i = 10; i > 0; i--) {
+        tm_printf((UB *)"[MAG]   spinning in %d s\n", i);
+        tk_dly_tsk(1000);
+    }
+
+    mag_range_reset(&spin);
+    motion_reset_odometry();
+    motion_set_velocity(MAG_SPIN_MM_S, -MAG_SPIN_MM_S);
+    tk_dly_tsk(MAG_SPIN_SETTLE_MS);         /* skip the speed-up */
+    mag_collect(&spin, MAG_SPIN_MS);
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(1500);
+
+    (void)motion_get_encoder_diag(&l, &r);
+    avg_edges = (INT)((((l.hw_count < 0) ? -l.hw_count : l.hw_count)
+                     + ((r.hw_count < 0) ? -r.hw_count : r.hw_count)) / 2);
+    /* one turn on the spot = pi * track width of wheel travel per wheel */
+    turns_x100 = avg_edges * SWEEP_UM_PER_EDGE / (MAG_TURN_UM / 100);
+    tm_printf((UB *)"\n[MAG] encoders: L=%d R=%d edges -> about %d.%02d turns\n",
+              (INT)l.hw_count, (INT)r.hw_count, turns_x100 / 100, turns_x100 % 100);
+    mag_report("Phase B, spinning, motors on", &spin);
+
+    /* Compare the circle centres. A shift of d counts on a circle of radius
+       R moves the computed heading by up to about 57 * d / R degrees. */
+    dcx = (spin.max[0] + spin.min[0]) / 2 - (hand.max[0] + hand.min[0]) / 2;
+    dcy = (spin.max[1] + spin.min[1]) / 2 - (hand.max[1] + hand.min[1]) / 2;
+    rad = (hand.max[0] - hand.min[0] + hand.max[1] - hand.min[1]) / 4;
+    tm_printf((UB *)"\n[MAG] centre shift motors on vs off: dX=%d dY=%d counts\n", dcx, dcy);
+    if(rad > 0) {
+        tm_printf((UB *)"[MAG] -> up to about %d degrees of heading error if ignored\n",
+                  (((dcx < 0) ? -dcx : dcx) + ((dcy < 0) ? -dcy : dcy)) * 57 / rad);
+    }
+
+    tm_printf((UB *)"\n=== Mag calibration test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -1041,6 +1207,8 @@ EXPORT INT usermain(void)
     imu_test_bringup();
 #elif MOTION_TEST_MODE == IMU_TEST_ACCEL_6FACE
     imu_test_accel_6face();
+#elif MOTION_TEST_MODE == IMU_TEST_MAG_CAL
+    imu_test_mag_cal();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

@@ -61,4 +61,11 @@ ER imu_init(void);
 /** @brief Read one accel + mag sample. */
 ER imu_read_raw(imu_raw_t *p_raw);
 
+/**
+ * @brief Read one sample with the accelerometer calibrated (6-face test).
+ * Car frame: X forward, Y right, Z down; at rest upright a = (0, 0, -1000) mg.
+ * Mag is still raw (calibrated in step 4).
+ */
+ER imu_read_cal(imu_raw_t *p_sample);
+
 #endif /* BUDDY4_IMU_H */

@@ -357,3 +357,45 @@ imu_read_raw(imu_raw_t *p_raw)
 
     return E_OK;
 }
+
+/*----------------------------------------------------------------------------
+ * Accelerometer calibration (6-face test, 2026-10-09)
+ *
+ * Faces (raw mg):  X +1074 / -951,  Y +1039 / -952,  Z +1125 / -897.
+ * The error was mostly offset, not scale: Z's +114 mg offset is why the
+ * car read ~900 mg at rest. corrected = (raw - offset) * scale / 1000.
+ *
+ * Axes, from which face read +1 g: X = forward (nose up -> +X),
+ * Y = right (left side down -> +Y), Z = down (upright -> -Z). The sensor
+ * frame is already the car frame (forward-right-down), so no remapping.
+ *---------------------------------------------------------------------------*/
+#define ACC_OFF_X_MG             61
+#define ACC_OFF_Y_MG             43
+#define ACC_OFF_Z_MG             114
+#define ACC_SCALE_X_X1000        988L
+#define ACC_SCALE_Y_X1000        1005L
+#define ACC_SCALE_Z_X1000        989L
+
+static int16_t
+acc_correct(int16_t raw, int16_t offset, int32_t scale_x1000)
+{
+    return (int16_t)((((int32_t)raw - offset) * scale_x1000) / 1000L);
+}
+
+ER
+imu_read_cal(imu_raw_t *p_sample)
+{
+    ER err;
+
+    err = imu_read_raw(p_sample);
+    if (E_OK != err)
+    {
+        return err;
+    }
+
+    p_sample->ax = acc_correct(p_sample->ax, ACC_OFF_X_MG, ACC_SCALE_X_X1000);
+    p_sample->ay = acc_correct(p_sample->ay, ACC_OFF_Y_MG, ACC_SCALE_Y_X1000);
+    p_sample->az = acc_correct(p_sample->az, ACC_OFF_Z_MG, ACC_SCALE_Z_X1000);
+
+    return E_OK;
+}
