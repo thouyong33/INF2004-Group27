@@ -537,8 +537,8 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_HEADING       - Buddy 4 step 5: heading at 4 hand-set 90 deg
  *                            positions, then a clockwise spin on the floor
  *                            comparing compass and encoder rotation.
- *   IMU_TEST_HUMP_LOG      - Buddy 4 step 6a: three 60 cm floor passes
- *                            (flat, 1 cm ramp, 2.4 cm ramp) logging pitch,
+ *   IMU_TEST_HUMP_LOG      - Buddy 4 step 6: four 60 cm floor passes
+ *                            (flat, 1 cm, 2.4 cm at 200 mm/s, 2.4 cm at 100) logging pitch,
  *                            roll, vertical accel and distance.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
@@ -580,13 +580,16 @@ LOCAL T_CFLG cflg = {
 #define HDG_SPIN_MS              8000  /* about 2.2 turns */
 #define HDG_TRACK_MM             114   /* ruler, 2026-10-07; confirmed by compass spin */
 
-#define HUMP_LOG_LEN             300
+#define HUMP_LOG_LEN             400
 #define HUMP_SAMPLE_MS           20
-#define HUMP_SPEED_MM_S          200
 #define HUMP_DIST_MM             600
 #define HUMP_SETUP_S             15    /* time to place the ramps */
 #define HUMP_WHEELBASE_MM        80    /* drive axle to castor, ruler 2026-10-09 */
 #define HUMP_FILT_N              7     /* moving average, ~0.16 s / ~3 cm */
+#define HUMP_BASE_SAMPLES        25    /* rest tilt, 0.5 s before driving */
+#define HUMP_SKIP_MM             60    /* skip the speed-up after the start */
+#define HUMP_PLAT_MM             30    /* descent plateau window */
+#define HUMP_PASSES              4
 
 #define DIST_PAUSE_S             10
 
@@ -1316,8 +1319,9 @@ LOCAL INT hump_dist_mm(void)
     return (INT)(((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE / 1000);
 }
 
-LOCAL void hump_pass(const char *name)
+LOCAL void hump_pass(const char *name, INT speed_mm_s)
 {
+    static INT fpit[HUMP_LOG_LEN];
     imu_attitude_t att;
     imu_raw_t s;
     SYSTIM tim;
@@ -1325,24 +1329,49 @@ LOCAL void hump_pass(const char *name)
     UW t;
     UW stop_t = 0;
     INT n = 0;
-    INT i;
-    INT d;
+    INT i, j, k, cnt;
+    INT stop_mm = HUMP_DIST_MM;
     W p0 = 0;
     W r0 = 0;
     INT base_n = 0;
-    INT dp, dr;
-    INT max_dp = 0, max_dp_mm = 0;
-    INT max_dr = 0, max_dr_mm = 0;
-    INT az_min = 32767, az_max = -32768;
-    float h_int = 0.0f;
-    float h_int_max = 0.0f;
-    INT last_mm = 0;
     BOOL stopping = FALSE;
+    W acc_p, acc_r;
+    W sq_raw = 0;
+    W sq_f = 0;
+    INT nf = 0;
+    INT dp, fp, fr;
+    INT max_dp = 0, max_dp_mm = 0;
+    INT up = 0, up_mm = 0, down = 0, down_mm = 0, rmax = 0, rmax_mm = 0;
+    INT plat = 0, plat_mm = 0;
+    INT az_min = 32767, az_max = -32768;
+    INT prev_mm = -1;
+    float path_h = 0.0f;
+    float path_min = 0.0f;
+    float rise = 0.0f;
+    INT rise_mm = 0;
+
+    /* Baseline at rest, before the motors start. While accelerating the
+       accelerometer reads the push as nose-up tilt, and braking as nose-
+       down: the first filtered run took its baseline over the first
+       100 mm and got +2.7 deg against +1.1 deg at rest, and "found" a
+       -6 deg hump on the flat floor while stopping. */
+    for(i = 0; i < HUMP_BASE_SAMPLES; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            p0 += att.pitch_cdeg;
+            r0 += att.roll_cdeg;
+            base_n++;
+        }
+        tk_dly_tsk(HUMP_SAMPLE_MS);
+    }
+    if(base_n > 0) {
+        p0 /= base_n;
+        r0 /= base_n;
+    }
 
     motion_reset_odometry();
     tk_get_tim(&tim);
     t0 = tim.lo;
-    motion_set_velocity(HUMP_SPEED_MM_S, HUMP_SPEED_MM_S);
+    motion_set_velocity((int16_t)speed_mm_s, (int16_t)speed_mm_s);
 
     /* Record until the distance is covered, then 600 ms more while it
        stops. No printing in here: the motors are under PI. */
@@ -1361,6 +1390,7 @@ LOCAL void hump_pass(const char *name)
                 motion_set_velocity(0, 0);
                 stopping = TRUE;
                 stop_t = t;
+                stop_mm = hump_log[n - 1].dist_mm;
             }
             if(stopping && ((t - stop_t) > 600u)) {
                 break;
@@ -1373,40 +1403,91 @@ LOCAL void hump_pass(const char *name)
     }
     tk_dly_tsk(500);
 
-    /* Baseline: the first 100 mm, before the ramp */
+    /* Centred moving average of pitch, relative to the rest baseline */
     for(i = 0; i < n; i++) {
-        if(hump_log[i].dist_mm > 100) {
-            break;
+        acc_p = 0;
+        cnt = 0;
+        for(j = -(HUMP_FILT_N / 2); j <= (HUMP_FILT_N / 2); j++) {
+            k = i + j;
+            if((k >= 0) && (k < n)) {
+                acc_p += hump_log[k].pitch_cdeg;
+                cnt++;
+            }
         }
-        p0 += hump_log[i].pitch_cdeg;
-        r0 += hump_log[i].roll_cdeg;
-        base_n++;
-    }
-    if(base_n > 0) {
-        p0 /= base_n;
-        r0 /= base_n;
+        fpit[i] = (INT)(acc_p / cnt) - (INT)p0;
     }
 
+    /* Analyse only the constant-speed stretch: from HUMP_SKIP_MM after the
+       start to the stop command. The climb and descent are described in
+       the comment above the summary prints. */
     for(i = 0; i < n; i++) {
+        if((hump_log[i].dist_mm < HUMP_SKIP_MM) || (hump_log[i].dist_mm > stop_mm)) {
+            continue;
+        }
+
         dp = hump_log[i].pitch_cdeg - (INT)p0;
-        dr = hump_log[i].roll_cdeg - (INT)r0;
+        fp = fpit[i];
+        sq_raw += (W)(dp / 10) * (dp / 10);
+        sq_f += (W)(fp / 10) * (fp / 10);
+        nf++;
+
         if(((dp < 0) ? -dp : dp) > ((max_dp < 0) ? -max_dp : max_dp)) {
             max_dp = dp;
             max_dp_mm = hump_log[i].dist_mm;
         }
-        if(((dr < 0) ? -dr : dr) > ((max_dr < 0) ? -max_dr : max_dr)) {
-            max_dr = dr;
-            max_dr_mm = hump_log[i].dist_mm;
+        if(fp > up) {
+            up = fp;
+            up_mm = hump_log[i].dist_mm;
         }
+        if(fp < down) {
+            down = fp;
+            down_mm = hump_log[i].dist_mm;
+        }
+
+        acc_r = 0;
+        cnt = 0;
+        for(j = -(HUMP_FILT_N / 2); j <= (HUMP_FILT_N / 2); j++) {
+            k = i + j;
+            if((k >= 0) && (k < n)) {
+                acc_r += hump_log[k].roll_cdeg;
+                cnt++;
+            }
+        }
+        fr = (INT)(acc_r / cnt) - (INT)r0;
+        if(((fr < 0) ? -fr : fr) > ((rmax < 0) ? -rmax : rmax)) {
+            rmax = fr;
+            rmax_mm = hump_log[i].dist_mm;
+        }
+
         if(hump_log[i].az_mg < az_min) az_min = hump_log[i].az_mg;
         if(hump_log[i].az_mg > az_max) az_max = hump_log[i].az_mg;
 
-        /* height of the drive axle if both wheels climbed: sum sin(dpitch) ds */
-        d = hump_log[i].dist_mm - last_mm;
-        last_mm = hump_log[i].dist_mm;
-        h_int += (float)d * ((float)dp * (3.14159265f / 18000.0f));
-        if(h_int > h_int_max) {
-            h_int_max = h_int;
+        /* Climb: path height = sum of sin(pitch) x distance; keep the
+           largest rise above the lowest point so far */
+        if(prev_mm >= 0) {
+            path_h += (float)(hump_log[i].dist_mm - prev_mm) * f_sin_small(fp);
+        }
+        prev_mm = hump_log[i].dist_mm;
+        if(path_h < path_min) {
+            path_min = path_h;
+        }
+        if((path_h - path_min) > rise) {
+            rise = path_h - path_min;
+            rise_mm = hump_log[i].dist_mm;
+        }
+
+        /* Descent plateau: the most nose-down mean over HUMP_PLAT_MM of
+           travel. A mean over a stretch is steadier than a single peak. */
+        acc_p = 0;
+        cnt = 0;
+        for(j = i; (j < n) && (hump_log[j].dist_mm < hump_log[i].dist_mm + HUMP_PLAT_MM)
+                   && (hump_log[j].dist_mm <= stop_mm); j++) {
+            acc_p += fpit[j];
+            cnt++;
+        }
+        if((cnt > 0) && ((INT)(acc_p / cnt) < plat)) {
+            plat = (INT)(acc_p / cnt);
+            plat_mm = hump_log[i].dist_mm;
         }
     }
 
@@ -1419,103 +1500,42 @@ LOCAL void hump_pass(const char *name)
                   hump_log[i].pitch_cdeg, hump_log[i].roll_cdeg, hump_log[i].az_mg);
     }
 
-    /* Single samples are dominated by driving vibration, so the summary
-       uses a centred moving average of HUMP_FILT_N samples (~0.16 s, ~3 cm
-       at 200 mm/s). The castor passes between the ramps and floats while
-       the wheels climb, so a hump shows twice (user, 2026-10-09):
+    /* The castor passes between the ramps and floats while the wheels
+       climb, so a hump shows twice (user, 2026-10-09):
          climbing:   nose UP, the body follows the slope; height is the rise
-                     of the path, sum of sin(pitch) x distance moved
+                     of the path
          descending: nose DOWN, castor back on the floor 80 mm ahead;
                      height = 80 mm x sin(pitch)
        The two estimates are independent, so they cross-check each other. */
-    {
-        INT j, k, cnt;
-        W acc_p, acc_r;
-        W sq_raw = 0;
-        W sq_f = 0;
-        INT nf = 0;
-        INT fp, fr;
-        INT up = 0, up_mm = 0, down = 0, down_mm = 0, rmax = 0, rmax_mm = 0;
-        INT prev_mm = 0;
-        float path_h = 0.0f;
-        float path_min = 0.0f;
-        float rise = 0.0f;
-        INT rise_mm = 0;
-
-        for(i = 0; i < n; i++) {
-            dp = hump_log[i].pitch_cdeg - (INT)p0;
-            sq_raw += (W)(dp / 10) * (dp / 10);
-
-            acc_p = 0;
-            acc_r = 0;
-            cnt = 0;
-            for(j = -(HUMP_FILT_N / 2); j <= (HUMP_FILT_N / 2); j++) {
-                k = i + j;
-                if((k >= 0) && (k < n)) {
-                    acc_p += hump_log[k].pitch_cdeg;
-                    acc_r += hump_log[k].roll_cdeg;
-                    cnt++;
-                }
-            }
-            fp = (INT)(acc_p / cnt) - (INT)p0;
-            fr = (INT)(acc_r / cnt) - (INT)r0;
-            sq_f += (W)(fp / 10) * (fp / 10);
-            nf++;
-
-            /* Path height while climbing: integrate sin(pitch) over distance
-               and keep the largest rise above the lowest point so far */
-            path_h += (float)(hump_log[i].dist_mm - prev_mm) * f_sin_small(fp);
-            prev_mm = hump_log[i].dist_mm;
-            if(path_h < path_min) {
-                path_min = path_h;
-            }
-            if((path_h - path_min) > rise) {
-                rise = path_h - path_min;
-                rise_mm = hump_log[i].dist_mm;
-            }
-
-            if(fp > up) {
-                up = fp;
-                up_mm = hump_log[i].dist_mm;
-            }
-            if(fp < down) {
-                down = fp;
-                down_mm = hump_log[i].dist_mm;
-            }
-            if(((fr < 0) ? -fr : fr) > ((rmax < 0) ? -rmax : rmax)) {
-                rmax = fr;
-                rmax_mm = hump_log[i].dist_mm;
-            }
-        }
-
-        tm_printf((UB *)"[HUMP] %s summary: baseline pitch=%d roll=%d (x0.01 deg)\n",
-                  name, (INT)p0, (INT)r0);
-        tm_printf((UB *)"[HUMP]   pitch noise RMS: raw %u, filtered %u (x0.1 deg)\n",
-                  (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_raw / nf) : 0),
-                  (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_f / nf) : 0));
-        tm_printf((UB *)"[HUMP]   raw single-sample peak pitch %d at %d mm (vibration, ignore)\n",
-                  max_dp, max_dp_mm);
-        tm_printf((UB *)"[HUMP]   az range %d..%d mg (bump jolt)\n", az_min, az_max);
-        tm_printf((UB *)"[HUMP]   climbing:   nose UP peak %d (x0.01 deg) at %d mm;"
-                  " path rise ~ %d mm (ends at %d mm)\n", up, up_mm, (INT)rise, rise_mm);
-        tm_printf((UB *)"[HUMP]   descending: nose DOWN peak %d (x0.01 deg) at %d mm"
-                  " -> wheel height ~ %d mm (80 mm x sin)\n", down, down_mm,
-                  (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(-down)));
-        tm_printf((UB *)"[HUMP]   filtered roll peak %d (x0.01 deg) at %d mm"
-                  " (one wheel higher than the other)\n", rmax, rmax_mm);
-        (void)h_int_max;
-        (void)max_dr;
-        (void)max_dr_mm;
-    }
+    tm_printf((UB *)"[HUMP] %s summary (%d..%d mm analysed):\n", name, HUMP_SKIP_MM, stop_mm);
+    tm_printf((UB *)"[HUMP]   baseline at rest: pitch=%d roll=%d (x0.01 deg)\n", (INT)p0, (INT)r0);
+    tm_printf((UB *)"[HUMP]   pitch noise RMS: raw %u, filtered %u (x0.1 deg)\n",
+              (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_raw / nf) : 0),
+              (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_f / nf) : 0));
+    tm_printf((UB *)"[HUMP]   raw single-sample peak pitch %d at %d mm (vibration, ignore)\n",
+              max_dp, max_dp_mm);
+    tm_printf((UB *)"[HUMP]   az range %d..%d mg (bump jolt)\n", az_min, az_max);
+    tm_printf((UB *)"[HUMP]   climbing:   nose UP peak %d (x0.01 deg) at %d mm;"
+              " path rise ~ %d mm (ends at %d mm)\n", up, up_mm, (INT)rise, rise_mm);
+    tm_printf((UB *)"[HUMP]   descending: nose DOWN peak %d (x0.01 deg) at %d mm"
+              " -> wheel height ~ %d mm\n", down, down_mm,
+              (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(-down)));
+    tm_printf((UB *)"[HUMP]   descending: %d mm plateau mean %d (x0.01 deg) from %d mm"
+              " -> wheel height ~ %d mm  <- steadier\n", HUMP_PLAT_MM, plat, plat_mm,
+              (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(-plat)));
+    tm_printf((UB *)"[HUMP]   filtered roll peak %d (x0.01 deg) at %d mm"
+              " (one wheel higher than the other)\n", rmax, rmax_mm);
 }
 
 LOCAL void imu_test_hump_log(void)
 {
-    static const char *const passes[3] = {
-        "Pass 1/3: FLAT floor, no ramp (baseline noise)",
-        "Pass 2/3: SMALL ramp (~1.0 cm)",
-        "Pass 3/3: TALL ramp (~2.4 cm)",
+    static const char *const passes[HUMP_PASSES] = {
+        "Pass 1/4: FLAT floor, no ramp, 200 mm/s (baseline noise)",
+        "Pass 2/4: SMALL ramps (~1.0 cm), 200 mm/s",
+        "Pass 3/4: TALL ramps (~2.4 cm), 200 mm/s",
+        "Pass 4/4: TALL ramps (~2.4 cm) again, SLOWER 100 mm/s",
     };
+    static const INT speeds[HUMP_PASSES] = { 200, 200, 200, 100 };
     INT p, s;
 
     i2c1_init();
@@ -1524,19 +1544,20 @@ LOCAL void imu_test_hump_log(void)
         return;
     }
 
-    tm_printf((UB *)"\n[HUMP] Ramp logging: 3 passes of %d cm at %d mm/s.\n",
-              HUMP_DIST_MM / 10, HUMP_SPEED_MM_S);
+    tm_printf((UB *)"\n[HUMP] Ramp logging: %d passes of %d cm.\n",
+              HUMP_PASSES, HUMP_DIST_MM / 10);
     tm_printf((UB *)"[HUMP] Place one ramp in front of EACH drive wheel, about 20 cm\n");
     tm_printf((UB *)"[HUMP] ahead, side by side so both wheels reach them together.\n");
     tm_printf((UB *)"[HUMP] Check the castor passes between them on the floor.\n");
+    tm_printf((UB *)"[HUMP] Keep the car still until it drives: it reads its rest tilt first.\n");
 
-    for(p = 0; p < 3; p++) {
+    for(p = 0; p < HUMP_PASSES; p++) {
         tm_printf((UB *)"\n[HUMP] %s\n", passes[p]);
         for(s = HUMP_SETUP_S; s > 0; s--) {
             tm_printf((UB *)"[HUMP]   driving in %d s\n", s);
             tk_dly_tsk(1000);
         }
-        hump_pass(passes[p]);
+        hump_pass(passes[p], speeds[p]);
     }
 
     tm_printf((UB *)"\n=== Hump logging complete ===\n");
