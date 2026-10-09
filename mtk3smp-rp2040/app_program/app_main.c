@@ -537,6 +537,9 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_HEADING       - Buddy 4 step 5: heading at 4 hand-set 90 deg
  *                            positions, then a clockwise spin on the floor
  *                            comparing compass and encoder rotation.
+ *   IMU_TEST_HUMP_LOG      - Buddy 4 step 6a: three 60 cm floor passes
+ *                            (flat, 1 cm ramp, 2.4 cm ramp) logging pitch,
+ *                            roll, vertical accel and distance.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -548,9 +551,10 @@ LOCAL T_CFLG cflg = {
 #define IMU_TEST_ACCEL_6FACE     7
 #define IMU_TEST_MAG_CAL         8
 #define IMU_TEST_HEADING         9
+#define IMU_TEST_HUMP_LOG        10
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_HEADING
+#define MOTION_TEST_MODE         IMU_TEST_HUMP_LOG
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -574,7 +578,13 @@ LOCAL T_CFLG cflg = {
 #define HDG_AVG_SAMPLES          50    /* 1 s average per position */
 #define HDG_SPIN_MM_S            100   /* about 100 deg/s on the spot */
 #define HDG_SPIN_MS              8000  /* about 2.2 turns */
-#define HDG_TRACK_MM             114   /* ruler, 2026-10-07 */
+#define HDG_TRACK_MM             114   /* ruler, 2026-10-07; confirmed by compass spin */
+
+#define HUMP_LOG_LEN             300
+#define HUMP_SAMPLE_MS           20
+#define HUMP_SPEED_MM_S          200
+#define HUMP_DIST_MM             600
+#define HUMP_SETUP_S             15    /* time to place the ramp */
 
 #define DIST_PAUSE_S             10
 
@@ -1246,6 +1256,180 @@ LOCAL void imu_test_heading(void)
 
     tm_printf((UB *)"\n=== Heading test complete ===\n");
 }
+#elif MOTION_TEST_MODE == IMU_TEST_HUMP_LOG
+/* Buddy 4 step 6a: log what the IMU sees while driving over the ramps.
+   The ramps (14.5 cm long, 5 cm wide, peak 1.0 or 2.4 cm at mid-length)
+   are narrower than the 114 mm track, so how the car crosses decides the
+   maths: a drive wheel going over tilts the car sideways (roll), the
+   castor going over tilts it nose up/down (pitch). This pass only records
+   pitch, roll, vertical accel and encoder distance at ~50 Hz into RAM and
+   prints them once the car has stopped, plus three candidate heights. */
+
+typedef struct {
+    uint16_t t_ms;
+    int16_t  dist_mm;
+    int16_t  pitch_cdeg;
+    int16_t  roll_cdeg;
+    int16_t  az_mg;
+} hump_sample_t;
+
+LOCAL hump_sample_t hump_log[HUMP_LOG_LEN];
+
+LOCAL INT hump_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE / 1000);
+}
+
+LOCAL void hump_pass(const char *name)
+{
+    imu_attitude_t att;
+    imu_raw_t s;
+    SYSTIM tim;
+    UW t0;
+    UW t;
+    UW stop_t = 0;
+    INT n = 0;
+    INT i;
+    INT d;
+    W p0 = 0;
+    W r0 = 0;
+    INT base_n = 0;
+    INT dp, dr;
+    INT max_dp = 0, max_dp_mm = 0;
+    INT max_dr = 0, max_dr_mm = 0;
+    INT az_min = 32767, az_max = -32768;
+    float h_int = 0.0f;
+    float h_int_max = 0.0f;
+    INT last_mm = 0;
+    BOOL stopping = FALSE;
+
+    motion_reset_odometry();
+    tk_get_tim(&tim);
+    t0 = tim.lo;
+    motion_set_velocity(HUMP_SPEED_MM_S, HUMP_SPEED_MM_S);
+
+    /* Record until the distance is covered, then 600 ms more while it
+       stops. No printing in here: the motors are under PI. */
+    while(n < HUMP_LOG_LEN) {
+        if(E_OK == imu_read_attitude(&att, &s)) {
+            tk_get_tim(&tim);
+            t = tim.lo - t0;
+            hump_log[n].t_ms = (uint16_t)t;
+            hump_log[n].dist_mm = (int16_t)hump_dist_mm();
+            hump_log[n].pitch_cdeg = att.pitch_cdeg;
+            hump_log[n].roll_cdeg = att.roll_cdeg;
+            hump_log[n].az_mg = s.az;
+            n++;
+
+            if((!stopping) && (hump_log[n - 1].dist_mm >= HUMP_DIST_MM)) {
+                motion_set_velocity(0, 0);
+                stopping = TRUE;
+                stop_t = t;
+            }
+            if(stopping && ((t - stop_t) > 600u)) {
+                break;
+            }
+        }
+        tk_dly_tsk(HUMP_SAMPLE_MS);
+    }
+    if(!stopping) {
+        motion_set_velocity(0, 0);
+    }
+    tk_dly_tsk(500);
+
+    /* Baseline: the first 100 mm, before the ramp */
+    for(i = 0; i < n; i++) {
+        if(hump_log[i].dist_mm > 100) {
+            break;
+        }
+        p0 += hump_log[i].pitch_cdeg;
+        r0 += hump_log[i].roll_cdeg;
+        base_n++;
+    }
+    if(base_n > 0) {
+        p0 /= base_n;
+        r0 /= base_n;
+    }
+
+    for(i = 0; i < n; i++) {
+        dp = hump_log[i].pitch_cdeg - (INT)p0;
+        dr = hump_log[i].roll_cdeg - (INT)r0;
+        if(((dp < 0) ? -dp : dp) > ((max_dp < 0) ? -max_dp : max_dp)) {
+            max_dp = dp;
+            max_dp_mm = hump_log[i].dist_mm;
+        }
+        if(((dr < 0) ? -dr : dr) > ((max_dr < 0) ? -max_dr : max_dr)) {
+            max_dr = dr;
+            max_dr_mm = hump_log[i].dist_mm;
+        }
+        if(hump_log[i].az_mg < az_min) az_min = hump_log[i].az_mg;
+        if(hump_log[i].az_mg > az_max) az_max = hump_log[i].az_mg;
+
+        /* height of the drive axle if both wheels climbed: sum sin(dpitch) ds */
+        d = hump_log[i].dist_mm - last_mm;
+        last_mm = hump_log[i].dist_mm;
+        h_int += (float)d * ((float)dp * (3.14159265f / 18000.0f));
+        if(h_int > h_int_max) {
+            h_int_max = h_int;
+        }
+    }
+
+    tm_printf((UB *)"\n[HUMP] %s: %d samples, %d mm\n", name, n,
+              (n > 0) ? hump_log[n - 1].dist_mm : 0);
+    tm_printf((UB *)"[HUMP] t_ms,dist_mm,pitch_cdeg,roll_cdeg,az_mg\n");
+    for(i = 0; i < n; i++) {
+        tm_printf((UB *)"[HUMP] %u,%d,%d,%d,%d\n",
+                  (unsigned int)hump_log[i].t_ms, hump_log[i].dist_mm,
+                  hump_log[i].pitch_cdeg, hump_log[i].roll_cdeg, hump_log[i].az_mg);
+    }
+
+    tm_printf((UB *)"[HUMP] %s summary: baseline pitch=%d roll=%d (x0.01 deg)\n",
+              name, (INT)p0, (INT)r0);
+    tm_printf((UB *)"[HUMP]   peak pitch change %d (x0.01 deg) at %d mm\n", max_dp, max_dp_mm);
+    tm_printf((UB *)"[HUMP]   peak roll change  %d (x0.01 deg) at %d mm\n", max_dr, max_dr_mm);
+    tm_printf((UB *)"[HUMP]   az range %d..%d mg (bump jolt)\n", az_min, az_max);
+    tm_printf((UB *)"[HUMP]   if one drive wheel crossed: height ~ %d mm"
+              " (track x sin(roll))\n",
+              (INT)((float)HDG_TRACK_MM * ((float)((max_dr < 0) ? -max_dr : max_dr)
+                                            * (3.14159265f / 18000.0f))));
+    tm_printf((UB *)"[HUMP]   if both wheels climbed: height ~ %d mm"
+              " (integral of sin(pitch) over distance)\n", (INT)h_int_max);
+}
+
+LOCAL void imu_test_hump_log(void)
+{
+    static const char *const passes[3] = {
+        "Pass 1/3: FLAT floor, no ramp (baseline noise)",
+        "Pass 2/3: SMALL ramp (~1.0 cm)",
+        "Pass 3/3: TALL ramp (~2.4 cm)",
+    };
+    INT p, s;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[HUMP] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    tm_printf((UB *)"\n[HUMP] Ramp logging: 3 passes of %d cm at %d mm/s.\n",
+              HUMP_DIST_MM / 10, HUMP_SPEED_MM_S);
+    tm_printf((UB *)"[HUMP] Place the ramp about 20 cm ahead of the front of the car,\n");
+    tm_printf((UB *)"[HUMP] lined up the way it will be crossed on the real track.\n");
+
+    for(p = 0; p < 3; p++) {
+        tm_printf((UB *)"\n[HUMP] %s\n", passes[p]);
+        for(s = HUMP_SETUP_S; s > 0; s--) {
+            tm_printf((UB *)"[HUMP]   driving in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        hump_pass(passes[p]);
+    }
+
+    tm_printf((UB *)"\n=== Hump logging complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -1426,6 +1610,8 @@ EXPORT INT usermain(void)
     imu_test_mag_cal();
 #elif MOTION_TEST_MODE == IMU_TEST_HEADING
     imu_test_heading();
+#elif MOTION_TEST_MODE == IMU_TEST_HUMP_LOG
+    imu_test_hump_log();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
