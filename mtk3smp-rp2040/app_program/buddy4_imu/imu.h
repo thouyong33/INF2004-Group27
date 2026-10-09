@@ -62,10 +62,27 @@ ER imu_init(void);
 ER imu_read_raw(imu_raw_t *p_raw);
 
 /**
- * @brief Read one sample with the accelerometer calibrated (6-face test).
+ * @brief Read one calibrated sample.
  * Car frame: X forward, Y right, Z down; at rest upright a = (0, 0, -1000) mg.
- * Mag is still raw (calibrated in step 4).
+ * Accel: 6-face offset/scale (step 3). Mag: hard-iron offset and soft-iron
+ * Y scale (step 4); still in counts.
  */
 ER imu_read_cal(imu_raw_t *p_sample);
+
+/**
+ * @brief Attitude from one calibrated sample, in hundredths of a degree.
+ */
+typedef struct {
+    int16_t  pitch_cdeg;    /**< nose up positive, -9000..9000 */
+    int16_t  roll_cdeg;     /**< right side down positive, -18000..18000 */
+    uint16_t heading_cdeg;  /**< tilt-compensated, 0 = magnetic north,
+                                 clockwise positive, 0..35999 */
+} imu_attitude_t;
+
+/**
+ * @brief Read one sample and compute pitch, roll and heading.
+ * @param p_sample optional: receives the calibrated sample (may be NULL)
+ */
+ER imu_read_attitude(imu_attitude_t *p_att, imu_raw_t *p_sample);
 
 #endif /* BUDDY4_IMU_H */

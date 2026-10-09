@@ -376,6 +376,22 @@ imu_read_raw(imu_raw_t *p_raw)
 #define ACC_SCALE_Y_X1000        1005L
 #define ACC_SCALE_Z_X1000        989L
 
+/*----------------------------------------------------------------------------
+ * Magnetometer calibration (step 4, 2026-10-09)
+ *
+ * Car turned through 360 deg flat: by hand with motors off, centre
+ * (-905, -4475), radius (7710, 6975); spinning under PI with motors on,
+ * centre (-775, -4230), radius (7777, 6942). The motors move the centre
+ * only ~2 deg of heading, so the average of both is used. Hard iron is the
+ * centre offset; soft iron is the X/Y radius ratio (Y stretched by 1.113
+ * to make the circle round). Z is only centred, from the floor run (the
+ * table read -1186, the floor -434: surroundings, not the car).
+ *---------------------------------------------------------------------------*/
+#define MAG_OFF_X                (-840)
+#define MAG_OFF_Y                (-4352)
+#define MAG_OFF_Z                (-434)
+#define MAG_SCALE_Y_X1000        1113L
+
 static int16_t
 acc_correct(int16_t raw, int16_t offset, int32_t scale_x1000)
 {
@@ -396,6 +412,145 @@ imu_read_cal(imu_raw_t *p_sample)
     p_sample->ax = acc_correct(p_sample->ax, ACC_OFF_X_MG, ACC_SCALE_X_X1000);
     p_sample->ay = acc_correct(p_sample->ay, ACC_OFF_Y_MG, ACC_SCALE_Y_X1000);
     p_sample->az = acc_correct(p_sample->az, ACC_OFF_Z_MG, ACC_SCALE_Z_X1000);
+
+    p_sample->mx = acc_correct(p_sample->mx, MAG_OFF_X, 1000L);
+    p_sample->my = acc_correct(p_sample->my, MAG_OFF_Y, MAG_SCALE_Y_X1000);
+    p_sample->mz = acc_correct(p_sample->mz, MAG_OFF_Z, 1000L);
+
+    return E_OK;
+}
+
+/*----------------------------------------------------------------------------
+ * Attitude and tilt-compensated heading (no libm: soft-float helpers)
+ *---------------------------------------------------------------------------*/
+#define F_PI                     3.14159265f
+#define F_RAD_TO_CDEG            (18000.0f / F_PI)
+
+static float
+f_abs(float x)
+{
+    return (x < 0.0f) ? -x : x;
+}
+
+/* Newton iterations from a rough guess; plenty for these magnitudes */
+static float
+f_sqrt(float x)
+{
+    float r;
+    int32_t i;
+
+    if (x <= 0.0f)
+    {
+        return 0.0f;
+    }
+
+    r = (x > 1.0f) ? (x * 0.5f) : 1.0f;
+    for (i = 0; i < 20; i++)
+    {
+        r = 0.5f * (r + (x / r));
+    }
+    return r;
+}
+
+/* atan2 with max error ~0.25 deg: atan(z) ~= z*pi/4 + 0.273*z*(1 - |z|) */
+static float
+f_atan2(float y, float x)
+{
+    float z;
+    float a;
+
+    if ((0.0f == x) && (0.0f == y))
+    {
+        return 0.0f;
+    }
+
+    if (f_abs(x) >= f_abs(y))
+    {
+        z = y / x;
+        a = (z * (F_PI / 4.0f)) + (0.273f * z * (1.0f - f_abs(z)));
+        if (x < 0.0f)
+        {
+            a += (y >= 0.0f) ? F_PI : -F_PI;
+        }
+    }
+    else
+    {
+        z = x / y;
+        a = (z * (F_PI / 4.0f)) + (0.273f * z * (1.0f - f_abs(z)));
+        a = ((y > 0.0f) ? (F_PI / 2.0f) : (-F_PI / 2.0f)) - a;
+    }
+
+    return a;
+}
+
+/*
+ * The accelerometer reads the reaction to gravity, so the gravity vector
+ * in the car frame (forward-right-down) is g = -a. Level: g = (0, 0, +1).
+ *   roll  = atan2(gy, gz)               right side down is positive
+ *   pitch = atan2(-gx, sqrt(gy^2+gz^2)) nose up is positive
+ * The mag vector is rotated back to the horizontal plane, then
+ *   heading = atan2(-Yh, Xh)            0 = magnetic north, clockwise +
+ */
+ER
+imu_read_attitude(imu_attitude_t *p_att, imu_raw_t *p_sample)
+{
+    imu_raw_t s;
+    ER err;
+    float gx, gy, gz;
+    float g_yz, g_all;
+    float sin_r, cos_r, sin_p, cos_p;
+    float xh, yh;
+    float heading;
+
+    if (NULL == p_att)
+    {
+        return E_PAR;
+    }
+
+    err = imu_read_cal(&s);
+    if (E_OK != err)
+    {
+        return err;
+    }
+
+    gx = -(float)s.ax;
+    gy = -(float)s.ay;
+    gz = -(float)s.az;
+
+    g_yz = f_sqrt((gy * gy) + (gz * gz));
+    g_all = f_sqrt((gx * gx) + (g_yz * g_yz));
+    if ((g_yz <= 0.0f) || (g_all <= 0.0f))
+    {
+        return E_SYS;
+    }
+
+    sin_r = gy / g_yz;
+    cos_r = gz / g_yz;
+    sin_p = -gx / g_all;
+    cos_p = g_yz / g_all;
+
+    xh = ((float)s.mx * cos_p) + ((float)s.my * sin_r * sin_p)
+       + ((float)s.mz * cos_r * sin_p);
+    yh = ((float)s.my * cos_r) - ((float)s.mz * sin_r);
+
+    heading = f_atan2(-yh, xh) * F_RAD_TO_CDEG;
+    if (heading < 0.0f)
+    {
+        heading += 36000.0f;
+    }
+    if (heading >= 36000.0f)
+    {
+        heading = 0.0f;             /* -0.0 wrapped up to exactly 360 */
+    }
+
+    p_att->roll_cdeg = (int16_t)(f_atan2(gy, gz) * F_RAD_TO_CDEG);
+    p_att->pitch_cdeg = (int16_t)(f_atan2(-gx, g_yz) * F_RAD_TO_CDEG);
+    p_att->heading_cdeg = (uint16_t)heading;
+
+    if (NULL != p_sample)
+    {
+        *p_sample = s;
+    }
 
     return E_OK;
 }

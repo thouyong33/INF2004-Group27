@@ -534,6 +534,9 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_MAG_CAL       - Buddy 4 step 4: mag circle turned by hand
  *                            (motors off), then spinning in place under
  *                            PI (motors on); prints centre/radius of each.
+ *   IMU_TEST_HEADING       - Buddy 4 step 5: heading at 4 hand-set 90 deg
+ *                            positions, then a clockwise spin on the floor
+ *                            comparing compass and encoder rotation.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -544,9 +547,10 @@ LOCAL T_CFLG cflg = {
 #define IMU_TEST_BRINGUP         6
 #define IMU_TEST_ACCEL_6FACE     7
 #define IMU_TEST_MAG_CAL         8
+#define IMU_TEST_HEADING         9
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_MAG_CAL
+#define MOTION_TEST_MODE         IMU_TEST_HEADING
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -564,6 +568,13 @@ LOCAL T_CFLG cflg = {
 #define MAG_SPIN_SETTLE_MS       800
 #define MAG_SPIN_MS              12000 /* ~3 turns */
 #define MAG_TURN_UM              358142L /* pi x 114 mm track width */
+
+#define HDG_SAMPLE_MS            20
+#define HDG_MOVE_S               8     /* time to turn the car by hand */
+#define HDG_AVG_SAMPLES          50    /* 1 s average per position */
+#define HDG_SPIN_MM_S            100   /* about 100 deg/s on the spot */
+#define HDG_SPIN_MS              8000  /* about 2.2 turns */
+#define HDG_TRACK_MM             114   /* ruler, 2026-10-07 */
 
 #define DIST_PAUSE_S             10
 
@@ -1031,6 +1042,186 @@ LOCAL void imu_test_mag_cal(void)
 
     tm_printf((UB *)"\n=== Mag calibration test complete ===\n");
 }
+#elif MOTION_TEST_MODE == IMU_TEST_HEADING
+/* Buddy 4 step 5: heading and turn rate from the calibrated compass.
+   Phase 1 checks heading against known 90 degree turns made by hand.
+   Phase 2 spins the car on the floor and compares the compass rotation
+   with the rotation the wheel encoders imply for an 11.4 cm track. */
+
+/* Wrap a heading difference into -18000..17999 hundredths of a degree */
+LOCAL INT wrap_cdeg(INT d)
+{
+    while(d >= 18000) {
+        d -= 36000;
+    }
+    while(d < -18000) {
+        d += 36000;
+    }
+    return d;
+}
+
+/* Average n headings, unwrapped around the first so 359/1 deg average to 0 */
+LOCAL INT heading_avg_cdeg(INT n)
+{
+    imu_attitude_t att;
+    INT i;
+    INT ok = 0;
+    INT first = -1;
+    W acc = 0;
+    INT h;
+
+    for(i = 0; i < n; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            if(first < 0) {
+                first = (INT)att.heading_cdeg;
+            }
+            acc += wrap_cdeg((INT)att.heading_cdeg - first);
+            ok++;
+        }
+        tk_dly_tsk(HDG_SAMPLE_MS);
+    }
+    if(0 == ok) {
+        return -1;
+    }
+
+    h = first + (INT)(acc / ok);
+    while(h < 0) {
+        h += 36000;
+    }
+    while(h >= 36000) {
+        h -= 36000;
+    }
+    return h;
+}
+
+/* Follow the heading for dur_ms and add up the rotation. No printing:
+   the motors may be running under PI. */
+LOCAL void heading_track(INT dur_ms, INT *p_prev, W *p_total,
+                         INT mark1_ms, W *p_at_mark1, INT mark2_ms, W *p_at_mark2)
+{
+    imu_attitude_t att;
+    INT t;
+
+    for(t = 0; t < dur_ms; t += HDG_SAMPLE_MS) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            *p_total += wrap_cdeg((INT)att.heading_cdeg - *p_prev);
+            *p_prev = (INT)att.heading_cdeg;
+        }
+        if((NULL != p_at_mark1) && (t == mark1_ms)) {
+            *p_at_mark1 = *p_total;
+        }
+        if((NULL != p_at_mark2) && (t == mark2_ms)) {
+            *p_at_mark2 = *p_total;
+        }
+        tk_dly_tsk(HDG_SAMPLE_MS);
+    }
+}
+
+LOCAL void imu_test_heading(void)
+{
+    static const char *const dirs[4] = {
+        "at your reference line (this is 0 deg)",
+        "turned 90 deg CLOCKWISE from the reference",
+        "turned 180 deg from the reference",
+        "turned 270 deg CLOCKWISE from the reference",
+    };
+    imu_attitude_t att;
+    enc_diag_t l, r;
+    INT h[4];
+    INT i, s, prev, avg_edges, mag_cdeg, enc_cdeg;
+    W total, at2, at6;
+    float enc_deg_f;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[HDG] imu_init failed, check the IMU\n");
+        return;
+    }
+    tk_dly_tsk(200);
+
+    if(E_OK == imu_read_attitude(&att, NULL)) {
+        tm_printf((UB *)"\n[HDG] at rest: pitch=%d roll=%d (x0.01 deg, expect near 0)"
+                  " heading=%d.%02d deg\n",
+                  att.pitch_cdeg, att.roll_cdeg,
+                  att.heading_cdeg / 100, att.heading_cdeg % 100);
+    }
+
+    /* Phase 1: four hand-set directions, motors off */
+    tm_printf((UB *)"\n[HDG] Phase 1 (motors OFF): line the car up with a table edge\n");
+    tm_printf((UB *)"[HDG] or floor tile, then turn it 90 deg CLOCKWISE each time.\n");
+    for(i = 0; i < 4; i++) {
+        tm_printf((UB *)"\n[HDG] Position %d/4: car %s\n", i + 1, dirs[i]);
+        for(s = HDG_MOVE_S; s > 0; s--) {
+            tm_printf((UB *)"[HDG]   measuring in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        tm_printf((UB *)"[HDG]   HOLD STILL...\n");
+        h[i] = heading_avg_cdeg(HDG_AVG_SAMPLES);
+        if(h[i] < 0) {
+            tm_printf((UB *)"[HDG]   read failed\n");
+            return;
+        }
+        if(0 == i) {
+            tm_printf((UB *)"[HDG]   heading=%d.%02d deg\n", h[i] / 100, h[i] % 100);
+        } else {
+            s = wrap_cdeg(h[i] - h[i - 1]);
+            tm_printf((UB *)"[HDG]   heading=%d.%02d deg  step=%d.%02d deg (expect +90)\n",
+                      h[i] / 100, h[i] % 100,
+                      s / 100, ((s < 0) ? -s : s) % 100);
+        }
+    }
+    s = wrap_cdeg(h[0] + 36000 - h[3]);
+    tm_printf((UB *)"[HDG]   last step back to reference would be %d.%02d deg (expect +90)\n",
+              s / 100, ((s < 0) ? -s : s) % 100);
+
+    /* Phase 2: spin on the floor, motors on */
+    tm_printf((UB *)"\n[HDG] Phase 2 (motors ON): put the car on the FLOOR with about\n");
+    tm_printf((UB *)"[HDG] 30 cm clear all round. It will spin CLOCKWISE on the spot.\n");
+    for(s = 10; s > 0; s--) {
+        tm_printf((UB *)"[HDG]   spinning in %d s\n", s);
+        tk_dly_tsk(1000);
+    }
+
+    prev = heading_avg_cdeg(25);
+    if(prev < 0) {
+        tm_printf((UB *)"[HDG] read failed\n");
+        return;
+    }
+    total = 0;
+    at2 = 0;
+    at6 = 0;
+
+    motion_reset_odometry();
+    motion_set_velocity(HDG_SPIN_MM_S, -HDG_SPIN_MM_S);
+    heading_track(HDG_SPIN_MS, &prev, &total, 2000, &at2, 6000, &at6);
+    motion_set_velocity(0, 0);
+    heading_track(1500, &prev, &total, -1, NULL, -1, NULL);  /* include the coast */
+
+    (void)motion_get_encoder_diag(&l, &r);
+    avg_edges = (INT)((((l.hw_count < 0) ? -l.hw_count : l.hw_count)
+                     + ((r.hw_count < 0) ? -r.hw_count : r.hw_count)) / 2);
+
+    /* Encoder rotation: each wheel travels pi * track per turn */
+    enc_deg_f = ((float)avg_edges * (float)SWEEP_UM_PER_EDGE * 360.0f)
+              / ((float)HDG_TRACK_MM * 1000.0f * 3.14159265f);
+    enc_cdeg = (INT)(enc_deg_f * 100.0f);
+    mag_cdeg = (INT)total;
+
+    tm_printf((UB *)"\n[HDG] compass rotation:  %d deg\n", mag_cdeg / 100);
+    tm_printf((UB *)"[HDG] encoder rotation:  %d deg (L=%d R=%d edges, %d mm track)\n",
+              enc_cdeg / 100, (INT)l.hw_count, (INT)r.hw_count, HDG_TRACK_MM);
+    if(mag_cdeg > 0) {
+        tm_printf((UB *)"[HDG] encoder/compass = %d%%  -> effective track width for turns"
+                  " about %d mm\n",
+                  (INT)((W)enc_cdeg * 100 / mag_cdeg),
+                  (INT)((W)HDG_TRACK_MM * enc_cdeg / mag_cdeg));
+    }
+    tm_printf((UB *)"[HDG] turn rate (compass, 2-6 s): %d deg/s; commanded about %d deg/s\n",
+              (INT)((at6 - at2) / 400),
+              (INT)((2L * HDG_SPIN_MM_S * 5730L) / (HDG_TRACK_MM * 100L)));
+
+    tm_printf((UB *)"\n=== Heading test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -1209,6 +1400,8 @@ EXPORT INT usermain(void)
     imu_test_accel_6face();
 #elif MOTION_TEST_MODE == IMU_TEST_MAG_CAL
     imu_test_mag_cal();
+#elif MOTION_TEST_MODE == IMU_TEST_HEADING
+    imu_test_heading();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
