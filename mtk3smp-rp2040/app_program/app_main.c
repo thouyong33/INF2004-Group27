@@ -1421,9 +1421,13 @@ LOCAL void hump_pass(const char *name)
 
     /* Single samples are dominated by driving vibration, so the summary
        uses a centred moving average of HUMP_FILT_N samples (~0.16 s, ~3 cm
-       at 200 mm/s). With the castor 80 mm ahead of the axle a hump shows
-       twice: nose UP while the castor is on it, nose DOWN while the drive
-       wheels are. Each phase gives height = 80 mm x sin(pitch change). */
+       at 200 mm/s). The castor passes between the ramps and floats while
+       the wheels climb, so a hump shows twice (user, 2026-10-09):
+         climbing:   nose UP, the body follows the slope; height is the rise
+                     of the path, sum of sin(pitch) x distance moved
+         descending: nose DOWN, castor back on the floor 80 mm ahead;
+                     height = 80 mm x sin(pitch)
+       The two estimates are independent, so they cross-check each other. */
     {
         INT j, k, cnt;
         W acc_p, acc_r;
@@ -1432,6 +1436,11 @@ LOCAL void hump_pass(const char *name)
         INT nf = 0;
         INT fp, fr;
         INT up = 0, up_mm = 0, down = 0, down_mm = 0, rmax = 0, rmax_mm = 0;
+        INT prev_mm = 0;
+        float path_h = 0.0f;
+        float path_min = 0.0f;
+        float rise = 0.0f;
+        INT rise_mm = 0;
 
         for(i = 0; i < n; i++) {
             dp = hump_log[i].pitch_cdeg - (INT)p0;
@@ -1452,6 +1461,18 @@ LOCAL void hump_pass(const char *name)
             fr = (INT)(acc_r / cnt) - (INT)r0;
             sq_f += (W)(fp / 10) * (fp / 10);
             nf++;
+
+            /* Path height while climbing: integrate sin(pitch) over distance
+               and keep the largest rise above the lowest point so far */
+            path_h += (float)(hump_log[i].dist_mm - prev_mm) * f_sin_small(fp);
+            prev_mm = hump_log[i].dist_mm;
+            if(path_h < path_min) {
+                path_min = path_h;
+            }
+            if((path_h - path_min) > rise) {
+                rise = path_h - path_min;
+                rise_mm = hump_log[i].dist_mm;
+            }
 
             if(fp > up) {
                 up = fp;
@@ -1475,11 +1496,10 @@ LOCAL void hump_pass(const char *name)
         tm_printf((UB *)"[HUMP]   raw single-sample peak pitch %d at %d mm (vibration, ignore)\n",
                   max_dp, max_dp_mm);
         tm_printf((UB *)"[HUMP]   az range %d..%d mg (bump jolt)\n", az_min, az_max);
-        tm_printf((UB *)"[HUMP]   filtered nose UP peak   %d (x0.01 deg) at %d mm"
-                  " -> castor lift ~ %d mm\n", up, up_mm,
-                  (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(up)));
-        tm_printf((UB *)"[HUMP]   filtered nose DOWN peak %d (x0.01 deg) at %d mm"
-                  " -> wheel lift ~ %d mm\n", down, down_mm,
+        tm_printf((UB *)"[HUMP]   climbing:   nose UP peak %d (x0.01 deg) at %d mm;"
+                  " path rise ~ %d mm (ends at %d mm)\n", up, up_mm, (INT)rise, rise_mm);
+        tm_printf((UB *)"[HUMP]   descending: nose DOWN peak %d (x0.01 deg) at %d mm"
+                  " -> wheel height ~ %d mm (80 mm x sin)\n", down, down_mm,
                   (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(-down)));
         tm_printf((UB *)"[HUMP]   filtered roll peak %d (x0.01 deg) at %d mm"
                   " (one wheel higher than the other)\n", rmax, rmax_mm);
