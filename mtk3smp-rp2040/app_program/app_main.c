@@ -54,6 +54,7 @@
 #include "buddy4_imu/imu.h"
 #include "buddy4_imu/terrain.h"
 #include "buddy5_ultrasonic/ultrasonic.h"
+#include "buddy5_ultrasonic/servo.h"
 #include "common/console_in.h"
 
 #if TM_WIFI_CYW43
@@ -547,6 +548,8 @@ LOCAL T_CFLG cflg = {
  *                            collision detector over flat, small, tall.
  *   ULTRA_TEST_RANGE       - Buddy 5 step 1: HC-SR04 at 10/20/30/50/100 cm,
  *                            mean/spread/misses per point, linear fit.
+ *   SERVO_TEST_JOG         - Buddy 5 step 2: jog the scan servo with keys
+ *                            and mark centre and the safe limits.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -561,9 +564,10 @@ LOCAL T_CFLG cflg = {
 #define IMU_TEST_HUMP_LOG        10
 #define IMU_TEST_TERRAIN         11
 #define ULTRA_TEST_RANGE         12
+#define SERVO_TEST_JOG           13
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         ULTRA_TEST_RANGE
+#define MOTION_TEST_MODE         SERVO_TEST_JOG
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -607,6 +611,10 @@ LOCAL T_CFLG cflg = {
 #define US_POINTS                6
 #define US_SAMPLES               30
 #define US_PERIOD_MS             70    /* datasheet: >= 60 ms between pings */
+
+#define SERVO_JOG_START_US       1500  /* nominal servo neutral */
+#define SERVO_JOG_SMALL_US       10
+#define SERVO_JOG_BIG_US         50
 
 #define DIST_PAUSE_S             10
 
@@ -1847,6 +1855,95 @@ LOCAL void ultra_test_range(void)
 
     tm_printf((UB *)"\n=== Ultrasonic range test complete ===\n");
 }
+#elif MOTION_TEST_MODE == SERVO_TEST_JOG
+/* Buddy 5 step 2: jog the scan servo from the serial monitor and mark
+   centre and the two safe limits. Motors stay off. Each step also prints
+   the ultrasonic reading, so you can see the beam move. */
+LOCAL void servo_test_jog(void)
+{
+    INT key;
+    INT us_now_pulse;
+    INT centre = -1;
+    INT lim_a = -1;
+    INT lim_b = -1;
+    BOOL relaxed = FALSE;
+    UW echo_us;
+
+    ultrasonic_init();
+    servo_init(SERVO_JOG_START_US);
+
+    tm_printf((UB *)"\n[SRV] Servo jog. Motors stay off. Keys (no ENTER needed):\n");
+    tm_printf((UB *)"[SRV]   +  / -   step %d us      >  / <   step %d us\n",
+              SERVO_JOG_SMALL_US, SERVO_JOG_BIG_US);
+    tm_printf((UB *)"[SRV]   c  mark CENTRE (sensor pointing straight ahead)\n");
+    tm_printf((UB *)"[SRV]   l  mark LEFT limit,  r  mark RIGHT limit\n");
+    tm_printf((UB *)"[SRV]      (mark each limit a little BEFORE the mount touches)\n");
+    tm_printf((UB *)"[SRV]   o  relax / re-enable the servo,  q  finish and summarise\n");
+    tm_printf((UB *)"[SRV] Starting at %d us. Go in small steps near the plates!\n",
+              SERVO_JOG_START_US);
+
+    console_flush_input();
+    while(1) {
+        key = console_try_getc();
+        if(key < 0) {
+            tk_dly_tsk(30);
+            continue;
+        }
+
+        us_now_pulse = (INT)servo_get_us();
+        switch(key) {
+        case '+': us_now_pulse += SERVO_JOG_SMALL_US; break;
+        case '-': us_now_pulse -= SERVO_JOG_SMALL_US; break;
+        case '>': us_now_pulse += SERVO_JOG_BIG_US;   break;
+        case '<': us_now_pulse -= SERVO_JOG_BIG_US;   break;
+        case 'c': centre = us_now_pulse;
+                  tm_printf((UB *)"[SRV] CENTRE marked at %d us\n", centre);
+                  continue;
+        case 'l': lim_a = us_now_pulse;
+                  tm_printf((UB *)"[SRV] LEFT limit marked at %d us\n", lim_a);
+                  continue;
+        case 'r': lim_b = us_now_pulse;
+                  tm_printf((UB *)"[SRV] RIGHT limit marked at %d us\n", lim_b);
+                  continue;
+        case 'o': relaxed = !relaxed;
+                  if(relaxed) {
+                      servo_relax();
+                      tm_printf((UB *)"[SRV] relaxed (no pulses)\n");
+                  } else {
+                      (void)servo_set_us((uint16_t)us_now_pulse);
+                      tm_printf((UB *)"[SRV] holding %d us again\n", us_now_pulse);
+                  }
+                  continue;
+        case 'q': break;
+        default:  continue;
+        }
+        if('q' == key) {
+            break;
+        }
+
+        relaxed = FALSE;
+        us_now_pulse = (INT)servo_set_us((uint16_t)us_now_pulse);
+        tk_dly_tsk(150);                         /* let it move and settle */
+        if(E_OK == ultrasonic_read_us(&echo_us)) {
+            tm_printf((UB *)"[SRV] pulse %d us   range %d mm\n", us_now_pulse,
+                      (INT)ultrasonic_us_to_mm(echo_us));
+        } else {
+            tm_printf((UB *)"[SRV] pulse %d us   range: no echo\n", us_now_pulse);
+        }
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n[SRV] Summary: centre=%d us, left limit=%d us, right limit=%d us\n",
+              centre, lim_a, lim_b);
+    if((centre > 0) && (lim_a > 0) && (lim_b > 0)) {
+        tm_printf((UB *)"[SRV]   left is %d us from centre, right is %d us from centre\n",
+                  lim_a - centre, lim_b - centre);
+        tm_printf((UB *)"[SRV]   at a typical ~11 us/deg that is about %d and %d deg"
+                  " (angle check comes in step 3)\n",
+                  (lim_a - centre) / 11, (lim_b - centre) / 11);
+    }
+    tm_printf((UB *)"\n=== Servo jog complete (servo relaxed) ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -2033,6 +2130,8 @@ EXPORT INT usermain(void)
     imu_test_terrain();
 #elif MOTION_TEST_MODE == ULTRA_TEST_RANGE
     ultra_test_range();
+#elif MOTION_TEST_MODE == SERVO_TEST_JOG
+    servo_test_jog();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
