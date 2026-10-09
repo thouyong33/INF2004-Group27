@@ -76,7 +76,10 @@
 #define LSM_AUTO_INC             0x80u   /* set MSB of reg for burst reads */
 
 #define LSM_A_100HZ_XYZ          0x67u   /* AODR 100 Hz, X/Y/Z on */
-#define LSM_A_2G                 0x00u   /* +/-2 g, 773 Hz anti-alias */
+/* +/-2 g with the 50 Hz anti-alias filter (ABW = 11). The default 773 Hz
+ * let motor vibration alias into the 100 Hz samples: driving on a flat
+ * floor, pitch/roll jumped +/-5-10 deg sample to sample (2026-10-09). */
+#define LSM_A_2G                 0xC0u
 #define LSM_M_HIRES_50HZ         0x70u   /* M_RES high, M_ODR 50 Hz, temp off */
 #define LSM_M_2GAUSS             0x00u   /* +/-2 gauss */
 #define LSM_M_CONTINUOUS         0x00u   /* MD = 00 */

@@ -586,6 +586,7 @@ LOCAL T_CFLG cflg = {
 #define HUMP_DIST_MM             600
 #define HUMP_SETUP_S             15    /* time to place the ramps */
 #define HUMP_WHEELBASE_MM        80    /* drive axle to castor, ruler 2026-10-09 */
+#define HUMP_FILT_N              7     /* moving average, ~0.16 s / ~3 cm */
 
 #define DIST_PAUSE_S             10
 
@@ -1286,6 +1287,27 @@ LOCAL float f_sin_small(INT cdeg)
     return x * (1.0f - (x2 / 6.0f) * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
 }
 
+/* Integer square root, for the RMS print */
+LOCAL UW isqrt_w(UW v)
+{
+    UW r = 0;
+    UW bit = 1UL << 30;
+
+    while(bit > v) {
+        bit >>= 2;
+    }
+    while(bit != 0) {
+        if(v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    return r;
+}
+
 LOCAL INT hump_dist_mm(void)
 {
     enc_diag_t l, r;
@@ -1397,24 +1419,74 @@ LOCAL void hump_pass(const char *name)
                   hump_log[i].pitch_cdeg, hump_log[i].roll_cdeg, hump_log[i].az_mg);
     }
 
-    tm_printf((UB *)"[HUMP] %s summary: baseline pitch=%d roll=%d (x0.01 deg)\n",
-              name, (INT)p0, (INT)r0);
-    tm_printf((UB *)"[HUMP]   peak pitch change %d (x0.01 deg) at %d mm\n", max_dp, max_dp_mm);
-    tm_printf((UB *)"[HUMP]   peak roll change  %d (x0.01 deg) at %d mm\n", max_dr, max_dr_mm);
-    tm_printf((UB *)"[HUMP]   az range %d..%d mg (bump jolt)\n", az_min, az_max);
-    tm_printf((UB *)"[HUMP]   if one drive wheel crossed: height ~ %d mm"
-              " (track x sin(roll))\n",
-              (INT)((float)HDG_TRACK_MM * ((float)((max_dr < 0) ? -max_dr : max_dr)
-                                            * (3.14159265f / 18000.0f))));
-    tm_printf((UB *)"[HUMP]   if both wheels climbed: height ~ %d mm"
-              " (integral of sin(pitch) over distance)\n", (INT)h_int_max);
-    /* The test setup: one ramp under each drive wheel, castor (80 mm ahead,
-       centred) passing between them on the floor. Raising the axle by h
-       tips the nose down by asin(h / wheelbase). */
-    tm_printf((UB *)"[HUMP]   both drive wheels on ramps, castor on floor: height ~ %d mm"
-              " (wheelbase %d mm x sin(pitch))  <- expected setup\n",
-              (INT)((float)HUMP_WHEELBASE_MM * f_sin_small((max_dp < 0) ? -max_dp : max_dp)),
-              HUMP_WHEELBASE_MM);
+    /* Single samples are dominated by driving vibration, so the summary
+       uses a centred moving average of HUMP_FILT_N samples (~0.16 s, ~3 cm
+       at 200 mm/s). With the castor 80 mm ahead of the axle a hump shows
+       twice: nose UP while the castor is on it, nose DOWN while the drive
+       wheels are. Each phase gives height = 80 mm x sin(pitch change). */
+    {
+        INT j, k, cnt;
+        W acc_p, acc_r;
+        W sq_raw = 0;
+        W sq_f = 0;
+        INT nf = 0;
+        INT fp, fr;
+        INT up = 0, up_mm = 0, down = 0, down_mm = 0, rmax = 0, rmax_mm = 0;
+
+        for(i = 0; i < n; i++) {
+            dp = hump_log[i].pitch_cdeg - (INT)p0;
+            sq_raw += (W)(dp / 10) * (dp / 10);
+
+            acc_p = 0;
+            acc_r = 0;
+            cnt = 0;
+            for(j = -(HUMP_FILT_N / 2); j <= (HUMP_FILT_N / 2); j++) {
+                k = i + j;
+                if((k >= 0) && (k < n)) {
+                    acc_p += hump_log[k].pitch_cdeg;
+                    acc_r += hump_log[k].roll_cdeg;
+                    cnt++;
+                }
+            }
+            fp = (INT)(acc_p / cnt) - (INT)p0;
+            fr = (INT)(acc_r / cnt) - (INT)r0;
+            sq_f += (W)(fp / 10) * (fp / 10);
+            nf++;
+
+            if(fp > up) {
+                up = fp;
+                up_mm = hump_log[i].dist_mm;
+            }
+            if(fp < down) {
+                down = fp;
+                down_mm = hump_log[i].dist_mm;
+            }
+            if(((fr < 0) ? -fr : fr) > ((rmax < 0) ? -rmax : rmax)) {
+                rmax = fr;
+                rmax_mm = hump_log[i].dist_mm;
+            }
+        }
+
+        tm_printf((UB *)"[HUMP] %s summary: baseline pitch=%d roll=%d (x0.01 deg)\n",
+                  name, (INT)p0, (INT)r0);
+        tm_printf((UB *)"[HUMP]   pitch noise RMS: raw %u, filtered %u (x0.1 deg)\n",
+                  (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_raw / nf) : 0),
+                  (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_f / nf) : 0));
+        tm_printf((UB *)"[HUMP]   raw single-sample peak pitch %d at %d mm (vibration, ignore)\n",
+                  max_dp, max_dp_mm);
+        tm_printf((UB *)"[HUMP]   az range %d..%d mg (bump jolt)\n", az_min, az_max);
+        tm_printf((UB *)"[HUMP]   filtered nose UP peak   %d (x0.01 deg) at %d mm"
+                  " -> castor lift ~ %d mm\n", up, up_mm,
+                  (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(up)));
+        tm_printf((UB *)"[HUMP]   filtered nose DOWN peak %d (x0.01 deg) at %d mm"
+                  " -> wheel lift ~ %d mm\n", down, down_mm,
+                  (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(-down)));
+        tm_printf((UB *)"[HUMP]   filtered roll peak %d (x0.01 deg) at %d mm"
+                  " (one wheel higher than the other)\n", rmax, rmax_mm);
+        (void)h_int_max;
+        (void)max_dr;
+        (void)max_dr_mm;
+    }
 }
 
 LOCAL void imu_test_hump_log(void)
