@@ -1096,25 +1096,47 @@ LOCAL INT heading_avg_cdeg(INT n)
 
 /* Follow the heading for dur_ms and add up the rotation. No printing:
    the motors may be running under PI. */
+LOCAL UW now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
+/* Time is read from the kernel clock, not counted in loop steps: each
+   step is the 20 ms delay plus the I2C read and maths, so counting steps
+   overstated the turn rate by ~16 % in the first run (116 vs ~100 deg/s).
+   At each mark the running total and the time it was taken are saved. */
 LOCAL void heading_track(INT dur_ms, INT *p_prev, W *p_total,
-                         INT mark1_ms, W *p_at_mark1, INT mark2_ms, W *p_at_mark2)
+                         INT mark1_ms, W *p_at_mark1, UW *p_t_mark1,
+                         INT mark2_ms, W *p_at_mark2, UW *p_t_mark2)
 {
     imu_attitude_t att;
-    INT t;
+    UW start;
+    UW t;
+    BOOL got1 = FALSE;
+    BOOL got2 = FALSE;
 
-    for(t = 0; t < dur_ms; t += HDG_SAMPLE_MS) {
+    start = now_ms();
+    do {
         if(E_OK == imu_read_attitude(&att, NULL)) {
             *p_total += wrap_cdeg((INT)att.heading_cdeg - *p_prev);
             *p_prev = (INT)att.heading_cdeg;
         }
-        if((NULL != p_at_mark1) && (t == mark1_ms)) {
+        t = now_ms() - start;
+        if((NULL != p_at_mark1) && (!got1) && (t >= (UW)mark1_ms)) {
             *p_at_mark1 = *p_total;
+            *p_t_mark1 = t;
+            got1 = TRUE;
         }
-        if((NULL != p_at_mark2) && (t == mark2_ms)) {
+        if((NULL != p_at_mark2) && (!got2) && (t >= (UW)mark2_ms)) {
             *p_at_mark2 = *p_total;
+            *p_t_mark2 = t;
+            got2 = TRUE;
         }
         tk_dly_tsk(HDG_SAMPLE_MS);
-    }
+    } while((now_ms() - start) < (UW)dur_ms);
 }
 
 LOCAL void imu_test_heading(void)
@@ -1130,6 +1152,8 @@ LOCAL void imu_test_heading(void)
     INT h[4];
     INT i, s, prev, avg_edges, mag_cdeg, enc_cdeg;
     W total, at2, at6;
+    UW t2 = 0;
+    UW t6 = 0;
     float enc_deg_f;
 
     i2c1_init();
@@ -1193,9 +1217,9 @@ LOCAL void imu_test_heading(void)
 
     motion_reset_odometry();
     motion_set_velocity(HDG_SPIN_MM_S, -HDG_SPIN_MM_S);
-    heading_track(HDG_SPIN_MS, &prev, &total, 2000, &at2, 6000, &at6);
+    heading_track(HDG_SPIN_MS, &prev, &total, 2000, &at2, &t2, 6000, &at6, &t6);
     motion_set_velocity(0, 0);
-    heading_track(1500, &prev, &total, -1, NULL, -1, NULL);  /* include the coast */
+    heading_track(1500, &prev, &total, 0, NULL, NULL, 0, NULL, NULL);  /* include the coast */
 
     (void)motion_get_encoder_diag(&l, &r);
     avg_edges = (INT)((((l.hw_count < 0) ? -l.hw_count : l.hw_count)
@@ -1216,8 +1240,8 @@ LOCAL void imu_test_heading(void)
                   (INT)((W)enc_cdeg * 100 / mag_cdeg),
                   (INT)((W)HDG_TRACK_MM * enc_cdeg / mag_cdeg));
     }
-    tm_printf((UB *)"[HDG] turn rate (compass, 2-6 s): %d deg/s; commanded about %d deg/s\n",
-              (INT)((at6 - at2) / 400),
+    tm_printf((UB *)"[HDG] turn rate (compass, 2-6 s of spin): %d deg/s; commanded about %d deg/s\n",
+              (t6 > t2) ? (INT)((at6 - at2) * 10 / (W)(t6 - t2)) : 0,
               (INT)((2L * HDG_SPIN_MM_S * 5730L) / (HDG_TRACK_MM * 100L)));
 
     tm_printf((UB *)"\n=== Heading test complete ===\n");
