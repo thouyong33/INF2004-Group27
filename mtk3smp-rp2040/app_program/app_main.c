@@ -55,6 +55,7 @@
 #include "buddy4_imu/terrain.h"
 #include "buddy5_ultrasonic/ultrasonic.h"
 #include "buddy5_ultrasonic/servo.h"
+#include "buddy5_ultrasonic/scan.h"
 #include "common/console_in.h"
 
 #if TM_WIFI_CYW43
@@ -555,6 +556,8 @@ LOCAL T_CFLG cflg = {
  *                            window in degrees and beam width.
  *   ULTRA_TEST_BEAM        - Buddy 5 step 3b: servo fixed, car turns +/-45
  *                            deg past a narrow target at 20/35/50 cm.
+ *   ULTRA_TEST_SCAN        - Buddy 5 step 4: coarse/fine obstacle scan
+ *                            (scan.c), profile and pass-left/right advice.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -572,9 +575,10 @@ LOCAL T_CFLG cflg = {
 #define SERVO_TEST_JOG           13
 #define SERVO_TEST_MAP           14
 #define ULTRA_TEST_BEAM          15
+#define ULTRA_TEST_SCAN          16
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         ULTRA_TEST_BEAM
+#define MOTION_TEST_MODE         ULTRA_TEST_SCAN
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -636,6 +640,11 @@ LOCAL T_CFLG cflg = {
 #define BEAM_TURN_MM_S           60
 #define BEAM_SCAN_MM_S           25    /* ~25 deg/s: ~2 deg per ping */
 #define BEAM_BRAKE_CDEG          150
+
+#define SCAN_HALF_DEG            45
+#define SCAN_DETECT_MM           600
+#define SCAN_RUNS                3
+#define SCAN_CAR_HALF_MM         70    /* half track + half a wheel */
 
 #define DIST_PAUSE_S             10
 
@@ -2267,6 +2276,84 @@ LOCAL void ultra_test_beam(void)
     servo_relax();
     tm_printf((UB *)"\n=== Beam width test complete (servo relaxed) ===\n");
 }
+#elif MOTION_TEST_MODE == ULTRA_TEST_SCAN
+/* Buddy 5 step 4: the obstacle scan routine (scan.c), key-paced so you
+   can try different obstacles and positions. */
+LOCAL void ultra_test_scan(void)
+{
+    obstacle_profile_t prof;
+    INT run, key;
+    INT shift_left, shift_right;
+    UW e;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+
+    tm_printf((UB *)"\n[SCAN] Obstacle scan: the car turns %d deg each way on the spot,\n",
+              SCAN_HALF_DEG);
+    tm_printf((UB *)"[SCAN] then looks closely at each edge. Car on the floor with ~20 cm\n");
+    tm_printf((UB *)"[SCAN] clear around it. Obstacles within %d cm count.\n", SCAN_DETECT_MM / 10);
+
+    for(run = 1; run <= SCAN_RUNS; run++) {
+        tm_printf((UB *)"\n[SCAN] Run %d/%d: place an obstacle (box, hand...) in front,\n",
+                  run, SCAN_RUNS);
+        tm_printf((UB *)"[SCAN] e.g. 30-40 cm away, centred or off to one side; note where.\n");
+        tm_printf((UB *)"[SCAN] Press a key to scan.\n");
+        console_flush_input();
+        key = -1;
+        while(key < 0) {
+            tk_dly_tsk(700);
+            if(E_OK == ultrasonic_read_us(&e)) {
+                tm_printf((UB *)"[SCAN]   ahead: %d mm\n", (INT)ultrasonic_us_to_mm(e));
+            } else {
+                tm_printf((UB *)"[SCAN]   ahead: no echo\n");
+            }
+            key = console_try_getc();
+        }
+
+        if(E_OK != scan_obstacle(SCAN_HALF_DEG, SCAN_DETECT_MM, TRUE, &prof)) {
+            tm_printf((UB *)"[SCAN] scan failed\n");
+            continue;
+        }
+
+        tm_printf((UB *)"\n[SCAN] Run %d profile:\n", run);
+        if(!prof.found) {
+            tm_printf((UB *)"[SCAN]   nothing within %d mm: path clear\n", SCAN_DETECT_MM);
+            continue;
+        }
+        tm_printf((UB *)"[SCAN]   nearest %d mm at %d.%d deg (left +)\n", prof.nearest_mm,
+                  prof.nearest_cdeg / 100, ((prof.nearest_cdeg < 0) ? -prof.nearest_cdeg
+                                            : prof.nearest_cdeg) % 100 / 10);
+        tm_printf((UB *)"[SCAN]   seen from %d to %d deg (span %d deg, beam here %d deg)\n",
+                  prof.right_cdeg / 100, prof.left_cdeg / 100,
+                  (prof.left_cdeg - prof.right_cdeg) / 100, prof.beam_cdeg / 100);
+        if(prof.width_mm > 0) {
+            tm_printf((UB *)"[SCAN]   estimated width %d mm\n", prof.width_mm);
+        } else {
+            tm_printf((UB *)"[SCAN]   width below resolution (narrower than the beam spread)\n");
+        }
+        tm_printf((UB *)"[SCAN]   sides: %d mm (left side) .. %d mm (right side),"
+                  " from the car centreline, left +\n", prof.left_side_mm, prof.right_side_mm);
+
+        /* To pass on the left, the car's right flank (-half width) must
+           clear the obstacle's left side, and vice versa */
+        shift_left = prof.left_side_mm + SCAN_CAR_HALF_MM;
+        shift_right = SCAN_CAR_HALF_MM - prof.right_side_mm;
+        if((prof.right_side_mm > SCAN_CAR_HALF_MM) || (prof.left_side_mm < -SCAN_CAR_HALF_MM)) {
+            tm_printf((UB *)"[SCAN]   straight ahead is CLEAR of it\n");
+        } else if(shift_left <= shift_right) {
+            tm_printf((UB *)"[SCAN]   blocked: pass LEFT (shift %d mm), right would need %d mm\n",
+                      shift_left, shift_right);
+        } else {
+            tm_printf((UB *)"[SCAN]   blocked: pass RIGHT (shift %d mm), left would need %d mm\n",
+                      shift_right, shift_left);
+        }
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n=== Obstacle scan test complete (servo relaxed) ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -2459,6 +2546,8 @@ EXPORT INT usermain(void)
     servo_test_map();
 #elif MOTION_TEST_MODE == ULTRA_TEST_BEAM
     ultra_test_beam();
+#elif MOTION_TEST_MODE == ULTRA_TEST_SCAN
+    ultra_test_scan();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
