@@ -52,6 +52,7 @@
 #include "buddy3_line_barcode/barcode_task.h"
 #include "buddy2_motion/motion_task.h"
 #include "buddy4_imu/imu.h"
+#include "buddy4_imu/terrain.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -540,6 +541,8 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_HUMP_LOG      - Buddy 4 step 6: four 60 cm floor passes
  *                            (flat, 1 cm, 2.4 cm at 200 mm/s, 2.4 cm at 100) logging pitch,
  *                            roll, vertical accel and distance.
+ *   IMU_TEST_TERRAIN       - Buddy 4 step 7: the real-time hump and
+ *                            collision detector over flat, small, tall.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -552,9 +555,10 @@ LOCAL T_CFLG cflg = {
 #define IMU_TEST_MAG_CAL         8
 #define IMU_TEST_HEADING         9
 #define IMU_TEST_HUMP_LOG        10
+#define IMU_TEST_TERRAIN         11
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_HUMP_LOG
+#define MOTION_TEST_MODE         IMU_TEST_TERRAIN
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -590,6 +594,10 @@ LOCAL T_CFLG cflg = {
 #define HUMP_SKIP_MM             60    /* skip the speed-up after the start */
 #define HUMP_PLAT_MM             30    /* descent plateau window */
 #define HUMP_PASSES              4
+
+#define TERR_SPEED_MM_S          200   /* validated speed for hump height */
+#define TERR_DIST_MM             600
+#define TERR_MAX_EVENTS          8
 
 #define DIST_PAUSE_S             10
 
@@ -1562,6 +1570,124 @@ LOCAL void imu_test_hump_log(void)
 
     tm_printf((UB *)"\n=== Hump logging complete ===\n");
 }
+#elif MOTION_TEST_MODE == IMU_TEST_TERRAIN
+/* Buddy 4 step 7: the real-time detector (terrain.c) on the ramps.
+   Events are kept in RAM and printed after each pass, because the
+   motors are under PI while it runs. The braking at the end of each pass
+   is fed in too, to show it does not register as a hump. */
+LOCAL INT terr_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE / 1000);
+}
+
+LOCAL void terrain_pass(const char *name)
+{
+    static hump_event_t humps[TERR_MAX_EVENTS];
+    static collision_event_t colls[TERR_MAX_EVENTS];
+    imu_attitude_t att;
+    imu_raw_t s;
+    hump_event_t h;
+    collision_event_t c;
+    W p0 = 0;
+    INT base_n = 0;
+    INT nh = 0;
+    INT nc = 0;
+    INT i, dist;
+    UW ev;
+    SYSTIM tim;
+    UW t_stop = 0;
+    BOOL stopping = FALSE;
+
+    for(i = 0; i < 25; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            p0 += att.pitch_cdeg;
+            base_n++;
+        }
+        tk_dly_tsk(20);
+    }
+    terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0));
+
+    motion_reset_odometry();
+    motion_set_velocity(TERR_SPEED_MM_S, TERR_SPEED_MM_S);
+
+    while(1) {
+        if(E_OK == imu_read_attitude(&att, &s)) {
+            dist = terr_dist_mm();
+            ev = terrain_update(dist, &att, &s, motion_is_steady(), &h, &c);
+            if((0u != (ev & TERRAIN_EVT_HUMP)) && (nh < TERR_MAX_EVENTS)) {
+                humps[nh++] = h;
+            }
+            if((0u != (ev & TERRAIN_EVT_COLLISION)) && (nc < TERR_MAX_EVENTS)) {
+                colls[nc++] = c;
+            }
+
+            tk_get_tim(&tim);
+            if((!stopping) && (dist >= TERR_DIST_MM)) {
+                motion_set_velocity(0, 0);
+                stopping = TRUE;
+                t_stop = tim.lo;
+            }
+            if(stopping && ((tim.lo - t_stop) > 800u)) {
+                break;
+            }
+        }
+        tk_dly_tsk(20);
+    }
+    tk_dly_tsk(300);
+
+    tm_printf((UB *)"\n[TERR] %s: rest pitch %d (x0.01 deg)\n", name,
+              (INT)((base_n > 0) ? (p0 / base_n) : 0));
+    tm_printf((UB *)"[TERR]   %d hump(s):\n", nh);
+    for(i = 0; i < nh; i++) {
+        tm_printf((UB *)"[TERR]     HUMP %d..%d mm, height ~%d mm"
+                  " (30 mm mean %d x0.01 deg from %d mm)\n",
+                  (INT)humps[i].start_mm, (INT)humps[i].end_mm, humps[i].height_mm,
+                  humps[i].plateau_cdeg, (INT)humps[i].plateau_mm);
+    }
+    tm_printf((UB *)"[TERR]   %d collision(s):\n", nc);
+    for(i = 0; i < nc; i++) {
+        tm_printf((UB *)"[TERR]     COLLISION at %d mm, jolt %d mg\n",
+                  (INT)colls[i].dist_mm, colls[i].jolt_mg);
+    }
+    tm_printf((UB *)"[TERR]   largest jolt %d mg (collision threshold 500);"
+              " most nose-down while steady %d (x0.01 deg)\n",
+              terrain_max_jolt_mg(), terrain_min_pitch_cdeg());
+}
+
+LOCAL void imu_test_terrain(void)
+{
+    static const char *const passes[3] = {
+        "Pass 1/3: FLAT floor, no ramp (expect: no hump)",
+        "Pass 2/3: SMALL ramps ~1.0 cm (expect: one hump ~10 mm)",
+        "Pass 3/3: TALL ramps ~2.4 cm (expect: one hump ~24 mm)",
+    };
+    INT p, s;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[TERR] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    tm_printf((UB *)"\n[TERR] Hump/collision detector: 3 passes of %d cm at %d mm/s.\n",
+              TERR_DIST_MM / 10, TERR_SPEED_MM_S);
+    tm_printf((UB *)"[TERR] Same layout as before: one ramp per drive wheel, ~20 cm ahead,\n");
+    tm_printf((UB *)"[TERR] castor between them. Keep the car still until it drives.\n");
+
+    for(p = 0; p < 3; p++) {
+        tm_printf((UB *)"\n[TERR] %s\n", passes[p]);
+        for(s = HUMP_SETUP_S; s > 0; s--) {
+            tm_printf((UB *)"[TERR]   driving in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        terrain_pass(passes[p]);
+    }
+
+    tm_printf((UB *)"\n=== Terrain detector test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -1744,6 +1870,8 @@ EXPORT INT usermain(void)
     imu_test_heading();
 #elif MOTION_TEST_MODE == IMU_TEST_HUMP_LOG
     imu_test_hump_log();
+#elif MOTION_TEST_MODE == IMU_TEST_TERRAIN
+    imu_test_terrain();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

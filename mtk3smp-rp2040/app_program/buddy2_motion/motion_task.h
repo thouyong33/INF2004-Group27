@@ -84,6 +84,14 @@ ER motion_set_speed(int8_t left, int8_t right);
 ER motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s);
 
 /**
+ * @brief True while driving under PI at a constant, non-zero target with
+ * both setpoints settled (not speeding up, slowing down or stopped).
+ * Speed changes read as tilt on the accelerometer, so Buddy 4 only trusts
+ * pitch for hump detection while this is true.
+ */
+bool motion_is_steady(void);
+
+/**
  * @brief Start recording one motion_trace_t per control period into RAM.
  * Recording stops when the buffer is full.
  */

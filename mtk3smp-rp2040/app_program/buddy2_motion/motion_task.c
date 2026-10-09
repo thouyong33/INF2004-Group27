@@ -943,6 +943,15 @@ motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s)
     return motion_send_cmd(left_mm_s, right_mm_s, 1u);
 }
 
+bool
+motion_is_steady(void)
+{
+    return g_closed_loop
+        && (0 != g_pi_left.target_eps) && (0 != g_pi_right.target_eps)
+        && (g_pi_left.setpoint_eps == g_pi_left.target_eps)
+        && (g_pi_right.setpoint_eps == g_pi_right.target_eps);
+}
+
 void
 motion_trace_start(void)
 {
