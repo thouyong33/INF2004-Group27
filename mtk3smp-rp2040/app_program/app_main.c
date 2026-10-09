@@ -584,7 +584,8 @@ LOCAL T_CFLG cflg = {
 #define HUMP_SAMPLE_MS           20
 #define HUMP_SPEED_MM_S          200
 #define HUMP_DIST_MM             600
-#define HUMP_SETUP_S             15    /* time to place the ramp */
+#define HUMP_SETUP_S             15    /* time to place the ramps */
+#define HUMP_WHEELBASE_MM        80    /* drive axle to castor, ruler 2026-10-09 */
 
 #define DIST_PAUSE_S             10
 
@@ -1275,6 +1276,16 @@ typedef struct {
 
 LOCAL hump_sample_t hump_log[HUMP_LOG_LEN];
 
+/* sin of an angle in hundredths of a degree, 0..9000: Taylor to x^7,
+   under 0.0001 error up to 90 deg. No libm. */
+LOCAL float f_sin_small(INT cdeg)
+{
+    float x = (float)cdeg * (3.14159265f / 18000.0f);
+    float x2 = x * x;
+
+    return x * (1.0f - (x2 / 6.0f) * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
+}
+
 LOCAL INT hump_dist_mm(void)
 {
     enc_diag_t l, r;
@@ -1397,6 +1408,13 @@ LOCAL void hump_pass(const char *name)
                                             * (3.14159265f / 18000.0f))));
     tm_printf((UB *)"[HUMP]   if both wheels climbed: height ~ %d mm"
               " (integral of sin(pitch) over distance)\n", (INT)h_int_max);
+    /* The test setup: one ramp under each drive wheel, castor (80 mm ahead,
+       centred) passing between them on the floor. Raising the axle by h
+       tips the nose down by asin(h / wheelbase). */
+    tm_printf((UB *)"[HUMP]   both drive wheels on ramps, castor on floor: height ~ %d mm"
+              " (wheelbase %d mm x sin(pitch))  <- expected setup\n",
+              (INT)((float)HUMP_WHEELBASE_MM * f_sin_small((max_dp < 0) ? -max_dp : max_dp)),
+              HUMP_WHEELBASE_MM);
 }
 
 LOCAL void imu_test_hump_log(void)
@@ -1416,8 +1434,9 @@ LOCAL void imu_test_hump_log(void)
 
     tm_printf((UB *)"\n[HUMP] Ramp logging: 3 passes of %d cm at %d mm/s.\n",
               HUMP_DIST_MM / 10, HUMP_SPEED_MM_S);
-    tm_printf((UB *)"[HUMP] Place the ramp about 20 cm ahead of the front of the car,\n");
-    tm_printf((UB *)"[HUMP] lined up the way it will be crossed on the real track.\n");
+    tm_printf((UB *)"[HUMP] Place one ramp in front of EACH drive wheel, about 20 cm\n");
+    tm_printf((UB *)"[HUMP] ahead, side by side so both wheels reach them together.\n");
+    tm_printf((UB *)"[HUMP] Check the castor passes between them on the floor.\n");
 
     for(p = 0; p < 3; p++) {
         tm_printf((UB *)"\n[HUMP] %s\n", passes[p]);
