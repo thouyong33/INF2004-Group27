@@ -35,6 +35,13 @@ void us_delay(uint32_t us);
 ER ultrasonic_read_us(uint32_t *p_echo_us);
 
 /**
+ * @brief As ultrasonic_read_us, but give up once the echo is longer than
+ * max_us (5830 us ~ 1 m). Use while driving, so a ping with nothing in
+ * range blocks the caller for a few ms instead of 25 ms.
+ */
+ER ultrasonic_read_us_max(uint32_t *p_echo_us, uint32_t max_us);
+
+/**
  * @brief Echo time to distance with the speed of sound at ~20 C,
  * before any calibration: mm = us x 343 / 2000.
  */

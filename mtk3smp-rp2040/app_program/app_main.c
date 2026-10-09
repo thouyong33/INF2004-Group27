@@ -558,6 +558,10 @@ LOCAL T_CFLG cflg = {
  *                            deg past a narrow target at 20/35/50 cm.
  *   ULTRA_TEST_SCAN        - Buddy 5 step 4: coarse/fine obstacle scan
  *                            (scan.c), profile and pass-left/right advice.
+ *   DEMO_ROAM              - Buddies 2+4+5 together: drive at 150 mm/s,
+ *                            stop at an obstacle within 20 cm, turn 45 deg
+ *                            left on the spot (compass checks the turn),
+ *                            repeat until clear. Any key pauses/resumes.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -576,9 +580,10 @@ LOCAL T_CFLG cflg = {
 #define SERVO_TEST_MAP           14
 #define ULTRA_TEST_BEAM          15
 #define ULTRA_TEST_SCAN          16
+#define DEMO_ROAM                17
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         ULTRA_TEST_SCAN
+#define MOTION_TEST_MODE         DEMO_ROAM
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -645,6 +650,18 @@ LOCAL T_CFLG cflg = {
 #define SCAN_DETECT_MM           600
 #define SCAN_RUNS                3
 #define SCAN_CAR_HALF_MM         70    /* half track + half a wheel */
+
+#define ROAM_SPEED_MM_S          150
+#define ROAM_STOP_MM             200   /* raw sensor reading; see roam notes */
+#define ROAM_CONFIRM             2     /* consecutive near pings to stop */
+#define ROAM_PING_EVERY          3     /* ~21+ ms loop periods per ping (>= 60 ms) */
+#define ROAM_ECHO_MAX_US         5830  /* ~1 m: no-echo pings end early */
+#define ROAM_TURN_CDEG           4500
+#define ROAM_TURN_MM_S           60    /* ~60 deg/s on the spot */
+#define ROAM_TURN_BRAKE_CDEG     150
+#define ROAM_BACK_MM_S           100
+#define ROAM_BACK_MS             500   /* ~5 cm back after a bump */
+#define ROAM_START_S             5
 
 #define DIST_PAUSE_S             10
 
@@ -2354,6 +2371,308 @@ LOCAL void ultra_test_scan(void)
     servo_relax();
     tm_printf((UB *)"\n=== Obstacle scan test complete (servo relaxed) ===\n");
 }
+#elif MOTION_TEST_MODE == DEMO_ROAM
+/* Integrated demo, Buddies 2 + 4 + 5: a "Roomba without the bumping".
+   Buddy 5: HC-SR04 at servo centre looks ahead while driving.
+   Buddy 2: PI drives at ROAM_SPEED_MM_S, and the encoders measure each
+            45 deg left turn on the spot.
+   Buddy 4: the compass reports how far each turn went (independent of the
+            wheels); the terrain detector stops the car on a bump the
+            sonar missed and counts humps driven over.
+   Nothing is printed while the car drives (usermain outranks the motion
+   task), only while it is stopped.
+
+   ROAM_STOP_MM is the raw sensor reading. The range test put the raw
+   reading ~58 mm above the distance from the car front, so the car stops
+   roughly 14-20 cm short of the obstacle's face. */
+LOCAL int32_t roam_l0;
+LOCAL int32_t roam_r0;
+LOCAL int32_t roam_d0;
+
+/* Car rotation since roam_l0/roam_r0, left positive, x0.01 deg */
+LOCAL INT roam_angle_cdeg(void)
+{
+    enc_diag_t l, r;
+    float half_diff;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    half_diff = ((float)((r.hw_count - roam_r0) - (l.hw_count - roam_l0))) * 0.5f;
+    return (INT)((half_diff * (float)SWEEP_UM_PER_EDGE * 36000.0f)
+                 / (3.14159265f * (float)HDG_TRACK_MM * 1000.0f));
+}
+
+/* Forward travel since the demo started (turns cancel out), mm */
+LOCAL INT roam_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) - roam_d0) * SWEEP_UM_PER_EDGE / 1000);
+}
+
+LOCAL INT roam_ping_mm(void)
+{
+    UW e;
+
+    if(E_OK == ultrasonic_read_us_max(&e, ROAM_ECHO_MAX_US)) {
+        return (INT)ultrasonic_us_to_mm(e);
+    }
+    return -1;
+}
+
+LOCAL BOOL roam_near(INT mm)
+{
+    return (mm > 0) && (mm <= ROAM_STOP_MM);
+}
+
+/* Stopped: three pings, blocked if at least two are near. p_mm gets the
+   nearest near reading, or the last reading when clear. */
+LOCAL BOOL roam_blocked(INT *p_mm)
+{
+    INT i, mm;
+    INT near_n = 0;
+    INT nearest = -1;
+
+    for(i = 0; i < 3; i++) {
+        mm = roam_ping_mm();
+        if(roam_near(mm)) {
+            near_n++;
+            if((nearest < 0) || (mm < nearest)) {
+                nearest = mm;
+            }
+        }
+        *p_mm = mm;
+        tk_dly_tsk(US_PERIOD_MS);
+    }
+    if(near_n >= 2) {
+        *p_mm = nearest;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Compass heading averaged over 0.2 s (unwrapped around the first
+   sample), x0.01 deg clockwise from magnetic north, or -1 on failure */
+LOCAL INT roam_heading_cdeg(void)
+{
+    imu_attitude_t att;
+    INT first = -1;
+    INT n = 0;
+    INT i, d;
+    W sum = 0;
+
+    for(i = 0; i < 10; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            if(first < 0) {
+                first = (INT)att.heading_cdeg;
+            }
+            d = (INT)att.heading_cdeg - first;
+            if(d > 18000) {
+                d -= 36000;
+            } else if(d < -18000) {
+                d += 36000;
+            }
+            sum += d;
+            n++;
+        }
+        tk_dly_tsk(20);
+    }
+    if(n == 0) {
+        return -1;
+    }
+    d = first + (INT)(sum / n);
+    if(d < 0) {
+        d += 36000;
+    } else if(d >= 36000) {
+        d -= 36000;
+    }
+    return d;
+}
+
+/* 45 deg left on the spot by the encoders; returns the angle reached */
+LOCAL INT roam_turn_left(void)
+{
+    enc_diag_t l, r;
+    UW i;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    roam_l0 = l.hw_count;
+    roam_r0 = r.hw_count;
+
+    motion_set_velocity(-ROAM_TURN_MM_S, ROAM_TURN_MM_S);
+    for(i = 0; i < 1000u; i++) {
+        if(roam_angle_cdeg() >= (ROAM_TURN_CDEG - ROAM_TURN_BRAKE_CDEG)) {
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(400);
+    return roam_angle_cdeg();
+}
+
+/* Print x0.01 deg as d.d, sign kept */
+LOCAL void roam_print_deg(INT cdeg)
+{
+    INT a = (cdeg < 0) ? -cdeg : cdeg;
+
+    tm_printf((UB *)"%s%d.%d", (cdeg < 0) ? "-" : "", a / 100, (a % 100) / 10);
+}
+
+LOCAL void demo_roam(void)
+{
+    static imu_attitude_t att;
+    static imu_raw_t cal;
+    static hump_event_t hump;
+    static collision_event_t coll;
+    enc_diag_t l, r;
+    BOOL imu_ok;
+    BOOL bumped, paused, force_turn;
+    INT s, tick, near_n, mm, enc, h0, h1, d;
+    INT legs = 0;
+    INT turns = 0;
+    INT humps = 0;
+    INT leg_start;
+    W p0 = 0;
+    INT base_n = 0;
+    UW ev;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+    i2c1_init();
+    imu_ok = (E_OK == imu_init());
+
+    tm_printf((UB *)"\n[ROAM] Roaming demo (Buddies 2 + 4 + 5).\n");
+    tm_printf((UB *)"[ROAM] Drives at %d mm/s; an obstacle within %d mm (sensor reading)\n",
+              ROAM_SPEED_MM_S, ROAM_STOP_MM);
+    tm_printf((UB *)"[ROAM] stops it, then it turns 45 deg left until the way is clear.\n");
+    tm_printf((UB *)"[ROAM] Any key pauses / resumes.\n");
+    if(!imu_ok) {
+        tm_printf((UB *)"[ROAM] imu_init failed: running without compass and bump stop\n");
+    }
+    for(s = ROAM_START_S; s > 0; s--) {
+        tm_printf((UB *)"[ROAM] starting in %d s (keep the car still)\n", s);
+        tk_dly_tsk(1000);
+    }
+
+    if(imu_ok) {
+        for(s = 0; s < 25; s++) {
+            if(E_OK == imu_read_attitude(&att, NULL)) {
+                p0 += att.pitch_cdeg;
+                base_n++;
+            }
+            tk_dly_tsk(20);
+        }
+        terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0));
+    }
+    (void)motion_get_encoder_diag(&l, &r);
+    roam_d0 = (l.hw_count + r.hw_count) / 2;
+    console_flush_input();
+    force_turn = FALSE;
+
+    while(1) {
+        /* ---- Stopped: turn 45 deg left until nothing is within range ---- */
+        while(force_turn || roam_blocked(&mm)) {
+            if(force_turn) {
+                tm_printf((UB *)"[ROAM] turning away from the bump\n");
+            } else {
+                tm_printf((UB *)"[ROAM] blocked at %d mm: turning 45 deg left\n", mm);
+            }
+            force_turn = FALSE;
+            h0 = imu_ok ? roam_heading_cdeg() : -1;
+            enc = roam_turn_left();
+            h1 = imu_ok ? roam_heading_cdeg() : -1;
+            turns++;
+
+            tm_printf((UB *)"[ROAM]   turn %d: encoders ", turns);
+            roam_print_deg(enc);
+            if((h0 >= 0) && (h1 >= 0)) {
+                /* Heading is clockwise, so a left turn lowers it */
+                d = h0 - h1;
+                if(d > 18000) {
+                    d -= 36000;
+                } else if(d < -18000) {
+                    d += 36000;
+                }
+                tm_printf((UB *)" deg, compass ");
+                roam_print_deg(d);
+                tm_printf((UB *)" deg (heading %d -> %d)\n", h0 / 100, h1 / 100);
+            } else {
+                tm_printf((UB *)" deg\n");
+            }
+        }
+
+        /* ---- Drive until something is near, a bump, or a key ---- */
+        legs++;
+        tm_printf((UB *)"[ROAM] clear (ahead %d mm): leg %d, driving\n", mm, legs);
+        leg_start = roam_dist_mm();
+        bumped = FALSE;
+        paused = FALSE;
+        near_n = 0;
+        tick = 0;
+        motion_set_velocity(ROAM_SPEED_MM_S, ROAM_SPEED_MM_S);
+
+        while(1) {
+            if(imu_ok && (E_OK == imu_read_attitude(&att, &cal))) {
+                ev = terrain_update(roam_dist_mm(), &att, &cal, motion_is_steady(),
+                                    &hump, &coll);
+                if(0u != (ev & TERRAIN_EVT_HUMP)) {
+                    humps++;
+                }
+                if(0u != (ev & TERRAIN_EVT_COLLISION)) {
+                    bumped = TRUE;
+                    break;
+                }
+            }
+            if(++tick >= ROAM_PING_EVERY) {
+                tick = 0;
+                mm = roam_ping_mm();
+                if(roam_near(mm)) {
+                    if(++near_n >= ROAM_CONFIRM) {
+                        break;
+                    }
+                } else {
+                    near_n = 0;
+                }
+            }
+            if(console_try_getc() >= 0) {
+                paused = TRUE;
+                break;
+            }
+            tk_dly_tsk(20);
+        }
+        motion_set_velocity(0, 0);
+        tk_dly_tsk(500);
+
+        tm_printf((UB *)"[ROAM] stopped after %d mm", roam_dist_mm() - leg_start);
+        if(bumped) {
+            tm_printf((UB *)": BUMP (jolt %d mg), backing off\n", coll.jolt_mg);
+            motion_set_velocity(-ROAM_BACK_MM_S, -ROAM_BACK_MM_S);
+            tk_dly_tsk(ROAM_BACK_MS);
+            motion_set_velocity(0, 0);
+            tk_dly_tsk(500);
+            force_turn = TRUE;
+        } else if(paused) {
+            tm_printf((UB *)": paused. Press a key to resume.\n");
+        } else {
+            tm_printf((UB *)": obstacle at %d mm\n", mm);
+        }
+        if(humps > 0) {
+            tm_printf((UB *)"[ROAM]   humps so far: %d (last ~%d mm high)\n",
+                      humps, hump.height_mm);
+        }
+
+        if(paused) {
+            tk_dly_tsk(300);
+            console_flush_input();
+            while(console_try_getc() < 0) {
+                tk_dly_tsk(100);
+            }
+            tm_printf((UB *)"[ROAM] resumed (%d legs, %d turns so far)\n", legs, turns);
+        }
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -2548,6 +2867,8 @@ EXPORT INT usermain(void)
     ultra_test_beam();
 #elif MOTION_TEST_MODE == ULTRA_TEST_SCAN
     ultra_test_scan();
+#elif MOTION_TEST_MODE == DEMO_ROAM
+    demo_roam();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

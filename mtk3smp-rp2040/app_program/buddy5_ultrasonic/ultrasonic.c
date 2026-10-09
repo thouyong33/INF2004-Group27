@@ -76,6 +76,12 @@ echo_high(void)
 ER
 ultrasonic_read_us(uint32_t *p_echo_us)
 {
+    return ultrasonic_read_us_max(p_echo_us, ECHO_MAX_US);
+}
+
+ER
+ultrasonic_read_us_max(uint32_t *p_echo_us, uint32_t max_us)
+{
     uint32_t t0;
     uint32_t rise;
 
@@ -105,7 +111,7 @@ ultrasonic_read_us(uint32_t *p_echo_us)
     rise = us_now();
     while (echo_high())
     {
-        if ((us_now() - rise) > ECHO_MAX_US)
+        if ((us_now() - rise) > max_us)
         {
             return E_TMOUT;
         }
