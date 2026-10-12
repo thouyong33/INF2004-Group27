@@ -662,6 +662,14 @@ LOCAL T_CFLG cflg = {
 #define ROAM_BACK_MM_S           100
 #define ROAM_BACK_MS             500   /* ~5 cm back after a bump */
 #define ROAM_START_S             5
+#define ROAM_SPD_WIN_MS          100   /* wheel speed window */
+#define ROAM_SPD_RING            8     /* > ROAM_SPD_WIN_MS / loop period */
+#define ROAM_SPD_SETTLE_MS       400   /* skip speed checks while starting */
+#define ROAM_JOLT_CONFIRM_MS     250   /* a jolt must slow the wheels within this */
+#define ROAM_JOLT_SLOW_PCT       60    /* ...to below this % of the command */
+#define ROAM_STALL_PCT           30    /* below this %, for ROAM_STALL_N loops: stuck */
+#define ROAM_STALL_N             3
+#define ROAM_IGNORED_MAX         4
 
 #define DIST_PAUSE_S             10
 
@@ -2377,8 +2385,9 @@ LOCAL void ultra_test_scan(void)
    Buddy 2: PI drives at ROAM_SPEED_MM_S, and the encoders measure each
             45 deg left turn on the spot.
    Buddy 4: the compass reports how far each turn went (independent of the
-            wheels); the terrain detector stops the car on a bump the
-            sonar missed and counts humps driven over.
+            wheels); the terrain detector flags a jolt, and it counts as a
+            bump only if the wheels slow down too (a stall alone also counts);
+            it also counts humps driven over.
    Nothing is printed while the car drives (usermain outranks the motion
    task), only while it is stopped.
 
@@ -2519,6 +2528,15 @@ LOCAL void roam_print_deg(INT cdeg)
     tm_printf((UB *)"%s%d.%d", (cdeg < 0) ? "-" : "", a / 100, (a % 100) / 10);
 }
 
+/* Milliseconds from the kernel clock */
+LOCAL UW roam_now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
 LOCAL void demo_roam(void)
 {
     static imu_attitude_t att;
@@ -2533,6 +2551,13 @@ LOCAL void demo_roam(void)
     INT turns = 0;
     INT humps = 0;
     INT leg_start;
+    static UW ring_t[ROAM_SPD_RING];
+    static INT ring_d[ROAM_SPD_RING];
+    static INT ign_mg[ROAM_IGNORED_MAX];
+    static INT ign_pct[ROAM_IGNORED_MAX];
+    INT ring_n, ring_i, k, j, v_pct, min_pct, stall_n, n_ign, dist;
+    UW t, leg_t0, jolt_t;
+    BOOL jolt_pending, stalled;
     W p0 = 0;
     INT base_n = 0;
     UW ev;
@@ -2608,23 +2633,85 @@ LOCAL void demo_roam(void)
         tm_printf((UB *)"[ROAM] clear (ahead %d mm): leg %d, driving\n", mm, legs);
         leg_start = roam_dist_mm();
         bumped = FALSE;
+        stalled = FALSE;
         paused = FALSE;
+        jolt_pending = FALSE;
+        jolt_t = 0u;
+        min_pct = 100;
+        v_pct = 100;
+        n_ign = 0;
+        stall_n = 0;
+        ring_n = 0;
+        ring_i = 0;
         near_n = 0;
         tick = 0;
+        leg_t0 = roam_now_ms();
         motion_set_velocity(ROAM_SPEED_MM_S, ROAM_SPEED_MM_S);
 
         while(1) {
+            /* Forward speed over the last ROAM_SPD_WIN_MS, % of the command
+               (100 until a full window has passed after the start) */
+            t = roam_now_ms();
+            dist = roam_dist_mm();
+            ring_t[ring_i] = t;
+            ring_d[ring_i] = dist;
+            ring_i = (ring_i + 1) % ROAM_SPD_RING;
+            if(ring_n < ROAM_SPD_RING) {
+                ring_n++;
+            }
+            v_pct = 100;
+            if((t - leg_t0) >= ROAM_SPD_SETTLE_MS) {
+                for(j = 1; j < ring_n; j++) {
+                    k = (ring_i - 1 - j + ROAM_SPD_RING) % ROAM_SPD_RING;
+                    if((t - ring_t[k]) >= ROAM_SPD_WIN_MS) {
+                        v_pct = (INT)(((dist - ring_d[k]) * 100000)
+                                      / ((INT)(t - ring_t[k]) * ROAM_SPEED_MM_S));
+                        break;
+                    }
+                }
+            }
+
+            /* A real hit slows the wheels too; a floor seam or the castor
+               flicking round only jolts the IMU */
             if(imu_ok && (E_OK == imu_read_attitude(&att, &cal))) {
-                ev = terrain_update(roam_dist_mm(), &att, &cal, motion_is_steady(),
+                ev = terrain_update(dist, &att, &cal, motion_is_steady(),
                                     &hump, &coll);
                 if(0u != (ev & TERRAIN_EVT_HUMP)) {
                     humps++;
                 }
-                if(0u != (ev & TERRAIN_EVT_COLLISION)) {
+                if((0u != (ev & TERRAIN_EVT_COLLISION)) && (!jolt_pending)) {
+                    jolt_pending = TRUE;
+                    jolt_t = t;
+                    min_pct = v_pct;
+                }
+            }
+            if(jolt_pending) {
+                if(v_pct < min_pct) {
+                    min_pct = v_pct;
+                }
+                if(min_pct < ROAM_JOLT_SLOW_PCT) {
                     bumped = TRUE;
                     break;
                 }
+                if((t - jolt_t) > ROAM_JOLT_CONFIRM_MS) {
+                    if(n_ign < ROAM_IGNORED_MAX) {
+                        ign_mg[n_ign] = coll.jolt_mg;
+                        ign_pct[n_ign] = min_pct;
+                        n_ign++;
+                    }
+                    jolt_pending = FALSE;
+                }
             }
+            /* Pushing against something the sonar missed, jolt or not */
+            if(v_pct < ROAM_STALL_PCT) {
+                if(++stall_n >= ROAM_STALL_N) {
+                    stalled = TRUE;
+                    break;
+                }
+            } else {
+                stall_n = 0;
+            }
+
             if(++tick >= ROAM_PING_EVERY) {
                 tick = 0;
                 mm = roam_ping_mm();
@@ -2645,9 +2732,18 @@ LOCAL void demo_roam(void)
         motion_set_velocity(0, 0);
         tk_dly_tsk(500);
 
+        for(j = 0; j < n_ign; j++) {
+            tm_printf((UB *)"[ROAM]   ignored jolt %d mg: wheels kept %d%% speed\n",
+                      ign_mg[j], ign_pct[j]);
+        }
         tm_printf((UB *)"[ROAM] stopped after %d mm", roam_dist_mm() - leg_start);
-        if(bumped) {
-            tm_printf((UB *)": BUMP (jolt %d mg), backing off\n", coll.jolt_mg);
+        if(bumped || stalled) {
+            if(bumped) {
+                tm_printf((UB *)": BUMP (jolt %d mg, wheels down to %d%%), backing off\n",
+                          coll.jolt_mg, min_pct);
+            } else {
+                tm_printf((UB *)": STALLED (wheels at %d%%), backing off\n", v_pct);
+            }
             motion_set_velocity(-ROAM_BACK_MM_S, -ROAM_BACK_MM_S);
             tk_dly_tsk(ROAM_BACK_MS);
             motion_set_velocity(0, 0);
