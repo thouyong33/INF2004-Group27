@@ -50,6 +50,8 @@
 
 // ADDED: Robot task includes
 #include "buddy3_line_barcode/barcode_task.h"
+#include "buddy3_line_barcode/ir_sensor.h"
+#include "common/pin_defs.h"
 #include "buddy2_motion/motion_task.h"
 #include "buddy4_imu/imu.h"
 #include "buddy4_imu/terrain.h"
@@ -562,6 +564,9 @@ LOCAL T_CFLG cflg = {
  *                            stop at an obstacle within 20 cm, turn 45 deg
  *                            left on the spot (compass checks the turn),
  *                            repeat until clear. Any key pauses/resumes.
+ *   IR_TEST_LOG            - Buddy 3 step 1: live IR readout, then hand-
+ *                            pushed passes printing black/white run widths
+ *                            per sensor (encoder distance, motors off).
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -581,9 +586,10 @@ LOCAL T_CFLG cflg = {
 #define ULTRA_TEST_BEAM          15
 #define ULTRA_TEST_SCAN          16
 #define DEMO_ROAM                17
+#define IR_TEST_LOG              18
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         DEMO_ROAM
+#define MOTION_TEST_MODE         IR_TEST_LOG
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -670,6 +676,9 @@ LOCAL T_CFLG cflg = {
 #define ROAM_STALL_PCT           30    /* below this %, for ROAM_STALL_N loops: stuck */
 #define ROAM_STALL_N             3
 #define ROAM_IGNORED_MAX         4
+
+#define IR_LOG_LEN               400   /* sensor changes per pass */
+#define IR_SHORT_MM10            10    /* runs under 1 mm count as chatter */
 
 #define DIST_PAUSE_S             10
 
@@ -2769,6 +2778,129 @@ LOCAL void demo_roam(void)
         }
     }
 }
+#elif MOTION_TEST_MODE == IR_TEST_LOG
+/* Buddy 3 step 1: IR bring-up. Live readout to check polarity, then
+   hand-pushed passes (motors off) that record every sensor change with
+   the encoder distance, printed afterwards as black/white run widths. */
+typedef struct {
+    INT mm10;                    /* distance, x0.1 mm */
+    UB  bits;                    /* ir_read() after the change */
+} ir_evt_t;
+
+LOCAL UW ir_e0;
+
+/* Distance pushed since the pass started, x0.1 mm. hw_edges counts either
+   way round, so push in one direction only. */
+LOCAL INT ir_pos_mm10(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((l.hw_edges + r.hw_edges - ir_e0) * SWEEP_UM_PER_EDGE) / 200u);
+}
+
+LOCAL void ir_print_mm10(INT v)
+{
+    tm_printf((UB *)"%d.%d", v / 10, v % 10);
+}
+
+/* One sensor's runs between its first and last change in the pass */
+LOCAL void ir_print_runs(const ir_evt_t *ev, INT n, UB bit, const char *name)
+{
+    INT i, k = 0;
+    INT last_mm10 = -1;
+    INT short_n = 0;
+    BOOL was = FALSE;
+
+    tm_printf((UB *)"[IR] %s runs, mm (B black, W white):\n[IR]  ", name);
+    for(i = 0; i < n; i++) {
+        BOOL now = (0u != (ev[i].bits & bit));
+
+        if((i > 0) && (now == was)) {
+            continue;                    /* another sensor changed */
+        }
+        if(last_mm10 >= 0) {
+            tm_printf((UB *)" %s", was ? "B" : "W");
+            ir_print_mm10(ev[i].mm10 - last_mm10);
+            if((ev[i].mm10 - last_mm10) < IR_SHORT_MM10) {
+                short_n++;
+            }
+            if((++k % 10) == 0) {
+                tm_printf((UB *)"\n[IR]  ");
+            }
+        }
+        last_mm10 = ev[i].mm10;
+        was = now;
+    }
+    if(k == 0) {
+        tm_printf((UB *)" (no change)");
+    }
+    tm_printf((UB *)"\n[IR]   %d runs, %d shorter than 1 mm (edge chatter)\n", k, short_n);
+}
+
+LOCAL void ir_test_log(void)
+{
+    static ir_evt_t ev[IR_LOG_LEN];
+    enc_diag_t l, r;
+    INT pass, n, key;
+    UB bits, prev;
+
+    ir_init();
+    tm_printf((UB *)"\n[IR] IR bring-up: L=GP%d C=GP%d R=GP%d, 1 = black expected.\n",
+              IR_LEFT_DOUT, IR_CENTER_DOUT, IR_RIGHT_DOUT);
+    tm_printf((UB *)"[IR] Live readout: hold the car with each sensor over white, then\n");
+    tm_printf((UB *)"[IR] black (the line or tape). Press a key to go on to the passes.\n");
+    console_flush_input();
+    key = -1;
+    while(key < 0) {
+        bits = (UB)ir_read();
+        tm_printf((UB *)"[IR]   L=%d C=%d R=%d\n", (0u != (bits & IR_BIT_LEFT)) ? 1 : 0,
+                  (0u != (bits & IR_BIT_CENTRE)) ? 1 : 0,
+                  (0u != (bits & IR_BIT_RIGHT)) ? 1 : 0);
+        tk_dly_tsk(400);
+        key = console_try_getc();
+    }
+
+    for(pass = 1; ; pass++) {
+        tm_printf((UB *)"\n[IR] Pass %d: put the car ~3 cm before the line or barcode,\n", pass);
+        tm_printf((UB *)"[IR] press a key, push it slowly and steadily forwards only across,\n");
+        tm_printf((UB *)"[IR] then press a key to stop recording.\n");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tm_printf((UB *)"[IR] recording...\n");
+        tk_dly_tsk(100);
+        console_flush_input();
+
+        (void)motion_get_encoder_diag(&l, &r);
+        ir_e0 = l.hw_edges + r.hw_edges;
+        n = 0;
+        prev = (UB)ir_read();
+        ev[n].mm10 = 0;
+        ev[n].bits = prev;
+        n++;
+        /* No printing here: a print would stretch the poll and blur edges */
+        while((n < IR_LOG_LEN) && (console_try_getc() < 0)) {
+            bits = (UB)ir_read();
+            if(bits != prev) {
+                ev[n].mm10 = ir_pos_mm10();
+                ev[n].bits = bits;
+                n++;
+                prev = bits;
+            }
+            tk_dly_tsk(1);
+        }
+
+        tm_printf((UB *)"\n[IR] Pass %d: pushed ", pass);
+        ir_print_mm10(ir_pos_mm10());
+        tm_printf((UB *)" mm, %d changes%s\n", n - 1,
+                  (n >= IR_LOG_LEN) ? " (log FULL, stopped early)" : "");
+        ir_print_runs(ev, n, IR_BIT_LEFT, "LEFT  (barcode)");
+        ir_print_runs(ev, n, IR_BIT_CENTRE, "CENTRE");
+        ir_print_runs(ev, n, IR_BIT_RIGHT, "RIGHT ");
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -2965,6 +3097,8 @@ EXPORT INT usermain(void)
     ultra_test_scan();
 #elif MOTION_TEST_MODE == DEMO_ROAM
     demo_roam();
+#elif MOTION_TEST_MODE == IR_TEST_LOG
+    ir_test_log();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
