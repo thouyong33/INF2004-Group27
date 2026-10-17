@@ -10,6 +10,17 @@
 #include "../common/pin_defs.h"
 #include "ir_sensor.h"
 
+/* RP2040 ADC (datasheet 4.9). Polled: the kernel's ADC device driver is
+ * not used, so its interrupt stays off. clk_adc (48 MHz) is started by
+ * the port at boot; one conversion takes 96 cycles = 2 us. */
+#define B3_ADC_CS               (0x4004C000u + 0x00u)
+#define B3_ADC_RESULT           (0x4004C000u + 0x04u)
+#define B3_ADC_CS_EN            (1u << 0)
+#define B3_ADC_CS_START_ONCE    (1u << 2)
+#define B3_ADC_CS_READY         (1u << 8)
+#define B3_ADC_CS_AINSEL_POS    12u
+#define B3_ADC_AVG              4u
+
 static void
 ir_pin_input(uint32_t pin)
 {
@@ -47,4 +58,46 @@ ir_read(void)
         bits |= IR_BIT_RIGHT;
     }
     return bits;
+}
+
+void
+ir_ao_init(void)
+{
+    if (0u != (in_w(RESETS_RESET) & RESETS_RESET_ADC))
+    {
+        clr_w(RESETS_RESET, RESETS_RESET_ADC);
+        while (0u == (in_w(RESETS_RESET_DONE) & RESETS_RESET_ADC))
+        {
+            ;
+        }
+    }
+
+    /* Analog pin: no digital function, input buffer and pulls off */
+    out_w(GPIO_CTRL(IR_LEFT_AOUT), GPIO_CTRL_FUNCSEL_NULL);
+    out_w(GPIO(IR_LEFT_AOUT), 0u);
+
+    out_w(B3_ADC_CS, B3_ADC_CS_EN
+                     | ((uint32_t)(IR_LEFT_AOUT - 26) << B3_ADC_CS_AINSEL_POS));
+    while (0u == (in_w(B3_ADC_CS) & B3_ADC_CS_READY))
+    {
+        ;
+    }
+}
+
+uint32_t
+ir_ao_left_mv(void)
+{
+    uint32_t sum = 0u;
+    uint32_t i;
+
+    for (i = 0u; i < B3_ADC_AVG; i++)
+    {
+        set_w(B3_ADC_CS, B3_ADC_CS_START_ONCE);
+        while (0u == (in_w(B3_ADC_CS) & B3_ADC_CS_READY))
+        {
+            ;
+        }
+        sum += in_w(B3_ADC_RESULT) & 0x0FFFu;
+    }
+    return (sum * 3300u) / (B3_ADC_AVG * 4096u);
 }

@@ -567,6 +567,9 @@ LOCAL T_CFLG cflg = {
  *   IR_TEST_LOG            - Buddy 3 step 1: live IR readout, then hand-
  *                            pushed passes printing black/white run widths
  *                            per sensor (encoder distance, motors off).
+ *   IR_TEST_AO             - Buddy 3 step 1b: left IR analog out (GP27)
+ *                            against distance, hand-pushed over a barcode:
+ *                            levels, bar widths and the raw profile.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -587,9 +590,10 @@ LOCAL T_CFLG cflg = {
 #define ULTRA_TEST_SCAN          16
 #define DEMO_ROAM                17
 #define IR_TEST_LOG              18
+#define IR_TEST_AO               19
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IR_TEST_LOG
+#define MOTION_TEST_MODE         IR_TEST_AO
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -679,6 +683,8 @@ LOCAL T_CFLG cflg = {
 
 #define IR_LOG_LEN               400   /* sensor changes per pass */
 #define IR_SHORT_MM10            10    /* runs under 1 mm count as chatter */
+#define IR_AO_LEN                900   /* steps per pass: ~295 mm */
+#define IR_AO_ROW                20    /* profile values per line (1 mm each) */
 
 #define DIST_PAUSE_S             10
 
@@ -2901,6 +2907,158 @@ LOCAL void ir_test_log(void)
         ir_print_runs(ev, n, IR_BIT_RIGHT, "RIGHT ");
     }
 }
+#elif MOTION_TEST_MODE == IR_TEST_AO
+/* Buddy 3 step 1b: left IR analog out (GP27) against encoder distance,
+   hand-pushed with the motors off. Each pass stores one AO reading per
+   encoder step (0.33 mm), then prints the white/black levels, the bar and
+   space widths found with a mid-level threshold, and the raw profile. */
+LOCAL UW ao_e0;
+
+/* Encoder steps (0.328 mm) pushed since the pass started. hw_edges
+   counts either way round, so push in one direction only. */
+LOCAL INT ao_step(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((l.hw_edges + r.hw_edges - ao_e0) / 2u);
+}
+
+LOCAL void ao_print_mm(INT steps)
+{
+    INT mm10 = (steps * SWEEP_UM_PER_EDGE) / 100;
+
+    tm_printf((UB *)"%d.%d", mm10 / 10, mm10 % 10);
+}
+
+LOCAL void ao_analyse(const UH *prof, INT n)
+{
+    INT i, lo = 3300, hi = 0, thr, hys, start = 0, ext;
+    INT runs = 0;
+    BOOL black;
+
+    for(i = 0; i < n; i++) {
+        if(prof[i] < lo) {
+            lo = prof[i];
+        }
+        if(prof[i] > hi) {
+            hi = prof[i];
+        }
+    }
+    thr = (lo + hi) / 2;
+    hys = (hi - lo) / 8;
+    tm_printf((UB *)"[AO] white %d mV, darkest %d mV -> threshold %d +/- %d mV\n",
+              lo, hi, thr, hys);
+    if((hi - lo) < 150) {
+        tm_printf((UB *)"[AO] contrast under 150 mV: no bars to split\n");
+        return;
+    }
+
+    /* Runs with hysteresis; for each, the extreme reading inside it (peak
+       for black, dip for white) shows how close it came to the threshold */
+    tm_printf((UB *)"[AO] runs, mm (peak or dip mV), B black, W white:\n[AO]  ");
+    black = (prof[0] > thr);
+    ext = prof[0];
+    for(i = 1; i <= n; i++) {
+        BOOL flip = FALSE;
+
+        if(i < n) {
+            if(black && (prof[i] < (thr - hys))) {
+                flip = TRUE;
+            } else if((!black) && (prof[i] > (thr + hys))) {
+                flip = TRUE;
+            }
+        }
+        if(flip || (i == n)) {
+            tm_printf((UB *)" %s", black ? "B" : "W");
+            ao_print_mm(i - start);
+            tm_printf((UB *)"(%d)", ext);
+            if((++runs % 6) == 0) {
+                tm_printf((UB *)"\n[AO]  ");
+            }
+            if(i < n) {
+                black = !black;
+                start = i;
+                ext = prof[i];
+            }
+        } else if(black ? (prof[i] > ext) : (prof[i] < ext)) {
+            ext = prof[i];
+        }
+    }
+    tm_printf((UB *)"\n[AO]   %d runs (first and last are the lead-in/out)\n", runs);
+}
+
+LOCAL void ir_test_ao(void)
+{
+    static UH prof[IR_AO_LEN];
+    enc_diag_t l, r;
+    INT pass, n, i, k, s, last;
+    UH mv;
+
+    ir_init();
+    ir_ao_init();
+    tm_printf((UB *)"\n[AO] Left IR analog test: AOUT on GP%d (ADC%d), DOUT on GP%d.\n",
+              IR_LEFT_AOUT, IR_LEFT_AOUT - 26, IR_LEFT_DOUT);
+    tm_printf((UB *)"[AO] Live readout: hold the left IR over white, the line, then a\n");
+    tm_printf((UB *)"[AO] thin and a wide barcode bar. Press a key to go on.\n");
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tm_printf((UB *)"[AO]   AO=%d mV  DOUT=%d\n", (INT)ir_ao_left_mv(),
+                  (0u != (ir_read() & IR_BIT_LEFT)) ? 1 : 0);
+        tk_dly_tsk(400);
+    }
+
+    for(pass = 1; ; pass++) {
+        tm_printf((UB *)"\n[AO] Pass %d: left IR ~2 cm before the barcode, press a key,\n", pass);
+        tm_printf((UB *)"[AO] push slowly forwards only until ~2 cm past it, press a key.\n");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tm_printf((UB *)"[AO] recording...\n");
+        tk_dly_tsk(100);
+        console_flush_input();
+
+        (void)motion_get_encoder_diag(&l, &r);
+        ao_e0 = l.hw_edges + r.hw_edges;
+        last = -1;
+        /* No printing here: it would stretch the poll */
+        while(console_try_getc() < 0) {
+            s = ao_step();
+            if(s >= IR_AO_LEN) {
+                break;
+            }
+            mv = (UH)ir_ao_left_mv();
+            /* Fill any steps passed since the last poll with this reading */
+            for(k = last + 1; k <= s; k++) {
+                prof[k] = mv;
+            }
+            if(s > last) {
+                last = s;
+            }
+            tk_dly_tsk(1);
+        }
+        n = last + 1;
+
+        tm_printf((UB *)"\n[AO] Pass %d: ", pass);
+        ao_print_mm(n);
+        tm_printf((UB *)" mm recorded%s\n", (n >= IR_AO_LEN) ? " (buffer FULL)" : "");
+        if(n < 10) {
+            tm_printf((UB *)"[AO] too short, push further\n");
+            continue;
+        }
+        ao_analyse(prof, n);
+
+        tm_printf((UB *)"[AO] profile, mV every 1 mm (3 steps):\n");
+        for(i = 0; i < n; i += 3 * IR_AO_ROW) {
+            tm_printf((UB *)"[AO] %d mm:", (i * SWEEP_UM_PER_EDGE) / 1000);
+            for(k = i; (k < (i + (3 * IR_AO_ROW))) && (k < n); k += 3) {
+                tm_printf((UB *)" %d", prof[k]);
+            }
+            tm_printf((UB *)"\n");
+        }
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -3099,6 +3257,8 @@ EXPORT INT usermain(void)
     demo_roam();
 #elif MOTION_TEST_MODE == IR_TEST_LOG
     ir_test_log();
+#elif MOTION_TEST_MODE == IR_TEST_AO
+    ir_test_ao();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

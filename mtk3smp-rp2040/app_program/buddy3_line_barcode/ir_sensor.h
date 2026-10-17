@@ -9,7 +9,13 @@
  *
  * Each module's comparator output reads 1 over black (no reflection) and
  * 0 over white, as found with the earlier Pico SDK test; the bring-up test
- * confirms this. The AOUT pins are not wired (no spare ADC).
+ * confirms this.
+ *
+ * Only the left module's AOUT is wired (GP27, ADC1), for the barcode: thin
+ * 3 mm bars are about the size of the sensor's spot and never get dark
+ * enough to trip the comparator, but they still show as a peak in AOUT.
+ * AOUT rises over black (measured ~0.1-0.2 V white, ~0.7 V barcode ink,
+ * 1.0-1.5 V line).
  */
 
 #ifndef BUDDY3_IR_SENSOR_H
@@ -26,5 +32,11 @@ void ir_init(void);
 
 /** @brief All three sensors at once: IR_BIT_* set where the sensor sees black. */
 uint32_t ir_read(void);
+
+/** @brief Set up GP27 as an analog input and power the ADC. */
+void ir_ao_init(void);
+
+/** @brief Left AOUT, average of 4 conversions, millivolts (0-3300). */
+uint32_t ir_ao_left_mv(void);
 
 #endif /* BUDDY3_IR_SENSOR_H */
