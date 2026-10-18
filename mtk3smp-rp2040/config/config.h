@@ -38,7 +38,7 @@
 
 #define	CNF_MAX_TSKPRI		32	/* Task Max priority */
 
-#define CNF_TIMER_PERIOD	10	/* System timer period */
+#define CNF_TIMER_PERIOD	1	/* System timer period */
 
 /* Maximum number of kernel objects */
 #define CNF_MAX_TSKID		32	/* Task */

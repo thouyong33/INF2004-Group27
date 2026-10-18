@@ -22,6 +22,7 @@
 #define IR_CENTER_DOUT   4
 #define IR_LEFT_DOUT     6
 #define IR_RIGHT_DOUT   26
+#define IR_LEFT_AOUT    27   // ADC1: left IR analog out (barcode)
 
 // Ultrasonic sensor pins
 #define ULTRASONIC_TRIG  7

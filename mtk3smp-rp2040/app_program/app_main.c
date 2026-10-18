@@ -50,7 +50,15 @@
 
 // ADDED: Robot task includes
 #include "buddy3_line_barcode/barcode_task.h"
+#include "buddy3_line_barcode/ir_sensor.h"
+#include "common/pin_defs.h"
 #include "buddy2_motion/motion_task.h"
+#include "buddy4_imu/imu.h"
+#include "buddy4_imu/terrain.h"
+#include "buddy5_ultrasonic/ultrasonic.h"
+#include "buddy5_ultrasonic/servo.h"
+#include "buddy5_ultrasonic/scan.h"
+#include "common/console_in.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -61,6 +69,12 @@
  * Tunables
  * ------------------------------------------------------------------ */
 
+/* The producer/consumer/monitor pipeline is the port's IPC demo. It is
+   off for the robot build: set APP_DEMO_PIPELINE to 1 to bring it back.
+   The blink task is independent and always runs. */
+#define APP_DEMO_PIPELINE 0
+
+#if APP_DEMO_PIPELINE
 #define N_RECORDS   4      /* blocks in the fixed memory pool */
 #define CREDITS     2      /* messages in flight at once */
 #define PRODUCE_MS  500    /* one record every half second */
@@ -68,6 +82,7 @@
 
 #define FLG_PRODUCED (1U << 0)
 #define FLG_CONSUMED (1U << 1)
+#endif /* APP_DEMO_PIPELINE */
 
 /* Every task uses 4096 bytes. The SMP kernel path is deeper than the
    single-core one -- each critical section runs the global ready-queue
@@ -75,6 +90,7 @@
    for a task that makes blocking kernel calls. */
 #define STACK_SZ 4096
 
+#if APP_DEMO_PIPELINE
 /* ------------------------------------------------------------------ *
  * One record travelling through the pipeline
  * ------------------------------------------------------------------ */
@@ -240,6 +256,8 @@ LOCAL void monitor_task(INT stacd, void *exinf)
         tk_dly_tsk(REPORT_MS);
     }
 }
+
+#endif /* APP_DEMO_PIPELINE */
 
 #if TM_WIFI_CYW43
 /* ------------------------------------------------------------------ *
@@ -423,6 +441,7 @@ LOCAL T_CTSK ctsk_wifi = {
  * Task and object definitions
  * ------------------------------------------------------------------ */
 
+#if APP_DEMO_PIPELINE
 LOCAL T_CTSK ctsk_producer = {
     .itskpri = 5,
     .stksz = STACK_SZ,
@@ -454,6 +473,8 @@ LOCAL T_CTSK ctsk_monitor = {
     .tskatr = TA_HLNG | TA_RNG3,
 };
 
+#endif /* APP_DEMO_PIPELINE */
+
 LOCAL T_CTSK ctsk_blink = {
     .itskpri = 10,
     .stksz = STACK_SZ,
@@ -461,6 +482,7 @@ LOCAL T_CTSK ctsk_blink = {
     .tskatr = TA_HLNG | TA_RNG3,
 };
 
+#if APP_DEMO_PIPELINE
 LOCAL T_CMPF cmpf = {
     .mpfatr = TA_TFIFO | TA_RNG3,
     .mpfcnt = N_RECORDS,
@@ -489,6 +511,2664 @@ LOCAL T_CFLG cflg = {
     .flgatr = TA_TFIFO | TA_WMUL,
     .iflgptn = 0,
 };
+#endif /* APP_DEMO_PIPELINE */
+
+/* ------------------------------------------------------------------ *
+ * Robot motion tests (Buddy 2)
+ *
+ * MOTION_TEST_MODE picks which test usermain() runs:
+ *   MOTION_TEST_FIXED_TIME - encoder diagnostics: 1 s full-speed runs,
+ *                            5 with wheels lifted, then 5 on the floor.
+ *   MOTION_TEST_DISTANCE   - floor: 50 cm and 30 cm at 300 mm/s, then 50 cm
+ *                            at 500 mm/s under PI, 10 s apart to measure.
+ *   MOTION_TEST_HAND       - motors stay OFF; prints encoder counters
+ *                            every second while the wheels are turned
+ *                            by hand. Ground truth with no motor noise.
+ *   MOTION_TEST_DUTY_SWEEP - wheels LIFTED; steps PWM duty 10..100 %
+ *                            forward then reverse and prints each
+ *                            wheel's steady speed. Open-loop motor
+ *                            map for PID feed-forward and dead band.
+ *   MOTION_TEST_PI_STEP    - closed-loop step response: 300, 500, 150,
+ *                            0 mm/s forward, then -300 and 0. Logged in
+ *                            RAM and printed afterwards as [TRACE] CSV
+ *                            plus a [PI] summary per step.
+ *   IMU_TEST_BRINGUP       - Buddy 4 step 1: I2C1 bus scan on GP2/GP3,
+ *                            LSM303D WHO_AM_I, then 5 s of raw accel
+ *                            (mg) and mag (counts). Motors stay off.
+ *   IMU_TEST_ACCEL_6FACE   - Buddy 4 step 3: hold the car still in six
+ *                            orientations (prompted); averages each and
+ *                            prints per-axis offset and scale.
+ *   IMU_TEST_MAG_CAL       - Buddy 4 step 4: mag circle turned by hand
+ *                            (motors off), then spinning in place under
+ *                            PI (motors on); prints centre/radius of each.
+ *   IMU_TEST_HEADING       - Buddy 4 step 5: heading at 4 hand-set 90 deg
+ *                            positions, then a clockwise spin on the floor
+ *                            comparing compass and encoder rotation.
+ *   IMU_TEST_HUMP_LOG      - Buddy 4 step 6: four 60 cm floor passes
+ *                            (flat, 1 cm, 2.4 cm at 200 mm/s, 2.4 cm at 100) logging pitch,
+ *                            roll, vertical accel and distance.
+ *   IMU_TEST_TERRAIN       - Buddy 4 step 7: the real-time hump and
+ *                            collision detector over flat, small, tall.
+ *   ULTRA_TEST_RANGE       - Buddy 5 step 1: HC-SR04 at 10/20/30/50/100 cm,
+ *                            mean/spread/misses per point, linear fit.
+ *   SERVO_TEST_JOG         - Buddy 5 step 2: jog the scan servo with keys
+ *                            and mark centre and the safe limits.
+ *   SERVO_TEST_MAP         - Buddy 5 step 3: sweep a narrow target, turn the
+ *                            car a measured angle, sweep again: us/deg,
+ *                            window in degrees and beam width.
+ *   ULTRA_TEST_BEAM        - Buddy 5 step 3b: servo fixed, car turns +/-45
+ *                            deg past a narrow target at 20/35/50 cm.
+ *   ULTRA_TEST_SCAN        - Buddy 5 step 4: coarse/fine obstacle scan
+ *                            (scan.c), profile and pass-left/right advice.
+ *   DEMO_ROAM              - Buddies 2+4+5 together: drive at 150 mm/s,
+ *                            stop at an obstacle within 20 cm, turn 45 deg
+ *                            left on the spot (compass checks the turn),
+ *                            repeat until clear. Any key pauses/resumes.
+ *   IR_TEST_LOG            - Buddy 3 step 1: live IR readout, then hand-
+ *                            pushed passes printing black/white run widths
+ *                            per sensor (encoder distance, motors off).
+ *   IR_TEST_AO             - Buddy 3 step 1b: left IR analog out (GP27)
+ *                            against distance, hand-pushed over a barcode:
+ *                            levels, bar widths and the raw profile.
+ * To switch, change the MOTION_TEST_MODE default below and rebuild.
+ * ------------------------------------------------------------------ */
+#define MOTION_TEST_FIXED_TIME   1
+#define MOTION_TEST_DISTANCE     2
+#define MOTION_TEST_HAND         3
+#define MOTION_TEST_DUTY_SWEEP   4
+#define MOTION_TEST_PI_STEP      5
+#define IMU_TEST_BRINGUP         6
+#define IMU_TEST_ACCEL_6FACE     7
+#define IMU_TEST_MAG_CAL         8
+#define IMU_TEST_HEADING         9
+#define IMU_TEST_HUMP_LOG        10
+#define IMU_TEST_TERRAIN         11
+#define ULTRA_TEST_RANGE         12
+#define SERVO_TEST_JOG           13
+#define SERVO_TEST_MAP           14
+#define ULTRA_TEST_BEAM          15
+#define ULTRA_TEST_SCAN          16
+#define DEMO_ROAM                17
+#define IR_TEST_LOG              18
+#define IR_TEST_AO               19
+
+#ifndef MOTION_TEST_MODE
+#define MOTION_TEST_MODE         IR_TEST_AO
+#endif
+
+#define IMU_SAMPLE_COUNT         20
+#define IMU_SAMPLE_MS            250
+
+#define FACE_COUNT               6
+#define FACE_MOVE_S              10    /* time to reposition the car */
+#define FACE_SAMPLES             100   /* averaged per face */
+#define FACE_SAMPLE_MS           20    /* 2 s per face */
+#define FACE_DOMINANT_MG         700   /* one axis must read > 0.7 g */
+
+#define MAG_SAMPLE_MS            20    /* mag ODR is 50 Hz */
+#define MAG_HAND_MS              20000
+#define MAG_SPIN_MM_S            100   /* wheel speed: ~100 deg/s on the spot */
+#define MAG_SPIN_SETTLE_MS       800
+#define MAG_SPIN_MS              12000 /* ~3 turns */
+#define MAG_TURN_UM              358142L /* pi x 114 mm track width */
+
+#define HDG_SAMPLE_MS            20
+#define HDG_MOVE_S               8     /* time to turn the car by hand */
+#define HDG_AVG_SAMPLES          50    /* 1 s average per position */
+#define HDG_SPIN_MM_S            100   /* about 100 deg/s on the spot */
+#define HDG_SPIN_MS              8000  /* about 2.2 turns */
+#define HDG_TRACK_MM             114   /* ruler, 2026-10-07; confirmed by compass spin */
+
+#define HUMP_LOG_LEN             400
+#define HUMP_SAMPLE_MS           20
+#define HUMP_DIST_MM             600
+#define HUMP_SETUP_S             15    /* time to place the ramps */
+#define HUMP_WHEELBASE_MM        80    /* drive axle to castor, ruler 2026-10-09 */
+#define HUMP_FILT_N              7     /* moving average, ~0.16 s / ~3 cm */
+#define HUMP_BASE_SAMPLES        25    /* rest tilt, 0.5 s before driving */
+#define HUMP_SKIP_MM             60    /* skip the speed-up after the start */
+#define HUMP_PLAT_MM             30    /* descent plateau window */
+#define HUMP_PASSES              4
+
+#define TERR_SPEED_MM_S          200   /* validated speed for hump height */
+#define TERR_DIST_MM             600
+#define TERR_MAX_EVENTS          8
+
+#define US_POINTS                6
+#define US_SAMPLES               30
+#define US_PERIOD_MS             70    /* datasheet: >= 60 ms between pings */
+
+#define SERVO_JOG_START_US       1500  /* nominal servo neutral */
+#define SERVO_JOG_SMALL_US       10
+#define SERVO_JOG_BIG_US         50
+
+#define MAP_STEP_US              10
+#define MAP_SETTLE_MS            120
+#define MAP_TARGET_CM            25
+#define MAP_NEAR_CM              40    /* closer than this = the target */
+#define MAP_TURN_DEG             15
+#define MAP_TURN_MM_S            50
+#define MAP_TURN_BRAKE_EDGES     8
+
+#define BEAM_LOG_LEN             120
+#define BEAM_HALF_DEG            45
+#define BEAM_TURN_MM_S           60
+#define BEAM_SCAN_MM_S           25    /* ~25 deg/s: ~2 deg per ping */
+#define BEAM_BRAKE_CDEG          150
+
+#define SCAN_HALF_DEG            45
+#define SCAN_DETECT_MM           600
+#define SCAN_RUNS                3
+#define SCAN_CAR_HALF_MM         70    /* half track + half a wheel */
+
+#define ROAM_SPEED_MM_S          150
+#define ROAM_STOP_MM             200   /* raw sensor reading; see roam notes */
+#define ROAM_CONFIRM             2     /* consecutive near pings to stop */
+#define ROAM_PING_EVERY          3     /* ~21+ ms loop periods per ping (>= 60 ms) */
+#define ROAM_ECHO_MAX_US         5830  /* ~1 m: no-echo pings end early */
+#define ROAM_TURN_CDEG           4500
+#define ROAM_TURN_MM_S           60    /* ~60 deg/s on the spot */
+#define ROAM_TURN_BRAKE_CDEG     150
+#define ROAM_BACK_MM_S           100
+#define ROAM_BACK_MS             500   /* ~5 cm back after a bump */
+#define ROAM_START_S             5
+#define ROAM_SPD_WIN_MS          100   /* wheel speed window */
+#define ROAM_SPD_RING            8     /* > ROAM_SPD_WIN_MS / loop period */
+#define ROAM_SPD_SETTLE_MS       400   /* skip speed checks while starting */
+#define ROAM_JOLT_CONFIRM_MS     250   /* a jolt must slow the wheels within this */
+#define ROAM_JOLT_SLOW_PCT       60    /* ...to below this % of the command */
+#define ROAM_STALL_PCT           30    /* below this %, for ROAM_STALL_N loops: stuck */
+#define ROAM_STALL_N             3
+#define ROAM_IGNORED_MAX         4
+
+#define IR_LOG_LEN               400   /* sensor changes per pass */
+#define IR_SHORT_MM10            10    /* runs under 1 mm count as chatter */
+#define IR_AO_LEN                900   /* steps per pass: ~295 mm */
+#define IR_AO_ROW                20    /* profile values per line (1 mm each) */
+
+#define DIST_PAUSE_S             10
+
+#define PI_HOLD_MS               1500
+#define PI_MEASURE_MS            500
+#define PI_STOP_MS               1000
+#define PI_MAX_STEPS             4
+
+#define SWEEP_STEP_PCT           10
+#define SWEEP_SETTLE_MS          800
+#define SWEEP_MEASURE_MS         500
+#define SWEEP_UM_PER_EDGE        328  /* keep in step with UM_PER_EDGE */
+
+#define HAND_PRINT_MS            1000
+
+#define FIXED_RUN_COUNT          5
+#define FIXED_RUN_MS             1000
+#define FIXED_SETTLE_MS          1000
+#define FIXED_PHASE_GAP_S        15
+
+#if MOTION_TEST_MODE == MOTION_TEST_FIXED_TIME
+/* One batch of fixed-time runs. Runs alternate forward and reverse so the
+   car stays roughly in place on the floor. Counters are read after the
+   wheels have coasted to a stop, so every edge of the run is included. */
+LOCAL void motion_fixed_time_runs(const char *phase)
+{
+    INT run;
+    int8_t dir;
+    char label[32];
+
+    for(run = 1; run <= FIXED_RUN_COUNT; run++) {
+        dir = ((run % 2) == 1) ? 100 : -100;
+
+        motion_reset_odometry();
+        motion_set_speed(dir, dir);
+        tk_dly_tsk(FIXED_RUN_MS);
+        motion_set_speed(0, 0);
+        tk_dly_tsk(FIXED_SETTLE_MS);
+
+        tm_sprintf((UB *)label, (UB *)"%s run %d %s", phase, run,
+                   (dir > 0) ? "fwd" : "rev");
+        motion_print_encoder_diag(label);
+    }
+}
+
+LOCAL void motion_test_fixed_time(void)
+{
+    INT s;
+
+    tm_printf((UB *)"\n[TEST] Encoder diagnostics: %d x %d ms runs per phase\n",
+              FIXED_RUN_COUNT, FIXED_RUN_MS);
+    tm_printf((UB *)"[TEST] PHASE 1: wheels LIFTED off the ground\n");
+    motion_fixed_time_runs("LIFTED");
+
+    tm_printf((UB *)"\n[TEST] PHASE 2: put the car ON THE FLOOR now\n");
+    for(s = FIXED_PHASE_GAP_S; s > 0; s--) {
+        tm_printf((UB *)"[TEST] floor runs start in %d s\n", s);
+        tk_dly_tsk(1000);
+    }
+    motion_fixed_time_runs("FLOOR");
+
+    tm_printf((UB *)"\n=== Encoder diagnostics complete ===\n");
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_DUTY_SWEEP
+/* Hold each duty long enough to reach steady speed, then count edges over
+   a fixed window. Edge rate x 0.322 mm/edge gives wheel speed in mm/s. */
+LOCAL void motion_sweep_direction(INT sign, const char *name)
+{
+    INT duty;
+    enc_diag_t l0, r0, l1, r1;
+    UW l_rate, r_rate, l_mm_s, r_mm_s, ratio_pct;
+
+    for(duty = SWEEP_STEP_PCT; duty <= 100; duty += SWEEP_STEP_PCT) {
+        motion_set_speed((int8_t)(sign * duty), (int8_t)(sign * duty));
+        tk_dly_tsk(SWEEP_SETTLE_MS);
+
+        motion_get_encoder_diag(&l0, &r0);
+        tk_dly_tsk(SWEEP_MEASURE_MS);
+        motion_get_encoder_diag(&l1, &r1);
+
+        l_rate = (l1.hw_edges - l0.hw_edges) * 1000 / SWEEP_MEASURE_MS;
+        r_rate = (r1.hw_edges - r0.hw_edges) * 1000 / SWEEP_MEASURE_MS;
+        l_mm_s = l_rate * SWEEP_UM_PER_EDGE / 1000;
+        r_mm_s = r_rate * SWEEP_UM_PER_EDGE / 1000;
+        ratio_pct = (l_rate > 0) ? (r_rate * 100 / l_rate) : 0;
+
+        tm_printf((UB *)"[SWEEP] %s duty=%3d%%  L=%4u edges/s (%3u mm/s)"
+                  "  R=%4u edges/s (%3u mm/s)  R/L=%u%%\n",
+                  name, duty, l_rate, l_mm_s, r_rate, r_mm_s, ratio_pct);
+    }
+
+    motion_set_speed(0, 0);
+    tk_dly_tsk(1500);
+}
+
+LOCAL void motion_test_duty_sweep(void)
+{
+    tm_printf((UB *)"\n[TEST] Duty sweep: keep the wheels LIFTED\n");
+    tm_printf((UB *)"[TEST] Starting in 5 s\n");
+    tk_dly_tsk(5000);
+
+    motion_sweep_direction(1, "fwd");
+    motion_sweep_direction(-1, "rev");
+
+    tm_printf((UB *)"\n=== Duty sweep complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_BRINGUP
+/* Print the ID registers that tell common accel/mag chips apart:
+     0x0F WHO_AM_I: 0x49 LSM303D, 0x41 LSM303C accel, 0x33 LSM303DLHC/AGR
+                    accel, 0x3D LSM303C/LIS3MDL mag, 0x40 LSM303AGR mag
+     0x00:          0xE5 ADXL345
+     0x0D:          0x2A MMA8452Q, 0x1A MMA8451Q */
+LOCAL void imu_identify(UB addr)
+{
+    static const UB regs[] = { 0x00, 0x0D, 0x0F };
+    INT i;
+    uint8_t v;
+
+    for(i = 0; i < (INT)sizeof(regs); i++) {
+        if(E_OK == i2c1_read_regs(addr, regs[i], &v, 1u)) {
+            tm_printf((UB *)"[IMU]   0x%02x reg 0x%02x = 0x%02x\n", addr, regs[i], v);
+        } else {
+            tm_printf((UB *)"[IMU]   0x%02x reg 0x%02x = (no answer)\n", addr, regs[i]);
+        }
+    }
+}
+
+/* Buddy 4 step 1: prove the wiring and the I2C driver before any maths. */
+LOCAL void imu_test_bringup(void)
+{
+    UB addr;
+    INT found = 0;
+    INT i;
+    uint8_t id[1];
+    imu_raw_t r;
+    ER err;
+
+    tm_printf((UB *)"\n[IMU] I2C1 scan on GP2 (SDA) / GP3 (SCL), 100 kHz\n");
+    i2c1_init();
+
+    for(addr = 0x08; addr < 0x78; addr++) {
+        if(E_OK == i2c1_probe(addr)) {
+            tm_printf((UB *)"[IMU] found device at 0x%02x\n", addr);
+            found++;
+            imu_identify(addr);
+        }
+    }
+    tm_printf((UB *)"[IMU] %d device(s); expect 0x1d (LSM303D)\n", found);
+
+    err = imu_who_am_i(&id[0]);
+    if(E_OK == err) {
+        tm_printf((UB *)"[IMU] WHO_AM_I = 0x%02x (expect 0x49 = LSM303D)\n", id[0]);
+    } else {
+        tm_printf((UB *)"[IMU] WHO_AM_I read failed: %d\n", err);
+    }
+
+    err = imu_init();
+    if(E_OK != err) {
+        tm_printf((UB *)"[IMU] imu_init failed: %d\n", err);
+        return;
+    }
+    tk_dly_tsk(100);
+
+    tm_printf((UB *)"[IMU] raw samples: accel in mg, mag in counts. Keep the car flat and still.\n");
+    for(i = 0; i < IMU_SAMPLE_COUNT; i++) {
+        err = imu_read_raw(&r);
+        if(E_OK == err) {
+            tm_printf((UB *)"[IMU] a=(%5d,%5d,%5d) mg  m=(%5d,%5d,%5d)\n",
+                      r.ax, r.ay, r.az, r.mx, r.my, r.mz);
+        } else {
+            tm_printf((UB *)"[IMU] read failed: %d\n", err);
+        }
+        tk_dly_tsk(IMU_SAMPLE_MS);
+    }
+
+    tm_printf((UB *)"\n=== IMU bring-up complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_ACCEL_6FACE
+LOCAL INT iabs(INT v)
+{
+    return (v < 0) ? -v : v;
+}
+
+LOCAL UW isqrt_u32(UW v)
+{
+    UW r = 0;
+    UW bit = 1UL << 30;
+
+    while(bit > v) {
+        bit >>= 2;
+    }
+    while(bit != 0) {
+        if(v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    return r;
+}
+
+/* Buddy 4 step 3. Each face should put +1 g or -1 g on exactly one axis.
+   The axis and sign are detected from the data, so the order and the way
+   the board is mounted do not matter. For each axis:
+     offset = (+1 g reading + -1 g reading) / 2
+     scale  = 1000 / ((+1 g reading - -1 g reading) / 2)
+   so that corrected = (raw - offset) * scale reads exactly +/-1000 mg. */
+LOCAL void imu_test_accel_6face(void)
+{
+    static const char *const faces[FACE_COUNT] = {
+        "UPRIGHT (wheels on the table)",
+        "UPSIDE DOWN (wheels in the air)",
+        "NOSE UP (front of the car pointing at the ceiling)",
+        "NOSE DOWN (front of the car pointing at the table)",
+        "LEFT SIDE DOWN",
+        "RIGHT SIDE DOWN",
+    };
+    static const char axis_name[3] = { 'X', 'Y', 'Z' };
+    static INT avg[FACE_COUNT][3];
+    INT pos[3] = { 0, 0, 0 };
+    INT neg[3] = { 0, 0, 0 };
+    BOOL have_pos[3], have_neg[3];
+    INT f, s, a, n_ok, best, off, half;
+    W sum[3];
+    imu_raw_t r;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[CAL] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    tm_printf((UB *)"\n[CAL] Accelerometer 6-face calibration. Motors stay off.\n");
+    tm_printf((UB *)"[CAL] For each face: move the car when asked, then keep it\n");
+    tm_printf((UB *)"[CAL] completely still (hands off) while it says HOLD.\n");
+
+    for(a = 0; a < 3; a++) {
+        have_pos[a] = FALSE;
+        have_neg[a] = FALSE;
+    }
+
+    for(f = 0; f < FACE_COUNT; f++) {
+        tm_printf((UB *)"\n[CAL] Face %d/6: put the car %s\n", f + 1, faces[f]);
+        for(s = FACE_MOVE_S; s > 0; s--) {
+            tm_printf((UB *)"[CAL]   measuring in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        tm_printf((UB *)"[CAL]   HOLD STILL...\n");
+
+        sum[0] = sum[1] = sum[2] = 0;
+        n_ok = 0;
+        for(s = 0; s < FACE_SAMPLES; s++) {
+            if(E_OK == imu_read_raw(&r)) {
+                sum[0] += r.ax;
+                sum[1] += r.ay;
+                sum[2] += r.az;
+                n_ok++;
+            }
+            tk_dly_tsk(FACE_SAMPLE_MS);
+        }
+        if(0 == n_ok) {
+            tm_printf((UB *)"[CAL]   no samples read, skipping face\n");
+            continue;
+        }
+
+        for(a = 0; a < 3; a++) {
+            avg[f][a] = (INT)(sum[a] / n_ok);
+        }
+
+        best = 0;
+        for(a = 1; a < 3; a++) {
+            if(iabs(avg[f][a]) > iabs(avg[f][best])) {
+                best = a;
+            }
+        }
+
+        tm_printf((UB *)"[CAL]   avg=(%5d,%5d,%5d) mg  |a|=%u mg  -> %c%c\n",
+                  avg[f][0], avg[f][1], avg[f][2],
+                  isqrt_u32((UW)(avg[f][0] * avg[f][0] + avg[f][1] * avg[f][1]
+                                 + avg[f][2] * avg[f][2])),
+                  (avg[f][best] >= 0) ? '+' : '-', axis_name[best]);
+
+        if(iabs(avg[f][best]) < FACE_DOMINANT_MG) {
+            tm_printf((UB *)"[CAL]   WARNING: no axis above %d mg, car was not square"
+                      " on this face; result not used\n", FACE_DOMINANT_MG);
+        } else if(avg[f][best] > 0) {
+            pos[best] = avg[f][best];
+            have_pos[best] = TRUE;
+        } else {
+            neg[best] = avg[f][best];
+            have_neg[best] = TRUE;
+        }
+    }
+
+    tm_printf((UB *)"\n[CAL] Result (corrected = (raw - offset) * scale):\n");
+    for(a = 0; a < 3; a++) {
+        if(have_pos[a] && have_neg[a]) {
+            off = (pos[a] + neg[a]) / 2;
+            half = (pos[a] - neg[a]) / 2;
+            tm_printf((UB *)"[CAL] %c: +1g=%5d  -1g=%5d  offset=%4d mg  scale=%d/1000\n",
+                      axis_name[a], pos[a], neg[a], off,
+                      (half > 0) ? (1000 * 1000 / half) : 0);
+        } else {
+            tm_printf((UB *)"[CAL] %c: missing %s face, cannot calibrate\n",
+                      axis_name[a], have_pos[a] ? "-1g" : "+1g");
+        }
+    }
+
+    tm_printf((UB *)"\n=== Accel 6-face calibration complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_MAG_CAL
+/* Buddy 4 step 4: magnetometer hard-iron / soft-iron check.
+
+   Turning the car through 360 degrees on a flat floor traces a circle in
+   the mag X/Y readings. Its centre is the hard-iron offset (fields fixed to
+   the car: motor magnets, steel screws, the battery); the X/Y radii
+   differing is soft-iron distortion. Phase A turns the car by hand with the
+   motors off; phase B spins it in place under PI with the motors running.
+   If the two centres differ, the motor current itself bends the field and
+   heading must only be trusted with the motors in a known state. */
+typedef struct {
+    INT min[3];
+    INT max[3];
+    INT n;
+} mag_range_t;
+
+LOCAL void mag_range_reset(mag_range_t *p)
+{
+    INT a;
+
+    for(a = 0; a < 3; a++) {
+        p->min[a] = 32767;
+        p->max[a] = -32768;
+    }
+    p->n = 0;
+}
+
+/* Sample every MAG_SAMPLE_MS for dur_ms. No printing: phase B runs this
+   while the motors are under PI, and usermain outranks the motion task. */
+LOCAL void mag_collect(mag_range_t *p, INT dur_ms)
+{
+    INT t;
+    INT a;
+    INT v[3];
+    imu_raw_t s;
+
+    for(t = 0; t < dur_ms; t += MAG_SAMPLE_MS) {
+        if(E_OK == imu_read_cal(&s)) {
+            v[0] = s.mx;
+            v[1] = s.my;
+            v[2] = s.mz;
+            for(a = 0; a < 3; a++) {
+                if(v[a] < p->min[a]) p->min[a] = v[a];
+                if(v[a] > p->max[a]) p->max[a] = v[a];
+            }
+            p->n++;
+        }
+        tk_dly_tsk(MAG_SAMPLE_MS);
+    }
+}
+
+LOCAL void mag_report(const char *name, const mag_range_t *p)
+{
+    static const char axis_name[3] = { 'X', 'Y', 'Z' };
+    INT a;
+    INT rx, ry;
+
+    tm_printf((UB *)"[MAG] %s: %d samples\n", name, p->n);
+    for(a = 0; a < 3; a++) {
+        tm_printf((UB *)"[MAG]   %c: min=%6d max=%6d  centre=%6d  radius=%5d\n",
+                  axis_name[a], p->min[a], p->max[a],
+                  (p->max[a] + p->min[a]) / 2, (p->max[a] - p->min[a]) / 2);
+    }
+    rx = (p->max[0] - p->min[0]) / 2;
+    ry = (p->max[1] - p->min[1]) / 2;
+    tm_printf((UB *)"[MAG]   X/Y radius ratio = %d%% (100%% = no soft-iron distortion)\n",
+              (ry > 0) ? (rx * 100 / ry) : 0);
+}
+
+LOCAL void imu_test_mag_cal(void)
+{
+    static mag_range_t hand;
+    static mag_range_t spin;
+    enc_diag_t l, r;
+    imu_raw_t s;
+    W sum[3];
+    INT i, n_ok, dcx, dcy, rad, avg_edges, turns_x100;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[MAG] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    /* Check the accel calibration from step 3 */
+    tk_dly_tsk(200);
+    sum[0] = sum[1] = sum[2] = 0;
+    n_ok = 0;
+    for(i = 0; i < 25; i++) {
+        if(E_OK == imu_read_cal(&s)) {
+            sum[0] += s.ax;
+            sum[1] += s.ay;
+            sum[2] += s.az;
+            n_ok++;
+        }
+        tk_dly_tsk(20);
+    }
+    if(n_ok > 0) {
+        tm_printf((UB *)"\n[MAG] calibrated accel at rest = (%d, %d, %d) mg"
+                  " (expect about 0, 0, -1000 upright)\n",
+                  (INT)(sum[0] / n_ok), (INT)(sum[1] / n_ok), (INT)(sum[2] / n_ok));
+    }
+
+    /* Phase A: by hand, motors off */
+    mag_range_reset(&hand);
+    tm_printf((UB *)"\n[MAG] Phase A (motors OFF): keep the car flat on the table and\n");
+    tm_printf((UB *)"[MAG] turn it slowly by hand through 2 full turns in %d s.\n",
+              MAG_HAND_MS / 1000);
+    for(i = 5; i > 0; i--) {
+        tm_printf((UB *)"[MAG]   start turning in %d s\n", i);
+        tk_dly_tsk(1000);
+    }
+    tm_printf((UB *)"[MAG]   TURN NOW...\n");
+    mag_collect(&hand, MAG_HAND_MS);
+    tm_printf((UB *)"[MAG]   stop\n\n");
+    mag_report("Phase A, by hand, motors off", &hand);
+
+    /* Phase B: spin in place under PI, motors on */
+    tm_printf((UB *)"\n[MAG] Phase B (motors ON): put the car on the FLOOR with\n");
+    tm_printf((UB *)"[MAG] about 30 cm clear all round. It will spin on the spot.\n");
+    for(i = 10; i > 0; i--) {
+        tm_printf((UB *)"[MAG]   spinning in %d s\n", i);
+        tk_dly_tsk(1000);
+    }
+
+    mag_range_reset(&spin);
+    motion_reset_odometry();
+    motion_set_velocity(MAG_SPIN_MM_S, -MAG_SPIN_MM_S);
+    tk_dly_tsk(MAG_SPIN_SETTLE_MS);         /* skip the speed-up */
+    mag_collect(&spin, MAG_SPIN_MS);
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(1500);
+
+    (void)motion_get_encoder_diag(&l, &r);
+    avg_edges = (INT)((((l.hw_count < 0) ? -l.hw_count : l.hw_count)
+                     + ((r.hw_count < 0) ? -r.hw_count : r.hw_count)) / 2);
+    /* one turn on the spot = pi * track width of wheel travel per wheel */
+    turns_x100 = avg_edges * SWEEP_UM_PER_EDGE / (MAG_TURN_UM / 100);
+    tm_printf((UB *)"\n[MAG] encoders: L=%d R=%d edges -> about %d.%02d turns\n",
+              (INT)l.hw_count, (INT)r.hw_count, turns_x100 / 100, turns_x100 % 100);
+    mag_report("Phase B, spinning, motors on", &spin);
+
+    /* Compare the circle centres. A shift of d counts on a circle of radius
+       R moves the computed heading by up to about 57 * d / R degrees. */
+    dcx = (spin.max[0] + spin.min[0]) / 2 - (hand.max[0] + hand.min[0]) / 2;
+    dcy = (spin.max[1] + spin.min[1]) / 2 - (hand.max[1] + hand.min[1]) / 2;
+    rad = (hand.max[0] - hand.min[0] + hand.max[1] - hand.min[1]) / 4;
+    tm_printf((UB *)"\n[MAG] centre shift motors on vs off: dX=%d dY=%d counts\n", dcx, dcy);
+    if(rad > 0) {
+        tm_printf((UB *)"[MAG] -> up to about %d degrees of heading error if ignored\n",
+                  (((dcx < 0) ? -dcx : dcx) + ((dcy < 0) ? -dcy : dcy)) * 57 / rad);
+    }
+
+    tm_printf((UB *)"\n=== Mag calibration test complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_HEADING
+/* Buddy 4 step 5: heading and turn rate from the calibrated compass.
+   Phase 1 checks heading against known 90 degree turns made by hand.
+   Phase 2 spins the car on the floor and compares the compass rotation
+   with the rotation the wheel encoders imply for an 11.4 cm track. */
+
+/* Wrap a heading difference into -18000..17999 hundredths of a degree */
+LOCAL INT wrap_cdeg(INT d)
+{
+    while(d >= 18000) {
+        d -= 36000;
+    }
+    while(d < -18000) {
+        d += 36000;
+    }
+    return d;
+}
+
+/* Average n headings, unwrapped around the first so 359/1 deg average to 0 */
+LOCAL INT heading_avg_cdeg(INT n)
+{
+    imu_attitude_t att;
+    INT i;
+    INT ok = 0;
+    INT first = -1;
+    W acc = 0;
+    INT h;
+
+    for(i = 0; i < n; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            if(first < 0) {
+                first = (INT)att.heading_cdeg;
+            }
+            acc += wrap_cdeg((INT)att.heading_cdeg - first);
+            ok++;
+        }
+        tk_dly_tsk(HDG_SAMPLE_MS);
+    }
+    if(0 == ok) {
+        return -1;
+    }
+
+    h = first + (INT)(acc / ok);
+    while(h < 0) {
+        h += 36000;
+    }
+    while(h >= 36000) {
+        h -= 36000;
+    }
+    return h;
+}
+
+/* Follow the heading for dur_ms and add up the rotation. No printing:
+   the motors may be running under PI. */
+LOCAL UW now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
+/* Time is read from the kernel clock, not counted in loop steps: each
+   step is the 20 ms delay plus the I2C read and maths, so counting steps
+   overstated the turn rate by ~16 % in the first run (116 vs ~100 deg/s).
+   At each mark the running total and the time it was taken are saved. */
+LOCAL void heading_track(INT dur_ms, INT *p_prev, W *p_total,
+                         INT mark1_ms, W *p_at_mark1, UW *p_t_mark1,
+                         INT mark2_ms, W *p_at_mark2, UW *p_t_mark2)
+{
+    imu_attitude_t att;
+    UW start;
+    UW t;
+    BOOL got1 = FALSE;
+    BOOL got2 = FALSE;
+
+    start = now_ms();
+    do {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            *p_total += wrap_cdeg((INT)att.heading_cdeg - *p_prev);
+            *p_prev = (INT)att.heading_cdeg;
+        }
+        t = now_ms() - start;
+        if((NULL != p_at_mark1) && (!got1) && (t >= (UW)mark1_ms)) {
+            *p_at_mark1 = *p_total;
+            *p_t_mark1 = t;
+            got1 = TRUE;
+        }
+        if((NULL != p_at_mark2) && (!got2) && (t >= (UW)mark2_ms)) {
+            *p_at_mark2 = *p_total;
+            *p_t_mark2 = t;
+            got2 = TRUE;
+        }
+        tk_dly_tsk(HDG_SAMPLE_MS);
+    } while((now_ms() - start) < (UW)dur_ms);
+}
+
+LOCAL void imu_test_heading(void)
+{
+    static const char *const dirs[4] = {
+        "at your reference line (this is 0 deg)",
+        "turned 90 deg CLOCKWISE from the reference",
+        "turned 180 deg from the reference",
+        "turned 270 deg CLOCKWISE from the reference",
+    };
+    imu_attitude_t att;
+    enc_diag_t l, r;
+    INT h[4];
+    INT i, s, prev, avg_edges, mag_cdeg, enc_cdeg;
+    W total, at2, at6;
+    UW t2 = 0;
+    UW t6 = 0;
+    float enc_deg_f;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[HDG] imu_init failed, check the IMU\n");
+        return;
+    }
+    tk_dly_tsk(200);
+
+    if(E_OK == imu_read_attitude(&att, NULL)) {
+        tm_printf((UB *)"\n[HDG] at rest: pitch=%d roll=%d (x0.01 deg, expect near 0)"
+                  " heading=%d.%02d deg\n",
+                  att.pitch_cdeg, att.roll_cdeg,
+                  att.heading_cdeg / 100, att.heading_cdeg % 100);
+    }
+
+    /* Phase 1: four hand-set directions, motors off */
+    tm_printf((UB *)"\n[HDG] Phase 1 (motors OFF): line the car up with a table edge\n");
+    tm_printf((UB *)"[HDG] or floor tile, then turn it 90 deg CLOCKWISE each time.\n");
+    for(i = 0; i < 4; i++) {
+        tm_printf((UB *)"\n[HDG] Position %d/4: car %s\n", i + 1, dirs[i]);
+        for(s = HDG_MOVE_S; s > 0; s--) {
+            tm_printf((UB *)"[HDG]   measuring in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        tm_printf((UB *)"[HDG]   HOLD STILL...\n");
+        h[i] = heading_avg_cdeg(HDG_AVG_SAMPLES);
+        if(h[i] < 0) {
+            tm_printf((UB *)"[HDG]   read failed\n");
+            return;
+        }
+        if(0 == i) {
+            tm_printf((UB *)"[HDG]   heading=%d.%02d deg\n", h[i] / 100, h[i] % 100);
+        } else {
+            s = wrap_cdeg(h[i] - h[i - 1]);
+            tm_printf((UB *)"[HDG]   heading=%d.%02d deg  step=%d.%02d deg (expect +90)\n",
+                      h[i] / 100, h[i] % 100,
+                      s / 100, ((s < 0) ? -s : s) % 100);
+        }
+    }
+    s = wrap_cdeg(h[0] + 36000 - h[3]);
+    tm_printf((UB *)"[HDG]   last step back to reference would be %d.%02d deg (expect +90)\n",
+              s / 100, ((s < 0) ? -s : s) % 100);
+
+    /* Phase 2: spin on the floor, motors on */
+    tm_printf((UB *)"\n[HDG] Phase 2 (motors ON): put the car on the FLOOR with about\n");
+    tm_printf((UB *)"[HDG] 30 cm clear all round. It will spin CLOCKWISE on the spot.\n");
+    for(s = 10; s > 0; s--) {
+        tm_printf((UB *)"[HDG]   spinning in %d s\n", s);
+        tk_dly_tsk(1000);
+    }
+
+    prev = heading_avg_cdeg(25);
+    if(prev < 0) {
+        tm_printf((UB *)"[HDG] read failed\n");
+        return;
+    }
+    total = 0;
+    at2 = 0;
+    at6 = 0;
+
+    motion_reset_odometry();
+    motion_set_velocity(HDG_SPIN_MM_S, -HDG_SPIN_MM_S);
+    heading_track(HDG_SPIN_MS, &prev, &total, 2000, &at2, &t2, 6000, &at6, &t6);
+    motion_set_velocity(0, 0);
+    heading_track(1500, &prev, &total, 0, NULL, NULL, 0, NULL, NULL);  /* include the coast */
+
+    (void)motion_get_encoder_diag(&l, &r);
+    avg_edges = (INT)((((l.hw_count < 0) ? -l.hw_count : l.hw_count)
+                     + ((r.hw_count < 0) ? -r.hw_count : r.hw_count)) / 2);
+
+    /* Encoder rotation: each wheel travels pi * track per turn */
+    enc_deg_f = ((float)avg_edges * (float)SWEEP_UM_PER_EDGE * 360.0f)
+              / ((float)HDG_TRACK_MM * 1000.0f * 3.14159265f);
+    enc_cdeg = (INT)(enc_deg_f * 100.0f);
+    mag_cdeg = (INT)total;
+
+    tm_printf((UB *)"\n[HDG] compass rotation:  %d deg\n", mag_cdeg / 100);
+    tm_printf((UB *)"[HDG] encoder rotation:  %d deg (L=%d R=%d edges, %d mm track)\n",
+              enc_cdeg / 100, (INT)l.hw_count, (INT)r.hw_count, HDG_TRACK_MM);
+    if(mag_cdeg > 0) {
+        tm_printf((UB *)"[HDG] encoder/compass = %d%%  -> effective track width for turns"
+                  " about %d mm\n",
+                  (INT)((W)enc_cdeg * 100 / mag_cdeg),
+                  (INT)((W)HDG_TRACK_MM * enc_cdeg / mag_cdeg));
+    }
+    tm_printf((UB *)"[HDG] turn rate (compass, 2-6 s of spin): %d deg/s; commanded about %d deg/s\n",
+              (t6 > t2) ? (INT)((at6 - at2) * 10 / (W)(t6 - t2)) : 0,
+              (INT)((2L * HDG_SPIN_MM_S * 5730L) / (HDG_TRACK_MM * 100L)));
+
+    tm_printf((UB *)"\n=== Heading test complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_HUMP_LOG
+/* Buddy 4 step 6a: log what the IMU sees while driving over the ramps.
+   The ramps (14.5 cm long, 5 cm wide, peak 1.0 or 2.4 cm at mid-length)
+   are narrower than the 114 mm track, so how the car crosses decides the
+   maths: a drive wheel going over tilts the car sideways (roll), the
+   castor going over tilts it nose up/down (pitch). This pass only records
+   pitch, roll, vertical accel and encoder distance at ~50 Hz into RAM and
+   prints them once the car has stopped, plus three candidate heights. */
+
+typedef struct {
+    uint16_t t_ms;
+    int16_t  dist_mm;
+    int16_t  pitch_cdeg;
+    int16_t  roll_cdeg;
+    int16_t  az_mg;
+} hump_sample_t;
+
+LOCAL hump_sample_t hump_log[HUMP_LOG_LEN];
+
+/* sin of an angle in hundredths of a degree, 0..9000: Taylor to x^7,
+   under 0.0001 error up to 90 deg. No libm. */
+LOCAL float f_sin_small(INT cdeg)
+{
+    float x = (float)cdeg * (3.14159265f / 18000.0f);
+    float x2 = x * x;
+
+    return x * (1.0f - (x2 / 6.0f) * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
+}
+
+/* Integer square root, for the RMS print */
+LOCAL UW isqrt_w(UW v)
+{
+    UW r = 0;
+    UW bit = 1UL << 30;
+
+    while(bit > v) {
+        bit >>= 2;
+    }
+    while(bit != 0) {
+        if(v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    return r;
+}
+
+LOCAL INT hump_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE / 1000);
+}
+
+LOCAL void hump_pass(const char *name, INT speed_mm_s)
+{
+    static INT fpit[HUMP_LOG_LEN];
+    imu_attitude_t att;
+    imu_raw_t s;
+    SYSTIM tim;
+    UW t0;
+    UW t;
+    UW stop_t = 0;
+    INT n = 0;
+    INT i, j, k, cnt;
+    INT stop_mm = HUMP_DIST_MM;
+    W p0 = 0;
+    W r0 = 0;
+    INT base_n = 0;
+    BOOL stopping = FALSE;
+    W acc_p, acc_r;
+    W sq_raw = 0;
+    W sq_f = 0;
+    INT nf = 0;
+    INT dp, fp, fr;
+    INT max_dp = 0, max_dp_mm = 0;
+    INT up = 0, up_mm = 0, down = 0, down_mm = 0, rmax = 0, rmax_mm = 0;
+    INT plat = 0, plat_mm = 0;
+    INT az_min = 32767, az_max = -32768;
+    INT prev_mm = -1;
+    float path_h = 0.0f;
+    float path_min = 0.0f;
+    float rise = 0.0f;
+    INT rise_mm = 0;
+
+    /* Baseline at rest, before the motors start. While accelerating the
+       accelerometer reads the push as nose-up tilt, and braking as nose-
+       down: the first filtered run took its baseline over the first
+       100 mm and got +2.7 deg against +1.1 deg at rest, and "found" a
+       -6 deg hump on the flat floor while stopping. */
+    for(i = 0; i < HUMP_BASE_SAMPLES; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            p0 += att.pitch_cdeg;
+            r0 += att.roll_cdeg;
+            base_n++;
+        }
+        tk_dly_tsk(HUMP_SAMPLE_MS);
+    }
+    if(base_n > 0) {
+        p0 /= base_n;
+        r0 /= base_n;
+    }
+
+    motion_reset_odometry();
+    tk_get_tim(&tim);
+    t0 = tim.lo;
+    motion_set_velocity((int16_t)speed_mm_s, (int16_t)speed_mm_s);
+
+    /* Record until the distance is covered, then 600 ms more while it
+       stops. No printing in here: the motors are under PI. */
+    while(n < HUMP_LOG_LEN) {
+        if(E_OK == imu_read_attitude(&att, &s)) {
+            tk_get_tim(&tim);
+            t = tim.lo - t0;
+            hump_log[n].t_ms = (uint16_t)t;
+            hump_log[n].dist_mm = (int16_t)hump_dist_mm();
+            hump_log[n].pitch_cdeg = att.pitch_cdeg;
+            hump_log[n].roll_cdeg = att.roll_cdeg;
+            hump_log[n].az_mg = s.az;
+            n++;
+
+            if((!stopping) && (hump_log[n - 1].dist_mm >= HUMP_DIST_MM)) {
+                motion_set_velocity(0, 0);
+                stopping = TRUE;
+                stop_t = t;
+                stop_mm = hump_log[n - 1].dist_mm;
+            }
+            if(stopping && ((t - stop_t) > 600u)) {
+                break;
+            }
+        }
+        tk_dly_tsk(HUMP_SAMPLE_MS);
+    }
+    if(!stopping) {
+        motion_set_velocity(0, 0);
+    }
+    tk_dly_tsk(500);
+
+    /* Centred moving average of pitch, relative to the rest baseline */
+    for(i = 0; i < n; i++) {
+        acc_p = 0;
+        cnt = 0;
+        for(j = -(HUMP_FILT_N / 2); j <= (HUMP_FILT_N / 2); j++) {
+            k = i + j;
+            if((k >= 0) && (k < n)) {
+                acc_p += hump_log[k].pitch_cdeg;
+                cnt++;
+            }
+        }
+        fpit[i] = (INT)(acc_p / cnt) - (INT)p0;
+    }
+
+    /* Analyse only the constant-speed stretch: from HUMP_SKIP_MM after the
+       start to the stop command. The climb and descent are described in
+       the comment above the summary prints. */
+    for(i = 0; i < n; i++) {
+        if((hump_log[i].dist_mm < HUMP_SKIP_MM) || (hump_log[i].dist_mm > stop_mm)) {
+            continue;
+        }
+
+        dp = hump_log[i].pitch_cdeg - (INT)p0;
+        fp = fpit[i];
+        sq_raw += (W)(dp / 10) * (dp / 10);
+        sq_f += (W)(fp / 10) * (fp / 10);
+        nf++;
+
+        if(((dp < 0) ? -dp : dp) > ((max_dp < 0) ? -max_dp : max_dp)) {
+            max_dp = dp;
+            max_dp_mm = hump_log[i].dist_mm;
+        }
+        if(fp > up) {
+            up = fp;
+            up_mm = hump_log[i].dist_mm;
+        }
+        if(fp < down) {
+            down = fp;
+            down_mm = hump_log[i].dist_mm;
+        }
+
+        acc_r = 0;
+        cnt = 0;
+        for(j = -(HUMP_FILT_N / 2); j <= (HUMP_FILT_N / 2); j++) {
+            k = i + j;
+            if((k >= 0) && (k < n)) {
+                acc_r += hump_log[k].roll_cdeg;
+                cnt++;
+            }
+        }
+        fr = (INT)(acc_r / cnt) - (INT)r0;
+        if(((fr < 0) ? -fr : fr) > ((rmax < 0) ? -rmax : rmax)) {
+            rmax = fr;
+            rmax_mm = hump_log[i].dist_mm;
+        }
+
+        if(hump_log[i].az_mg < az_min) az_min = hump_log[i].az_mg;
+        if(hump_log[i].az_mg > az_max) az_max = hump_log[i].az_mg;
+
+        /* Climb: path height = sum of sin(pitch) x distance; keep the
+           largest rise above the lowest point so far */
+        if(prev_mm >= 0) {
+            path_h += (float)(hump_log[i].dist_mm - prev_mm) * f_sin_small(fp);
+        }
+        prev_mm = hump_log[i].dist_mm;
+        if(path_h < path_min) {
+            path_min = path_h;
+        }
+        if((path_h - path_min) > rise) {
+            rise = path_h - path_min;
+            rise_mm = hump_log[i].dist_mm;
+        }
+
+        /* Descent plateau: the most nose-down mean over HUMP_PLAT_MM of
+           travel. A mean over a stretch is steadier than a single peak. */
+        acc_p = 0;
+        cnt = 0;
+        for(j = i; (j < n) && (hump_log[j].dist_mm < hump_log[i].dist_mm + HUMP_PLAT_MM)
+                   && (hump_log[j].dist_mm <= stop_mm); j++) {
+            acc_p += fpit[j];
+            cnt++;
+        }
+        if((cnt > 0) && ((INT)(acc_p / cnt) < plat)) {
+            plat = (INT)(acc_p / cnt);
+            plat_mm = hump_log[i].dist_mm;
+        }
+    }
+
+    tm_printf((UB *)"\n[HUMP] %s: %d samples, %d mm\n", name, n,
+              (n > 0) ? hump_log[n - 1].dist_mm : 0);
+    tm_printf((UB *)"[HUMP] t_ms,dist_mm,pitch_cdeg,roll_cdeg,az_mg\n");
+    for(i = 0; i < n; i++) {
+        tm_printf((UB *)"[HUMP] %u,%d,%d,%d,%d\n",
+                  (unsigned int)hump_log[i].t_ms, hump_log[i].dist_mm,
+                  hump_log[i].pitch_cdeg, hump_log[i].roll_cdeg, hump_log[i].az_mg);
+    }
+
+    /* The castor passes between the ramps and floats while the wheels
+       climb, so a hump shows twice (user, 2026-10-09):
+         climbing:   nose UP, the body follows the slope; height is the rise
+                     of the path
+         descending: nose DOWN, castor back on the floor 80 mm ahead;
+                     height = 80 mm x sin(pitch)
+       The two estimates are independent, so they cross-check each other. */
+    tm_printf((UB *)"[HUMP] %s summary (%d..%d mm analysed):\n", name, HUMP_SKIP_MM, stop_mm);
+    tm_printf((UB *)"[HUMP]   baseline at rest: pitch=%d roll=%d (x0.01 deg)\n", (INT)p0, (INT)r0);
+    tm_printf((UB *)"[HUMP]   pitch noise RMS: raw %u, filtered %u (x0.1 deg)\n",
+              (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_raw / nf) : 0),
+              (unsigned int)isqrt_w((nf > 0) ? (UW)(sq_f / nf) : 0));
+    tm_printf((UB *)"[HUMP]   raw single-sample peak pitch %d at %d mm (vibration, ignore)\n",
+              max_dp, max_dp_mm);
+    tm_printf((UB *)"[HUMP]   az range %d..%d mg (bump jolt)\n", az_min, az_max);
+    tm_printf((UB *)"[HUMP]   climbing:   nose UP peak %d (x0.01 deg) at %d mm;"
+              " path rise ~ %d mm (ends at %d mm)\n", up, up_mm, (INT)rise, rise_mm);
+    tm_printf((UB *)"[HUMP]   descending: nose DOWN peak %d (x0.01 deg) at %d mm"
+              " -> wheel height ~ %d mm\n", down, down_mm,
+              (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(-down)));
+    tm_printf((UB *)"[HUMP]   descending: %d mm plateau mean %d (x0.01 deg) from %d mm"
+              " -> wheel height ~ %d mm  <- steadier\n", HUMP_PLAT_MM, plat, plat_mm,
+              (INT)((float)HUMP_WHEELBASE_MM * f_sin_small(-plat)));
+    tm_printf((UB *)"[HUMP]   filtered roll peak %d (x0.01 deg) at %d mm"
+              " (one wheel higher than the other)\n", rmax, rmax_mm);
+}
+
+LOCAL void imu_test_hump_log(void)
+{
+    static const char *const passes[HUMP_PASSES] = {
+        "Pass 1/4: FLAT floor, no ramp, 200 mm/s (baseline noise)",
+        "Pass 2/4: SMALL ramps (~1.0 cm), 200 mm/s",
+        "Pass 3/4: TALL ramps (~2.4 cm), 200 mm/s",
+        "Pass 4/4: TALL ramps (~2.4 cm) again, SLOWER 100 mm/s",
+    };
+    static const INT speeds[HUMP_PASSES] = { 200, 200, 200, 100 };
+    INT p, s;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[HUMP] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    tm_printf((UB *)"\n[HUMP] Ramp logging: %d passes of %d cm.\n",
+              HUMP_PASSES, HUMP_DIST_MM / 10);
+    tm_printf((UB *)"[HUMP] Place one ramp in front of EACH drive wheel, about 20 cm\n");
+    tm_printf((UB *)"[HUMP] ahead, side by side so both wheels reach them together.\n");
+    tm_printf((UB *)"[HUMP] Check the castor passes between them on the floor.\n");
+    tm_printf((UB *)"[HUMP] Keep the car still until it drives: it reads its rest tilt first.\n");
+
+    for(p = 0; p < HUMP_PASSES; p++) {
+        tm_printf((UB *)"\n[HUMP] %s\n", passes[p]);
+        for(s = HUMP_SETUP_S; s > 0; s--) {
+            tm_printf((UB *)"[HUMP]   driving in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        hump_pass(passes[p], speeds[p]);
+    }
+
+    tm_printf((UB *)"\n=== Hump logging complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_TERRAIN
+/* Buddy 4 step 7: the real-time detector (terrain.c) on the ramps.
+   Events are kept in RAM and printed after each pass, because the
+   motors are under PI while it runs. The braking at the end of each pass
+   is fed in too, to show it does not register as a hump. */
+LOCAL INT terr_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE / 1000);
+}
+
+LOCAL void terrain_pass(const char *name)
+{
+    static hump_event_t humps[TERR_MAX_EVENTS];
+    static collision_event_t colls[TERR_MAX_EVENTS];
+    imu_attitude_t att;
+    imu_raw_t s;
+    hump_event_t h;
+    collision_event_t c;
+    W p0 = 0;
+    INT base_n = 0;
+    INT nh = 0;
+    INT nc = 0;
+    INT i, dist;
+    UW ev;
+    SYSTIM tim;
+    UW t_stop = 0;
+    BOOL stopping = FALSE;
+
+    for(i = 0; i < 25; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            p0 += att.pitch_cdeg;
+            base_n++;
+        }
+        tk_dly_tsk(20);
+    }
+    terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0));
+
+    motion_reset_odometry();
+    motion_set_velocity(TERR_SPEED_MM_S, TERR_SPEED_MM_S);
+
+    while(1) {
+        if(E_OK == imu_read_attitude(&att, &s)) {
+            dist = terr_dist_mm();
+            ev = terrain_update(dist, &att, &s, motion_is_steady(), &h, &c);
+            if((0u != (ev & TERRAIN_EVT_HUMP)) && (nh < TERR_MAX_EVENTS)) {
+                humps[nh++] = h;
+            }
+            if((0u != (ev & TERRAIN_EVT_COLLISION)) && (nc < TERR_MAX_EVENTS)) {
+                colls[nc++] = c;
+            }
+
+            tk_get_tim(&tim);
+            if((!stopping) && (dist >= TERR_DIST_MM)) {
+                motion_set_velocity(0, 0);
+                stopping = TRUE;
+                t_stop = tim.lo;
+            }
+            if(stopping && ((tim.lo - t_stop) > 800u)) {
+                break;
+            }
+        }
+        tk_dly_tsk(20);
+    }
+    tk_dly_tsk(300);
+
+    tm_printf((UB *)"\n[TERR] %s: rest pitch %d (x0.01 deg)\n", name,
+              (INT)((base_n > 0) ? (p0 / base_n) : 0));
+    tm_printf((UB *)"[TERR]   %d hump(s):\n", nh);
+    for(i = 0; i < nh; i++) {
+        tm_printf((UB *)"[TERR]     HUMP %d..%d mm, height ~%d mm"
+                  " (30 mm mean %d x0.01 deg from %d mm)\n",
+                  (INT)humps[i].start_mm, (INT)humps[i].end_mm, humps[i].height_mm,
+                  humps[i].plateau_cdeg, (INT)humps[i].plateau_mm);
+    }
+    tm_printf((UB *)"[TERR]   %d collision(s):\n", nc);
+    for(i = 0; i < nc; i++) {
+        tm_printf((UB *)"[TERR]     COLLISION at %d mm, jolt %d mg\n",
+                  (INT)colls[i].dist_mm, colls[i].jolt_mg);
+    }
+    tm_printf((UB *)"[TERR]   largest jolt %d mg (collision threshold 500);"
+              " most nose-down while steady %d (x0.01 deg)\n",
+              terrain_max_jolt_mg(), terrain_min_pitch_cdeg());
+}
+
+LOCAL void imu_test_terrain(void)
+{
+    static const char *const passes[3] = {
+        "Pass 1/3: FLAT floor, no ramp (expect: no hump)",
+        "Pass 2/3: SMALL ramps ~1.0 cm (expect: one hump ~10 mm)",
+        "Pass 3/3: TALL ramps ~2.4 cm (expect: one hump ~24 mm)",
+    };
+    INT p, s;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[TERR] imu_init failed, check the IMU\n");
+        return;
+    }
+
+    tm_printf((UB *)"\n[TERR] Hump/collision detector: 3 passes of %d cm at %d mm/s.\n",
+              TERR_DIST_MM / 10, TERR_SPEED_MM_S);
+    tm_printf((UB *)"[TERR] Same layout as before: one ramp per drive wheel, ~20 cm ahead,\n");
+    tm_printf((UB *)"[TERR] castor between them. Keep the car still until it drives.\n");
+
+    for(p = 0; p < 3; p++) {
+        tm_printf((UB *)"\n[TERR] %s\n", passes[p]);
+        for(s = HUMP_SETUP_S; s > 0; s--) {
+            tm_printf((UB *)"[TERR]   driving in %d s\n", s);
+            tk_dly_tsk(1000);
+        }
+        terrain_pass(passes[p]);
+    }
+
+    tm_printf((UB *)"\n=== Terrain detector test complete ===\n");
+}
+#elif MOTION_TEST_MODE == ULTRA_TEST_RANGE
+/* Buddy 5 step 1: range calibration against a flat target at known
+   distances. Uses the uncalibrated speed-of-sound conversion, then fits
+   true = scale x measured + offset over all the distances. Motors off. */
+LOCAL UW us_isqrt(UW v)
+{
+    UW r = 0;
+    UW bit = 1UL << 30;
+
+    while(bit > v) {
+        bit >>= 2;
+    }
+    while(bit != 0) {
+        if(v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    return r;
+}
+
+LOCAL void ultra_test_range(void)
+{
+    /* Point 0 has no target: it shows what the sensor sees by itself
+       (floor, table edge, clutter), which caps the useful range. */
+    static const INT true_mm[US_POINTS] = { 0, 100, 200, 300, 500, 1000 };
+    static W mean_mm[US_POINTS];
+    static BOOL have[US_POINTS];
+    UW t0, t1, echo_us;
+    INT p, i, ok, miss, key;
+    W mn, mx, mm;
+    float sum, sum_sq, mean_f, var_f;
+    float sx, sy, sxx, sxy, n_f, a, b;
+    INT n_fit;
+    UW last_live;
+
+    ultrasonic_init();
+
+    t0 = us_now();
+    tk_dly_tsk(500);
+    t1 = us_now();
+    tm_printf((UB *)"\n[US] timer check: %u us over a 500 ms kernel delay"
+              " (expect ~500000-502000)\n", (unsigned int)(t1 - t0));
+
+    tm_printf((UB *)"[US] Range calibration, paced by you: for each point, place the\n");
+    tm_printf((UB *)"[US] target, check the live reading, then press any key (e.g. ENTER).\n");
+    tm_printf((UB *)"[US] Lay a tape on the floor from the sensor's FRONT FACE and slide a\n");
+    tm_printf((UB *)"[US] FLAT, hard target (box side, book) along it, square to the sensor.\n");
+    tm_printf((UB *)"[US] Keep the area around the beam clear.\n");
+
+    for(p = 0; p < US_POINTS; p++) {
+        have[p] = FALSE;
+        if(0 == true_mm[p]) {
+            tm_printf((UB *)"\n[US] Point %d/%d: NO target - clear everything in front,"
+                      " then press a key\n", p + 1, US_POINTS);
+        } else {
+            tm_printf((UB *)"\n[US] Point %d/%d: target at %d cm, then press a key\n",
+                      p + 1, US_POINTS, true_mm[p] / 10);
+        }
+
+        console_flush_input();
+        last_live = 0;
+        key = -1;
+        while(key < 0) {
+            if((us_now() - last_live) > 700000u) {
+                last_live = us_now();
+                if(E_OK == ultrasonic_read_us(&echo_us)) {
+                    tm_printf((UB *)"[US]   live: %d mm\n", (INT)ultrasonic_us_to_mm(echo_us));
+                } else {
+                    tm_printf((UB *)"[US]   live: no echo\n");
+                }
+            }
+            tk_dly_tsk(50);
+            key = console_try_getc();
+        }
+        tm_printf((UB *)"[US]   measuring, hold still...\n");
+
+        sum = 0.0f;
+        sum_sq = 0.0f;
+        mn = 0x7FFFFFFF;
+        mx = 0;
+        ok = 0;
+        miss = 0;
+        for(i = 0; i < US_SAMPLES; i++) {
+            if(E_OK == ultrasonic_read_us(&echo_us)) {
+                mm = ultrasonic_us_to_mm(echo_us);
+                sum += (float)mm;
+                sum_sq += (float)mm * (float)mm;
+                if(mm < mn) mn = mm;
+                if(mm > mx) mx = mm;
+                ok++;
+            } else {
+                miss++;
+            }
+            tk_dly_tsk(US_PERIOD_MS);
+        }
+
+        if(0 == ok) {
+            tm_printf((UB *)"[US]   no echoes at all (%d misses)%s\n", miss,
+                      (0 == true_mm[p]) ? " - nothing in range: good" : " - point skipped");
+            continue;
+        }
+        mean_f = sum / (float)ok;
+        var_f = (sum_sq / (float)ok) - (mean_f * mean_f);
+        mean_mm[p] = (W)(mean_f + 0.5f);
+        have[p] = (0 != true_mm[p]);
+        tm_printf((UB *)"[US]   %s%4d mm: mean %4d  min %4d  max %4d  sd %d mm  misses %d/%d\n",
+                  (0 == true_mm[p]) ? "no target, sees something at " : "true ",
+                  (0 == true_mm[p]) ? (INT)mean_mm[p] : true_mm[p],
+                  (INT)mean_mm[p], (INT)mn, (INT)mx,
+                  (INT)us_isqrt((var_f > 0.0f) ? (UW)var_f : 0u), miss, US_SAMPLES);
+    }
+
+    /* Least-squares fit true = a x measured + b over the target points */
+    sx = sy = sxx = sxy = 0.0f;
+    n_fit = 0;
+    for(p = 0; p < US_POINTS; p++) {
+        if(have[p]) {
+            sx += (float)mean_mm[p];
+            sy += (float)true_mm[p];
+            sxx += (float)mean_mm[p] * (float)mean_mm[p];
+            sxy += (float)mean_mm[p] * (float)true_mm[p];
+            n_fit++;
+        }
+    }
+    if(n_fit >= 2) {
+        n_f = (float)n_fit;
+        a = ((n_f * sxy) - (sx * sy)) / ((n_f * sxx) - (sx * sx));
+        b = (sy - (a * sx)) / n_f;
+        tm_printf((UB *)"\n[US] fit: true = %d/1000 x measured %c %d mm\n",
+                  (INT)(a * 1000.0f), (b < 0.0f) ? '-' : '+',
+                  (INT)((b < 0.0f) ? -b : b));
+        for(p = 0; p < US_POINTS; p++) {
+            if(have[p]) {
+                tm_printf((UB *)"[US]   %4d mm: raw %4d (raw error %d)  corrected %4d"
+                          " (error %d mm)\n",
+                          true_mm[p], (INT)mean_mm[p], (INT)mean_mm[p] - true_mm[p],
+                          (INT)((a * (float)mean_mm[p]) + b),
+                          (INT)((a * (float)mean_mm[p]) + b) - true_mm[p]);
+            }
+        }
+    } else {
+        tm_printf((UB *)"\n[US] not enough points for a fit\n");
+    }
+
+    tm_printf((UB *)"\n=== Ultrasonic range test complete ===\n");
+}
+#elif MOTION_TEST_MODE == SERVO_TEST_JOG
+/* Buddy 5 step 2: jog the scan servo from the serial monitor and mark
+   centre and the two safe limits. Motors stay off. Each step also prints
+   the ultrasonic reading, so you can see the beam move. */
+LOCAL void servo_test_jog(void)
+{
+    INT key;
+    INT us_now_pulse;
+    INT centre = -1;
+    INT lim_a = -1;
+    INT lim_b = -1;
+    BOOL relaxed = FALSE;
+    UW echo_us;
+
+    ultrasonic_init();
+    servo_init(SERVO_JOG_START_US);
+
+    tm_printf((UB *)"\n[SRV] Servo jog. Motors stay off. Keys (no ENTER needed):\n");
+    tm_printf((UB *)"[SRV]   +  / -   step %d us      >  / <   step %d us\n",
+              SERVO_JOG_SMALL_US, SERVO_JOG_BIG_US);
+    tm_printf((UB *)"[SRV]   c  mark CENTRE (sensor pointing straight ahead)\n");
+    tm_printf((UB *)"[SRV]   l  mark LEFT limit,  r  mark RIGHT limit\n");
+    tm_printf((UB *)"[SRV]      (mark each limit a little BEFORE the mount touches)\n");
+    tm_printf((UB *)"[SRV]   o  relax / re-enable the servo,  q  finish and summarise\n");
+    tm_printf((UB *)"[SRV] Starting at %d us. Go in small steps near the plates!\n",
+              SERVO_JOG_START_US);
+
+    console_flush_input();
+    while(1) {
+        key = console_try_getc();
+        if(key < 0) {
+            tk_dly_tsk(30);
+            continue;
+        }
+
+        us_now_pulse = (INT)servo_get_us();
+        switch(key) {
+        case '+': us_now_pulse += SERVO_JOG_SMALL_US; break;
+        case '-': us_now_pulse -= SERVO_JOG_SMALL_US; break;
+        case '>': us_now_pulse += SERVO_JOG_BIG_US;   break;
+        case '<': us_now_pulse -= SERVO_JOG_BIG_US;   break;
+        case 'c': centre = us_now_pulse;
+                  tm_printf((UB *)"[SRV] CENTRE marked at %d us\n", centre);
+                  continue;
+        case 'l': lim_a = us_now_pulse;
+                  tm_printf((UB *)"[SRV] LEFT limit marked at %d us\n", lim_a);
+                  continue;
+        case 'r': lim_b = us_now_pulse;
+                  tm_printf((UB *)"[SRV] RIGHT limit marked at %d us\n", lim_b);
+                  continue;
+        case 'o': relaxed = !relaxed;
+                  if(relaxed) {
+                      servo_relax();
+                      tm_printf((UB *)"[SRV] relaxed (no pulses)\n");
+                  } else {
+                      (void)servo_set_us((uint16_t)us_now_pulse);
+                      tm_printf((UB *)"[SRV] holding %d us again\n", us_now_pulse);
+                  }
+                  continue;
+        case 'q': break;
+        default:  continue;
+        }
+        if('q' == key) {
+            break;
+        }
+
+        relaxed = FALSE;
+        us_now_pulse = (INT)servo_set_us((uint16_t)us_now_pulse);
+        tk_dly_tsk(150);                         /* let it move and settle */
+        if(E_OK == ultrasonic_read_us(&echo_us)) {
+            tm_printf((UB *)"[SRV] pulse %d us   range %d mm\n", us_now_pulse,
+                      (INT)ultrasonic_us_to_mm(echo_us));
+        } else {
+            tm_printf((UB *)"[SRV] pulse %d us   range: no echo\n", us_now_pulse);
+        }
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n[SRV] Summary: centre=%d us, left limit=%d us, right limit=%d us\n",
+              centre, lim_a, lim_b);
+    if((centre > 0) && (lim_a > 0) && (lim_b > 0)) {
+        tm_printf((UB *)"[SRV]   left is %d us from centre, right is %d us from centre\n",
+                  lim_a - centre, lim_b - centre);
+        tm_printf((UB *)"[SRV]   at a typical ~11 us/deg that is about %d and %d deg"
+                  " (angle check comes in step 3)\n",
+                  (lim_a - centre) / 11, (lim_b - centre) / 11);
+    }
+    tm_printf((UB *)"\n=== Servo jog complete (servo relaxed) ===\n");
+}
+#elif MOTION_TEST_MODE == SERVO_TEST_MAP
+/* Buddy 5 step 3: what the scanning sensor actually sees.
+   Sweep 1: range at every 10 us across the safe window with a narrow
+   target in front. The stretch where the target is seen gives the beam
+   width (in us); its middle is where the target is.
+   Then the car turns left on the spot by a measured angle (encoders,
+   validated against the compass) and sweeps again: the target's shift in
+   us divided by the angle turned is the servo's us per degree. */
+LOCAL INT map_median3(void)
+{
+    UW e;
+    INT v[3];
+    INT n = 0;
+    INT i, t;
+
+    for(i = 0; i < 3; i++) {
+        if(E_OK == ultrasonic_read_us(&e)) {
+            v[n++] = (INT)ultrasonic_us_to_mm(e);
+        }
+        tk_dly_tsk(US_PERIOD_MS);
+    }
+    if(0 == n) {
+        return -1;
+    }
+    if(n < 3) {
+        return v[0];
+    }
+    if(v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    if(v[1] > v[2]) { t = v[1]; v[1] = v[2]; v[2] = t; }
+    if(v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    return v[1];
+}
+
+/* Sweep right to left. Prints every step; returns the middle pulse of the
+   stretch seen within near_mm, and its width, or -1 if never seen. */
+LOCAL INT map_sweep(const char *name, INT near_mm, INT *p_width_us)
+{
+    INT pulse, mm;
+    INT first = -1;
+    INT last = -1;
+
+    tm_printf((UB *)"\n[MAP] %s: pulse_us,range_mm (target counted if < %d mm)\n",
+              name, near_mm);
+    (void)servo_set_us(SERVO_RIGHT_US);
+    tk_dly_tsk(400);
+    for(pulse = SERVO_RIGHT_US; pulse <= (INT)SERVO_LEFT_US; pulse += MAP_STEP_US) {
+        (void)servo_set_us((uint16_t)pulse);
+        tk_dly_tsk(MAP_SETTLE_MS);
+        mm = map_median3();
+        tm_printf((UB *)"[MAP] %d,%d\n", pulse, mm);
+        if((mm > 0) && (mm < near_mm)) {
+            if(first < 0) {
+                first = pulse;
+            }
+            last = pulse;
+        }
+    }
+    (void)servo_set_us(SERVO_CENTRE_US);
+
+    if(first < 0) {
+        tm_printf((UB *)"[MAP] %s: target never seen\n", name);
+        *p_width_us = 0;
+        return -1;
+    }
+    *p_width_us = last - first;
+    tm_printf((UB *)"[MAP] %s: target seen from %d to %d us (span %d us), middle %d us"
+              " (%d us from centre)\n", name, first, last, last - first,
+              (first + last) / 2, ((first + last) / 2) - (INT)SERVO_CENTRE_US);
+    return (first + last) / 2;
+}
+
+LOCAL INT map_dist_avg_abs(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count < 0) ? -l.hw_count : l.hw_count)
+                + ((r.hw_count < 0) ? -r.hw_count : r.hw_count)) / 2);
+}
+
+LOCAL void servo_test_map(void)
+{
+    INT mid1, mid2, w1, w2, key, target_edges, edges, turned_cdeg, s;
+    INT near_mm;
+    INT per10;
+    UW echo_us;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+
+    tm_printf((UB *)"\n[MAP] Servo window %d..%d us, centre %d us (left = larger pulse).\n",
+              SERVO_RIGHT_US, SERVO_LEFT_US, SERVO_CENTRE_US);
+    tm_printf((UB *)"[MAP] Car ON THE FLOOR. Put a NARROW, tall target (bottle, can,\n");
+    tm_printf((UB *)"[MAP] table leg) about %d cm straight ahead of the sensor, nothing\n",
+              MAP_TARGET_CM);
+    tm_printf((UB *)"[MAP] else within ~%d cm. Leave ~20 cm clear around the car: it\n",
+              MAP_NEAR_CM);
+    tm_printf((UB *)"[MAP] will turn on the spot by about %d deg. Press a key to start.\n",
+              MAP_TURN_DEG);
+
+    console_flush_input();
+    key = -1;
+    while(key < 0) {
+        tk_dly_tsk(500);
+        if(E_OK == ultrasonic_read_us(&echo_us)) {
+            tm_printf((UB *)"[MAP]   centre reads %d mm\n", (INT)ultrasonic_us_to_mm(echo_us));
+        }
+        key = console_try_getc();
+    }
+
+    near_mm = MAP_NEAR_CM * 10;
+    mid1 = map_sweep("Sweep 1 (car facing the target)", near_mm, &w1);
+
+    /* Turn left on the spot: left wheel back, right wheel forward. One
+       degree is pi x 114 mm / 360 of wheel travel = 0.995 mm. */
+    target_edges = (INT)(((float)MAP_TURN_DEG * 3.14159265f * (float)HDG_TRACK_MM * 1000.0f)
+                         / (360.0f * (float)SWEEP_UM_PER_EDGE));
+    tm_printf((UB *)"\n[MAP] turning left %d deg (%d edges per wheel)...\n",
+              MAP_TURN_DEG, target_edges);
+    tk_dly_tsk(500);
+    motion_reset_odometry();
+    motion_set_velocity(-MAP_TURN_MM_S, MAP_TURN_MM_S);
+    for(s = 0; s < 400; s++) {
+        if(map_dist_avg_abs() >= (target_edges - MAP_TURN_BRAKE_EDGES)) {
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(1000);
+
+    edges = map_dist_avg_abs();
+    turned_cdeg = (INT)(((float)edges * (float)SWEEP_UM_PER_EDGE * 36000.0f)
+                        / (3.14159265f * (float)HDG_TRACK_MM * 1000.0f));
+    tm_printf((UB *)"[MAP] turned %d.%02d deg by the encoders (%d edges)\n",
+              turned_cdeg / 100, turned_cdeg % 100, edges);
+
+    mid2 = map_sweep("Sweep 2 (car turned left)", near_mm, &w2);
+
+    tm_printf((UB *)"\n[MAP] Result:\n");
+    if((mid1 > 0) && (mid2 > 0) && (turned_cdeg > 0)) {
+        per10 = ((mid1 - mid2) * 1000) / turned_cdeg;
+        tm_printf((UB *)"[MAP]   target moved %d us for %d.%02d deg -> %d.%d us per degree\n",
+                  mid2 - mid1, turned_cdeg / 100, turned_cdeg % 100,
+                  per10 / 10, ((per10 < 0) ? -per10 : per10) % 10);
+        if(mid1 != mid2) {
+            tm_printf((UB *)"[MAP]   window: left %d deg, right %d deg from centre\n",
+                      (((INT)SERVO_LEFT_US - (INT)SERVO_CENTRE_US) * turned_cdeg)
+                          / ((mid1 - mid2) * 100),
+                      (((INT)SERVO_RIGHT_US - (INT)SERVO_CENTRE_US) * turned_cdeg)
+                          / ((mid1 - mid2) * 100));
+            tm_printf((UB *)"[MAP]   beam: target seen over %d us and %d us -> about %d deg wide\n",
+                      w1, w2, (((w1 + w2) / 2) * turned_cdeg) / ((mid1 - mid2) * 100));
+        }
+    } else {
+        tm_printf((UB *)"[MAP]   not enough to compute (target missing in a sweep)\n");
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n=== Servo map complete (servo relaxed) ===\n");
+}
+#elif MOTION_TEST_MODE == ULTRA_TEST_BEAM
+/* Buddy 5 step 3b: the sensor's real beam width.
+   The servo map showed a narrow target at 33 cm is seen across the whole
+   servo window (+/-16-18 deg) and still 15 deg off to the side, so the
+   beam is wider than the servo can sweep. Here the servo stays at centre
+   and the CAR turns instead (encoder angle, checked against the compass
+   to 0.2 %): from 45 deg right of the target to 45 deg left, pinging all
+   the way. The angles over which the target is seen give the beam width,
+   measured at 20, 35 and 50 cm. */
+typedef struct {
+    int16_t angle_cdeg;   /* car heading change, left positive */
+    int16_t range_mm;     /* -1 = no echo */
+} beam_sample_t;
+
+LOCAL beam_sample_t beam_log[BEAM_LOG_LEN];
+
+/* Signed turn since the last odometry reset, left positive, x0.01 deg.
+   On the spot each wheel travels pi x track / 360 per degree. */
+LOCAL INT beam_angle_cdeg(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((float)(r.hw_count - l.hw_count) * 0.5f * (float)SWEEP_UM_PER_EDGE * 36000.0f)
+                 / (3.14159265f * (float)HDG_TRACK_MM * 1000.0f));
+}
+
+/* Turn on the spot by deg (left positive) at speed mm/s, measured */
+LOCAL void beam_turn(INT deg, INT speed)
+{
+    INT start, target, a;
+    INT brake_cdeg = BEAM_BRAKE_CDEG;
+    INT i;
+
+    start = beam_angle_cdeg();
+    target = start + deg * 100;
+    if(deg > 0) {
+        motion_set_velocity((int16_t)-speed, (int16_t)speed);
+    } else {
+        motion_set_velocity((int16_t)speed, (int16_t)-speed);
+    }
+    for(i = 0; i < 2000; i++) {
+        a = beam_angle_cdeg();
+        if(((deg > 0) && (a >= target - brake_cdeg)) || ((deg < 0) && (a <= target + brake_cdeg))) {
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(700);
+}
+
+LOCAL void beam_pass(INT target_cm)
+{
+    INT n = 0;
+    INT i, key, mm, a;
+    INT near_mm;
+    INT seen_lo = 32767;
+    INT seen_hi = -32768;
+    UW e;
+
+    tm_printf((UB *)"\n[BEAM] Put the narrow target %d cm straight ahead of the sensor\n", target_cm);
+    tm_printf((UB *)"[BEAM] (nothing else within ~%d cm), then press a key.\n", target_cm + 20);
+    console_flush_input();
+    key = -1;
+    while(key < 0) {
+        tk_dly_tsk(600);
+        if(E_OK == ultrasonic_read_us(&e)) {
+            tm_printf((UB *)"[BEAM]   ahead: %d mm\n", (INT)ultrasonic_us_to_mm(e));
+        } else {
+            tm_printf((UB *)"[BEAM]   ahead: no echo\n");
+        }
+        key = console_try_getc();
+    }
+
+    motion_reset_odometry();
+    beam_turn(-BEAM_HALF_DEG, BEAM_TURN_MM_S);                /* face right of it */
+
+    motion_set_velocity((int16_t)-BEAM_SCAN_MM_S, (int16_t)BEAM_SCAN_MM_S);
+    while(n < BEAM_LOG_LEN) {
+        a = beam_angle_cdeg();
+        if(E_OK == ultrasonic_read_us(&e)) {
+            mm = (INT)ultrasonic_us_to_mm(e);
+        } else {
+            mm = -1;
+        }
+        beam_log[n].angle_cdeg = (int16_t)a;
+        beam_log[n].range_mm = (int16_t)mm;
+        n++;
+        if(a >= BEAM_HALF_DEG * 100) {
+            break;
+        }
+        tk_dly_tsk(US_PERIOD_MS);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(700);
+    beam_turn(-BEAM_HALF_DEG, BEAM_TURN_MM_S);                /* back to facing it */
+
+    /* The target counts if within 10 cm of where it was placed */
+    near_mm = target_cm * 10 + 100;
+    tm_printf((UB *)"\n[BEAM] %d cm: angle_cdeg,range_mm (left positive)\n", target_cm);
+    for(i = 0; i < n; i++) {
+        tm_printf((UB *)"[BEAM] %d,%d\n", beam_log[i].angle_cdeg, beam_log[i].range_mm);
+        if((beam_log[i].range_mm > 0) && (beam_log[i].range_mm < near_mm)) {
+            if(beam_log[i].angle_cdeg < seen_lo) seen_lo = beam_log[i].angle_cdeg;
+            if(beam_log[i].angle_cdeg > seen_hi) seen_hi = beam_log[i].angle_cdeg;
+        }
+    }
+    if(seen_hi >= seen_lo) {
+        tm_printf((UB *)"[BEAM] %d cm summary: target seen from %d to %d (x0.01 deg)"
+                  " -> beam about %d deg wide, centred %d deg\n",
+                  target_cm, seen_lo, seen_hi, (seen_hi - seen_lo) / 100,
+                  (seen_lo + seen_hi) / 200);
+    } else {
+        tm_printf((UB *)"[BEAM] %d cm summary: target never seen within %d mm\n",
+                  target_cm, near_mm);
+    }
+}
+
+LOCAL void ultra_test_beam(void)
+{
+    static const INT dists[3] = { 20, 35, 50 };
+    INT p;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+
+    tm_printf((UB *)"\n[BEAM] Beam width test. Servo held at centre; the CAR turns on the\n");
+    tm_printf((UB *)"[BEAM] spot from %d deg right to %d deg left of the target and back.\n",
+              BEAM_HALF_DEG, BEAM_HALF_DEG);
+    tm_printf((UB *)"[BEAM] Car on the floor, ~20 cm clear around it, open space beyond.\n");
+
+    for(p = 0; p < 3; p++) {
+        beam_pass(dists[p]);
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n=== Beam width test complete (servo relaxed) ===\n");
+}
+#elif MOTION_TEST_MODE == ULTRA_TEST_SCAN
+/* Buddy 5 step 4: the obstacle scan routine (scan.c), key-paced so you
+   can try different obstacles and positions. */
+LOCAL void ultra_test_scan(void)
+{
+    obstacle_profile_t prof;
+    INT run, key;
+    INT shift_left, shift_right;
+    UW e;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+
+    tm_printf((UB *)"\n[SCAN] Obstacle scan: the car turns %d deg each way on the spot,\n",
+              SCAN_HALF_DEG);
+    tm_printf((UB *)"[SCAN] then looks closely at each edge. Car on the floor with ~20 cm\n");
+    tm_printf((UB *)"[SCAN] clear around it. Obstacles within %d cm count.\n", SCAN_DETECT_MM / 10);
+
+    for(run = 1; run <= SCAN_RUNS; run++) {
+        tm_printf((UB *)"\n[SCAN] Run %d/%d: place an obstacle (box, hand...) in front,\n",
+                  run, SCAN_RUNS);
+        tm_printf((UB *)"[SCAN] e.g. 30-40 cm away, centred or off to one side; note where.\n");
+        tm_printf((UB *)"[SCAN] Press a key to scan.\n");
+        console_flush_input();
+        key = -1;
+        while(key < 0) {
+            tk_dly_tsk(700);
+            if(E_OK == ultrasonic_read_us(&e)) {
+                tm_printf((UB *)"[SCAN]   ahead: %d mm\n", (INT)ultrasonic_us_to_mm(e));
+            } else {
+                tm_printf((UB *)"[SCAN]   ahead: no echo\n");
+            }
+            key = console_try_getc();
+        }
+
+        if(E_OK != scan_obstacle(SCAN_HALF_DEG, SCAN_DETECT_MM, TRUE, &prof)) {
+            tm_printf((UB *)"[SCAN] scan failed\n");
+            continue;
+        }
+
+        tm_printf((UB *)"\n[SCAN] Run %d profile:\n", run);
+        if(!prof.found) {
+            tm_printf((UB *)"[SCAN]   nothing within %d mm: path clear\n", SCAN_DETECT_MM);
+            continue;
+        }
+        tm_printf((UB *)"[SCAN]   nearest %d mm at %d.%d deg (left +)\n", prof.nearest_mm,
+                  prof.nearest_cdeg / 100, ((prof.nearest_cdeg < 0) ? -prof.nearest_cdeg
+                                            : prof.nearest_cdeg) % 100 / 10);
+        tm_printf((UB *)"[SCAN]   seen from %d to %d deg (span %d deg, beam here %d deg)\n",
+                  prof.right_cdeg / 100, prof.left_cdeg / 100,
+                  (prof.left_cdeg - prof.right_cdeg) / 100, prof.beam_cdeg / 100);
+        if(prof.width_mm > 0) {
+            tm_printf((UB *)"[SCAN]   estimated width %d mm\n", prof.width_mm);
+        } else {
+            tm_printf((UB *)"[SCAN]   width below resolution (narrower than the beam spread)\n");
+        }
+        tm_printf((UB *)"[SCAN]   sides: %d mm (left side) .. %d mm (right side),"
+                  " from the car centreline, left +\n", prof.left_side_mm, prof.right_side_mm);
+
+        /* To pass on the left, the car's right flank (-half width) must
+           clear the obstacle's left side, and vice versa */
+        shift_left = prof.left_side_mm + SCAN_CAR_HALF_MM;
+        shift_right = SCAN_CAR_HALF_MM - prof.right_side_mm;
+        if((prof.right_side_mm > SCAN_CAR_HALF_MM) || (prof.left_side_mm < -SCAN_CAR_HALF_MM)) {
+            tm_printf((UB *)"[SCAN]   straight ahead is CLEAR of it\n");
+        } else if(shift_left <= shift_right) {
+            tm_printf((UB *)"[SCAN]   blocked: pass LEFT (shift %d mm), right would need %d mm\n",
+                      shift_left, shift_right);
+        } else {
+            tm_printf((UB *)"[SCAN]   blocked: pass RIGHT (shift %d mm), left would need %d mm\n",
+                      shift_right, shift_left);
+        }
+    }
+
+    servo_relax();
+    tm_printf((UB *)"\n=== Obstacle scan test complete (servo relaxed) ===\n");
+}
+#elif MOTION_TEST_MODE == DEMO_ROAM
+/* Integrated demo, Buddies 2 + 4 + 5: a "Roomba without the bumping".
+   Buddy 5: HC-SR04 at servo centre looks ahead while driving.
+   Buddy 2: PI drives at ROAM_SPEED_MM_S, and the encoders measure each
+            45 deg left turn on the spot.
+   Buddy 4: the compass reports how far each turn went (independent of the
+            wheels); the terrain detector flags a jolt, and it counts as a
+            bump only if the wheels slow down too (a stall alone also counts);
+            it also counts humps driven over.
+   Nothing is printed while the car drives (usermain outranks the motion
+   task), only while it is stopped.
+
+   ROAM_STOP_MM is the raw sensor reading. The range test put the raw
+   reading ~58 mm above the distance from the car front, so the car stops
+   roughly 14-20 cm short of the obstacle's face. */
+LOCAL int32_t roam_l0;
+LOCAL int32_t roam_r0;
+LOCAL int32_t roam_d0;
+
+/* Car rotation since roam_l0/roam_r0, left positive, x0.01 deg */
+LOCAL INT roam_angle_cdeg(void)
+{
+    enc_diag_t l, r;
+    float half_diff;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    half_diff = ((float)((r.hw_count - roam_r0) - (l.hw_count - roam_l0))) * 0.5f;
+    return (INT)((half_diff * (float)SWEEP_UM_PER_EDGE * 36000.0f)
+                 / (3.14159265f * (float)HDG_TRACK_MM * 1000.0f));
+}
+
+/* Forward travel since the demo started (turns cancel out), mm */
+LOCAL INT roam_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) - roam_d0) * SWEEP_UM_PER_EDGE / 1000);
+}
+
+LOCAL INT roam_ping_mm(void)
+{
+    UW e;
+
+    if(E_OK == ultrasonic_read_us_max(&e, ROAM_ECHO_MAX_US)) {
+        return (INT)ultrasonic_us_to_mm(e);
+    }
+    return -1;
+}
+
+LOCAL BOOL roam_near(INT mm)
+{
+    return (mm > 0) && (mm <= ROAM_STOP_MM);
+}
+
+/* Stopped: three pings, blocked if at least two are near. p_mm gets the
+   nearest near reading, or the last reading when clear. */
+LOCAL BOOL roam_blocked(INT *p_mm)
+{
+    INT i, mm;
+    INT near_n = 0;
+    INT nearest = -1;
+
+    for(i = 0; i < 3; i++) {
+        mm = roam_ping_mm();
+        if(roam_near(mm)) {
+            near_n++;
+            if((nearest < 0) || (mm < nearest)) {
+                nearest = mm;
+            }
+        }
+        *p_mm = mm;
+        tk_dly_tsk(US_PERIOD_MS);
+    }
+    if(near_n >= 2) {
+        *p_mm = nearest;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Compass heading averaged over 0.2 s (unwrapped around the first
+   sample), x0.01 deg clockwise from magnetic north, or -1 on failure */
+LOCAL INT roam_heading_cdeg(void)
+{
+    imu_attitude_t att;
+    INT first = -1;
+    INT n = 0;
+    INT i, d;
+    W sum = 0;
+
+    for(i = 0; i < 10; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            if(first < 0) {
+                first = (INT)att.heading_cdeg;
+            }
+            d = (INT)att.heading_cdeg - first;
+            if(d > 18000) {
+                d -= 36000;
+            } else if(d < -18000) {
+                d += 36000;
+            }
+            sum += d;
+            n++;
+        }
+        tk_dly_tsk(20);
+    }
+    if(n == 0) {
+        return -1;
+    }
+    d = first + (INT)(sum / n);
+    if(d < 0) {
+        d += 36000;
+    } else if(d >= 36000) {
+        d -= 36000;
+    }
+    return d;
+}
+
+/* 45 deg left on the spot by the encoders; returns the angle reached */
+LOCAL INT roam_turn_left(void)
+{
+    enc_diag_t l, r;
+    UW i;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    roam_l0 = l.hw_count;
+    roam_r0 = r.hw_count;
+
+    motion_set_velocity(-ROAM_TURN_MM_S, ROAM_TURN_MM_S);
+    for(i = 0; i < 1000u; i++) {
+        if(roam_angle_cdeg() >= (ROAM_TURN_CDEG - ROAM_TURN_BRAKE_CDEG)) {
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(400);
+    return roam_angle_cdeg();
+}
+
+/* Print x0.01 deg as d.d, sign kept */
+LOCAL void roam_print_deg(INT cdeg)
+{
+    INT a = (cdeg < 0) ? -cdeg : cdeg;
+
+    tm_printf((UB *)"%s%d.%d", (cdeg < 0) ? "-" : "", a / 100, (a % 100) / 10);
+}
+
+/* Milliseconds from the kernel clock */
+LOCAL UW roam_now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
+LOCAL void demo_roam(void)
+{
+    static imu_attitude_t att;
+    static imu_raw_t cal;
+    static hump_event_t hump;
+    static collision_event_t coll;
+    enc_diag_t l, r;
+    BOOL imu_ok;
+    BOOL bumped, paused, force_turn;
+    INT s, tick, near_n, mm, enc, h0, h1, d;
+    INT legs = 0;
+    INT turns = 0;
+    INT humps = 0;
+    INT leg_start;
+    static UW ring_t[ROAM_SPD_RING];
+    static INT ring_d[ROAM_SPD_RING];
+    static INT ign_mg[ROAM_IGNORED_MAX];
+    static INT ign_pct[ROAM_IGNORED_MAX];
+    INT ring_n, ring_i, k, j, v_pct, min_pct, stall_n, n_ign, dist;
+    UW t, leg_t0, jolt_t;
+    BOOL jolt_pending, stalled;
+    W p0 = 0;
+    INT base_n = 0;
+    UW ev;
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+    i2c1_init();
+    imu_ok = (E_OK == imu_init());
+
+    tm_printf((UB *)"\n[ROAM] Roaming demo (Buddies 2 + 4 + 5).\n");
+    tm_printf((UB *)"[ROAM] Drives at %d mm/s; an obstacle within %d mm (sensor reading)\n",
+              ROAM_SPEED_MM_S, ROAM_STOP_MM);
+    tm_printf((UB *)"[ROAM] stops it, then it turns 45 deg left until the way is clear.\n");
+    tm_printf((UB *)"[ROAM] Any key pauses / resumes.\n");
+    if(!imu_ok) {
+        tm_printf((UB *)"[ROAM] imu_init failed: running without compass and bump stop\n");
+    }
+    for(s = ROAM_START_S; s > 0; s--) {
+        tm_printf((UB *)"[ROAM] starting in %d s (keep the car still)\n", s);
+        tk_dly_tsk(1000);
+    }
+
+    if(imu_ok) {
+        for(s = 0; s < 25; s++) {
+            if(E_OK == imu_read_attitude(&att, NULL)) {
+                p0 += att.pitch_cdeg;
+                base_n++;
+            }
+            tk_dly_tsk(20);
+        }
+        terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0));
+    }
+    (void)motion_get_encoder_diag(&l, &r);
+    roam_d0 = (l.hw_count + r.hw_count) / 2;
+    console_flush_input();
+    force_turn = FALSE;
+
+    while(1) {
+        /* ---- Stopped: turn 45 deg left until nothing is within range ---- */
+        while(force_turn || roam_blocked(&mm)) {
+            if(force_turn) {
+                tm_printf((UB *)"[ROAM] turning away from the bump\n");
+            } else {
+                tm_printf((UB *)"[ROAM] blocked at %d mm: turning 45 deg left\n", mm);
+            }
+            force_turn = FALSE;
+            h0 = imu_ok ? roam_heading_cdeg() : -1;
+            enc = roam_turn_left();
+            h1 = imu_ok ? roam_heading_cdeg() : -1;
+            turns++;
+
+            tm_printf((UB *)"[ROAM]   turn %d: encoders ", turns);
+            roam_print_deg(enc);
+            if((h0 >= 0) && (h1 >= 0)) {
+                /* Heading is clockwise, so a left turn lowers it */
+                d = h0 - h1;
+                if(d > 18000) {
+                    d -= 36000;
+                } else if(d < -18000) {
+                    d += 36000;
+                }
+                tm_printf((UB *)" deg, compass ");
+                roam_print_deg(d);
+                tm_printf((UB *)" deg (heading %d -> %d)\n", h0 / 100, h1 / 100);
+            } else {
+                tm_printf((UB *)" deg\n");
+            }
+        }
+
+        /* ---- Drive until something is near, a bump, or a key ---- */
+        legs++;
+        tm_printf((UB *)"[ROAM] clear (ahead %d mm): leg %d, driving\n", mm, legs);
+        leg_start = roam_dist_mm();
+        bumped = FALSE;
+        stalled = FALSE;
+        paused = FALSE;
+        jolt_pending = FALSE;
+        jolt_t = 0u;
+        min_pct = 100;
+        v_pct = 100;
+        n_ign = 0;
+        stall_n = 0;
+        ring_n = 0;
+        ring_i = 0;
+        near_n = 0;
+        tick = 0;
+        leg_t0 = roam_now_ms();
+        motion_set_velocity(ROAM_SPEED_MM_S, ROAM_SPEED_MM_S);
+
+        while(1) {
+            /* Forward speed over the last ROAM_SPD_WIN_MS, % of the command
+               (100 until a full window has passed after the start) */
+            t = roam_now_ms();
+            dist = roam_dist_mm();
+            ring_t[ring_i] = t;
+            ring_d[ring_i] = dist;
+            ring_i = (ring_i + 1) % ROAM_SPD_RING;
+            if(ring_n < ROAM_SPD_RING) {
+                ring_n++;
+            }
+            v_pct = 100;
+            if((t - leg_t0) >= ROAM_SPD_SETTLE_MS) {
+                for(j = 1; j < ring_n; j++) {
+                    k = (ring_i - 1 - j + ROAM_SPD_RING) % ROAM_SPD_RING;
+                    if((t - ring_t[k]) >= ROAM_SPD_WIN_MS) {
+                        v_pct = (INT)(((dist - ring_d[k]) * 100000)
+                                      / ((INT)(t - ring_t[k]) * ROAM_SPEED_MM_S));
+                        break;
+                    }
+                }
+            }
+
+            /* A real hit slows the wheels too; a floor seam or the castor
+               flicking round only jolts the IMU */
+            if(imu_ok && (E_OK == imu_read_attitude(&att, &cal))) {
+                ev = terrain_update(dist, &att, &cal, motion_is_steady(),
+                                    &hump, &coll);
+                if(0u != (ev & TERRAIN_EVT_HUMP)) {
+                    humps++;
+                }
+                if((0u != (ev & TERRAIN_EVT_COLLISION)) && (!jolt_pending)) {
+                    jolt_pending = TRUE;
+                    jolt_t = t;
+                    min_pct = v_pct;
+                }
+            }
+            if(jolt_pending) {
+                if(v_pct < min_pct) {
+                    min_pct = v_pct;
+                }
+                if(min_pct < ROAM_JOLT_SLOW_PCT) {
+                    bumped = TRUE;
+                    break;
+                }
+                if((t - jolt_t) > ROAM_JOLT_CONFIRM_MS) {
+                    if(n_ign < ROAM_IGNORED_MAX) {
+                        ign_mg[n_ign] = coll.jolt_mg;
+                        ign_pct[n_ign] = min_pct;
+                        n_ign++;
+                    }
+                    jolt_pending = FALSE;
+                }
+            }
+            /* Pushing against something the sonar missed, jolt or not */
+            if(v_pct < ROAM_STALL_PCT) {
+                if(++stall_n >= ROAM_STALL_N) {
+                    stalled = TRUE;
+                    break;
+                }
+            } else {
+                stall_n = 0;
+            }
+
+            if(++tick >= ROAM_PING_EVERY) {
+                tick = 0;
+                mm = roam_ping_mm();
+                if(roam_near(mm)) {
+                    if(++near_n >= ROAM_CONFIRM) {
+                        break;
+                    }
+                } else {
+                    near_n = 0;
+                }
+            }
+            if(console_try_getc() >= 0) {
+                paused = TRUE;
+                break;
+            }
+            tk_dly_tsk(20);
+        }
+        motion_set_velocity(0, 0);
+        tk_dly_tsk(500);
+
+        for(j = 0; j < n_ign; j++) {
+            tm_printf((UB *)"[ROAM]   ignored jolt %d mg: wheels kept %d%% speed\n",
+                      ign_mg[j], ign_pct[j]);
+        }
+        tm_printf((UB *)"[ROAM] stopped after %d mm", roam_dist_mm() - leg_start);
+        if(bumped || stalled) {
+            if(bumped) {
+                tm_printf((UB *)": BUMP (jolt %d mg, wheels down to %d%%), backing off\n",
+                          coll.jolt_mg, min_pct);
+            } else {
+                tm_printf((UB *)": STALLED (wheels at %d%%), backing off\n", v_pct);
+            }
+            motion_set_velocity(-ROAM_BACK_MM_S, -ROAM_BACK_MM_S);
+            tk_dly_tsk(ROAM_BACK_MS);
+            motion_set_velocity(0, 0);
+            tk_dly_tsk(500);
+            force_turn = TRUE;
+        } else if(paused) {
+            tm_printf((UB *)": paused. Press a key to resume.\n");
+        } else {
+            tm_printf((UB *)": obstacle at %d mm\n", mm);
+        }
+        if(humps > 0) {
+            tm_printf((UB *)"[ROAM]   humps so far: %d (last ~%d mm high)\n",
+                      humps, hump.height_mm);
+        }
+
+        if(paused) {
+            tk_dly_tsk(300);
+            console_flush_input();
+            while(console_try_getc() < 0) {
+                tk_dly_tsk(100);
+            }
+            tm_printf((UB *)"[ROAM] resumed (%d legs, %d turns so far)\n", legs, turns);
+        }
+    }
+}
+#elif MOTION_TEST_MODE == IR_TEST_LOG
+/* Buddy 3 step 1: IR bring-up. Live readout to check polarity, then
+   hand-pushed passes (motors off) that record every sensor change with
+   the encoder distance, printed afterwards as black/white run widths. */
+typedef struct {
+    INT mm10;                    /* distance, x0.1 mm */
+    UB  bits;                    /* ir_read() after the change */
+} ir_evt_t;
+
+LOCAL UW ir_e0;
+
+/* Distance pushed since the pass started, x0.1 mm. hw_edges counts either
+   way round, so push in one direction only. */
+LOCAL INT ir_pos_mm10(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)(((l.hw_edges + r.hw_edges - ir_e0) * SWEEP_UM_PER_EDGE) / 200u);
+}
+
+LOCAL void ir_print_mm10(INT v)
+{
+    tm_printf((UB *)"%d.%d", v / 10, v % 10);
+}
+
+/* One sensor's runs between its first and last change in the pass */
+LOCAL void ir_print_runs(const ir_evt_t *ev, INT n, UB bit, const char *name)
+{
+    INT i, k = 0;
+    INT last_mm10 = -1;
+    INT short_n = 0;
+    BOOL was = FALSE;
+
+    tm_printf((UB *)"[IR] %s runs, mm (B black, W white):\n[IR]  ", name);
+    for(i = 0; i < n; i++) {
+        BOOL now = (0u != (ev[i].bits & bit));
+
+        if((i > 0) && (now == was)) {
+            continue;                    /* another sensor changed */
+        }
+        if(last_mm10 >= 0) {
+            tm_printf((UB *)" %s", was ? "B" : "W");
+            ir_print_mm10(ev[i].mm10 - last_mm10);
+            if((ev[i].mm10 - last_mm10) < IR_SHORT_MM10) {
+                short_n++;
+            }
+            if((++k % 10) == 0) {
+                tm_printf((UB *)"\n[IR]  ");
+            }
+        }
+        last_mm10 = ev[i].mm10;
+        was = now;
+    }
+    if(k == 0) {
+        tm_printf((UB *)" (no change)");
+    }
+    tm_printf((UB *)"\n[IR]   %d runs, %d shorter than 1 mm (edge chatter)\n", k, short_n);
+}
+
+LOCAL void ir_test_log(void)
+{
+    static ir_evt_t ev[IR_LOG_LEN];
+    enc_diag_t l, r;
+    INT pass, n, key;
+    UB bits, prev;
+
+    ir_init();
+    tm_printf((UB *)"\n[IR] IR bring-up: L=GP%d C=GP%d R=GP%d, 1 = black expected.\n",
+              IR_LEFT_DOUT, IR_CENTER_DOUT, IR_RIGHT_DOUT);
+    tm_printf((UB *)"[IR] Live readout: hold the car with each sensor over white, then\n");
+    tm_printf((UB *)"[IR] black (the line or tape). Press a key to go on to the passes.\n");
+    console_flush_input();
+    key = -1;
+    while(key < 0) {
+        bits = (UB)ir_read();
+        tm_printf((UB *)"[IR]   L=%d C=%d R=%d\n", (0u != (bits & IR_BIT_LEFT)) ? 1 : 0,
+                  (0u != (bits & IR_BIT_CENTRE)) ? 1 : 0,
+                  (0u != (bits & IR_BIT_RIGHT)) ? 1 : 0);
+        tk_dly_tsk(400);
+        key = console_try_getc();
+    }
+
+    for(pass = 1; ; pass++) {
+        tm_printf((UB *)"\n[IR] Pass %d: put the car ~3 cm before the line or barcode,\n", pass);
+        tm_printf((UB *)"[IR] press a key, push it slowly and steadily forwards only across,\n");
+        tm_printf((UB *)"[IR] then press a key to stop recording.\n");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tm_printf((UB *)"[IR] recording...\n");
+        tk_dly_tsk(100);
+        console_flush_input();
+
+        (void)motion_get_encoder_diag(&l, &r);
+        ir_e0 = l.hw_edges + r.hw_edges;
+        n = 0;
+        prev = (UB)ir_read();
+        ev[n].mm10 = 0;
+        ev[n].bits = prev;
+        n++;
+        /* No printing here: a print would stretch the poll and blur edges */
+        while((n < IR_LOG_LEN) && (console_try_getc() < 0)) {
+            bits = (UB)ir_read();
+            if(bits != prev) {
+                ev[n].mm10 = ir_pos_mm10();
+                ev[n].bits = bits;
+                n++;
+                prev = bits;
+            }
+            tk_dly_tsk(1);
+        }
+
+        tm_printf((UB *)"\n[IR] Pass %d: pushed ", pass);
+        ir_print_mm10(ir_pos_mm10());
+        tm_printf((UB *)" mm, %d changes%s\n", n - 1,
+                  (n >= IR_LOG_LEN) ? " (log FULL, stopped early)" : "");
+        ir_print_runs(ev, n, IR_BIT_LEFT, "LEFT  (barcode)");
+        ir_print_runs(ev, n, IR_BIT_CENTRE, "CENTRE");
+        ir_print_runs(ev, n, IR_BIT_RIGHT, "RIGHT ");
+    }
+}
+#elif MOTION_TEST_MODE == IR_TEST_AO
+/* Buddy 3 step 1b: left IR analog out (GP27) against encoder distance,
+   hand-pushed with the motors off. Each pass stores one AO reading per
+   encoder step (0.33 mm), then prints the white/black levels, the bar and
+   space widths found with a mid-level threshold, and the raw profile. */
+LOCAL UW ao_e0;
+
+/* Encoder steps (0.328 mm) pushed since the pass started. hw_edges
+   counts either way round, so push in one direction only. */
+LOCAL INT ao_step(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((l.hw_edges + r.hw_edges - ao_e0) / 2u);
+}
+
+LOCAL void ao_print_mm(INT steps)
+{
+    INT mm10 = (steps * SWEEP_UM_PER_EDGE) / 100;
+
+    tm_printf((UB *)"%d.%d", mm10 / 10, mm10 % 10);
+}
+
+LOCAL void ao_analyse(const UH *prof, INT n)
+{
+    INT i, lo = 3300, hi = 0, thr, hys, start = 0, ext;
+    INT runs = 0;
+    BOOL black;
+
+    for(i = 0; i < n; i++) {
+        if(prof[i] < lo) {
+            lo = prof[i];
+        }
+        if(prof[i] > hi) {
+            hi = prof[i];
+        }
+    }
+    thr = (lo + hi) / 2;
+    hys = (hi - lo) / 8;
+    tm_printf((UB *)"[AO] white %d mV, darkest %d mV -> threshold %d +/- %d mV\n",
+              lo, hi, thr, hys);
+    if((hi - lo) < 150) {
+        tm_printf((UB *)"[AO] contrast under 150 mV: no bars to split\n");
+        return;
+    }
+
+    /* Runs with hysteresis; for each, the extreme reading inside it (peak
+       for black, dip for white) shows how close it came to the threshold */
+    tm_printf((UB *)"[AO] runs, mm (peak or dip mV), B black, W white:\n[AO]  ");
+    black = (prof[0] > thr);
+    ext = prof[0];
+    for(i = 1; i <= n; i++) {
+        BOOL flip = FALSE;
+
+        if(i < n) {
+            if(black && (prof[i] < (thr - hys))) {
+                flip = TRUE;
+            } else if((!black) && (prof[i] > (thr + hys))) {
+                flip = TRUE;
+            }
+        }
+        if(flip || (i == n)) {
+            tm_printf((UB *)" %s", black ? "B" : "W");
+            ao_print_mm(i - start);
+            tm_printf((UB *)"(%d)", ext);
+            if((++runs % 6) == 0) {
+                tm_printf((UB *)"\n[AO]  ");
+            }
+            if(i < n) {
+                black = !black;
+                start = i;
+                ext = prof[i];
+            }
+        } else if(black ? (prof[i] > ext) : (prof[i] < ext)) {
+            ext = prof[i];
+        }
+    }
+    tm_printf((UB *)"\n[AO]   %d runs (first and last are the lead-in/out)\n", runs);
+}
+
+LOCAL void ir_test_ao(void)
+{
+    static UH prof[IR_AO_LEN];
+    enc_diag_t l, r;
+    INT pass, n, i, k, s, last;
+    UH mv;
+
+    ir_init();
+    ir_ao_init();
+    tm_printf((UB *)"\n[AO] Left IR analog test: AOUT on GP%d (ADC%d), DOUT on GP%d.\n",
+              IR_LEFT_AOUT, IR_LEFT_AOUT - 26, IR_LEFT_DOUT);
+    tm_printf((UB *)"[AO] Live readout: hold the left IR over white, the line, then a\n");
+    tm_printf((UB *)"[AO] thin and a wide barcode bar. Press a key to go on.\n");
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tm_printf((UB *)"[AO]   AO=%d mV  DOUT=%d\n", (INT)ir_ao_left_mv(),
+                  (0u != (ir_read() & IR_BIT_LEFT)) ? 1 : 0);
+        tk_dly_tsk(400);
+    }
+
+    for(pass = 1; ; pass++) {
+        tm_printf((UB *)"\n[AO] Pass %d: left IR ~2 cm before the barcode, press a key,\n", pass);
+        tm_printf((UB *)"[AO] push slowly forwards only until ~2 cm past it, press a key.\n");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tm_printf((UB *)"[AO] recording...\n");
+        tk_dly_tsk(100);
+        console_flush_input();
+
+        (void)motion_get_encoder_diag(&l, &r);
+        ao_e0 = l.hw_edges + r.hw_edges;
+        last = -1;
+        /* No printing here: it would stretch the poll */
+        while(console_try_getc() < 0) {
+            s = ao_step();
+            if(s >= IR_AO_LEN) {
+                break;
+            }
+            mv = (UH)ir_ao_left_mv();
+            /* Fill any steps passed since the last poll with this reading */
+            for(k = last + 1; k <= s; k++) {
+                prof[k] = mv;
+            }
+            if(s > last) {
+                last = s;
+            }
+            tk_dly_tsk(1);
+        }
+        n = last + 1;
+
+        tm_printf((UB *)"\n[AO] Pass %d: ", pass);
+        ao_print_mm(n);
+        tm_printf((UB *)" mm recorded%s\n", (n >= IR_AO_LEN) ? " (buffer FULL)" : "");
+        if(n < 10) {
+            tm_printf((UB *)"[AO] too short, push further\n");
+            continue;
+        }
+        ao_analyse(prof, n);
+
+        tm_printf((UB *)"[AO] profile, mV every 1 mm (3 steps):\n");
+        for(i = 0; i < n; i += 3 * IR_AO_ROW) {
+            tm_printf((UB *)"[AO] %d mm:", (i * SWEEP_UM_PER_EDGE) / 1000);
+            for(k = i; (k < (i + (3 * IR_AO_ROW))) && (k < n); k += 3) {
+                tm_printf((UB *)" %d", prof[k]);
+            }
+            tm_printf((UB *)"\n");
+        }
+    }
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
+/* Run a list of speed steps under PI control. Nothing is printed while the
+   motors run (usermain outranks the motion task, so a blocking print would
+   stall the loop); edge counts over the last PI_MEASURE_MS of each hold are
+   saved and printed with the trace once the car has stopped. */
+LOCAL void motion_pi_steps(const char *name, const int16_t *steps, INT n)
+{
+    INT i;
+    /* static: usermain's stack is only 1 KB */
+    static enc_diag_t l0[PI_MAX_STEPS], r0[PI_MAX_STEPS];
+    static enc_diag_t l1[PI_MAX_STEPS], r1[PI_MAX_STEPS];
+    INT l_mm_s, r_mm_s, diff_pct;
+
+    if(n > PI_MAX_STEPS) {
+        n = PI_MAX_STEPS;
+    }
+
+    motion_reset_odometry();
+    motion_trace_start();
+
+    for(i = 0; i < n; i++) {
+        motion_set_velocity(steps[i], steps[i]);
+        tk_dly_tsk(PI_HOLD_MS - PI_MEASURE_MS);
+        motion_get_encoder_diag(&l0[i], &r0[i]);
+        tk_dly_tsk(PI_MEASURE_MS);
+        motion_get_encoder_diag(&l1[i], &r1[i]);
+    }
+
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(PI_STOP_MS);
+
+    tm_printf((UB *)"\n[PI] %s trace:\n", name);
+    motion_trace_dump();
+
+    for(i = 0; i < n; i++) {
+        /* edges over PI_MEASURE_MS -> mm/s at 322 um/edge */
+        l_mm_s = (INT)(((l1[i].hw_count - l0[i].hw_count) * 1000 / PI_MEASURE_MS)
+                       * SWEEP_UM_PER_EDGE / 1000);
+        r_mm_s = (INT)(((r1[i].hw_count - r0[i].hw_count) * 1000 / PI_MEASURE_MS)
+                       * SWEEP_UM_PER_EDGE / 1000);
+        diff_pct = (l_mm_s != 0) ? ((r_mm_s - l_mm_s) * 100 / l_mm_s) : 0;
+        tm_printf((UB *)"[PI] %s target=%4d mm/s  L=%4d  R=%4d mm/s  R-L=%d%%\n",
+                  name, (INT)steps[i], l_mm_s, r_mm_s, diff_pct);
+    }
+}
+
+LOCAL void motion_test_pi_step(void)
+{
+    static const int16_t fwd_steps[] = { 300, 500, 150 };
+    static const int16_t rev_steps[] = { -300 };
+
+    tm_printf((UB *)"\n[TEST] PI step response, lifted or on the floor\n");
+    tm_printf((UB *)"[TEST] On the floor: ~1.6 m forward then ~0.5 m back\n");
+    tm_printf((UB *)"[TEST] Starting in 10 s\n");
+    tk_dly_tsk(10000);
+
+    motion_pi_steps("fwd", fwd_steps, 3);
+    motion_pi_steps("rev", rev_steps, 1);
+
+    tm_printf((UB *)"\n=== PI step test complete ===\n");
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_HAND
+/* Motors are never commanded, so the only edges are from hand turning. */
+LOCAL void motion_test_hand(void)
+{
+    tm_printf((UB *)"\n[TEST] Hand-turn test: motors OFF\n");
+    tm_printf((UB *)"[TEST] Mark each wheel. Turn it 10 full turns FORWARD,"
+              " note cnt, then 10 turns BACK. Reset to zero the counters.\n");
+
+    motion_reset_odometry();
+    while(1) {
+        tk_dly_tsk(HAND_PRINT_MS);
+        motion_print_encoder_diag("HAND");
+    }
+}
+#else
+LOCAL void motion_test_distance(void)
+{
+    static const struct {
+        uint16_t cm;
+        uint16_t mm_s;
+    } moves[] = {
+        { 50, 300 },
+        { 30, 300 },
+        { 50, 500 },
+    };
+    INT i;
+    INT s;
+    ER err;
+
+    tm_printf((UB *)"\n[TEST] Distance test on the floor (PI control)\n");
+    tm_printf((UB *)"[TEST] Mark the car's front before each move, then"
+              " tape-measure how far it went\n");
+
+    for(i = 0; i < (INT)(sizeof(moves) / sizeof(moves[0])); i++) {
+        for(s = DIST_PAUSE_S; s > 0; s--) {
+            tm_printf((UB *)"[TEST] Move %d (%u cm at %u mm/s) in %d s\n",
+                      i + 1, moves[i].cm, moves[i].mm_s, s);
+            tk_dly_tsk(1000);
+        }
+
+        err = motion_move_forward_cm(moves[i].cm, moves[i].mm_s);
+        if(E_OK != err) {
+            tm_printf((UB *)"[TEST] Move %d failed: %d\n", i + 1, err);
+        }
+    }
+
+    tm_printf((UB *)"\n=== Distance test complete ===\n");
+}
+#endif
 
 /* ------------------------------------------------------------------ *
  * Entry point
@@ -510,16 +3190,21 @@ EXPORT INT usermain(void)
     ID tid;
     ER err;
 
+#if APP_DEMO_PIPELINE
     mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
     mtxid = tk_cre_mtx(&cmtx); if(!made("mtx", mtxid)) return 1;
     mbfid = tk_cre_mbf(&cmbf); if(!made("mbf", mbfid)) return 1;
     semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
     flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
 
+#endif
+
     tid = tk_cre_tsk(&ctsk_blink); if(made("tsk(blink)", tid)) tk_sta_tsk(tid, 0);
+#if APP_DEMO_PIPELINE
     tid = tk_cre_tsk(&ctsk_monitor); if(made("tsk(monitor)", tid)) tk_sta_tsk(tid, 0);
     tid = tk_cre_tsk(&ctsk_consumer); if(made("tsk(consumer)", tid)) tk_sta_tsk(tid, 0);
     tid = tk_cre_tsk(&ctsk_producer); if(made("tsk(producer)", tid)) tk_sta_tsk(tid, 0);
+#endif
 #if TM_WIFI_CYW43
     tid = tk_cre_tsk(&ctsk_wifi); if(made("tsk(wifi)", tid)) tk_sta_tsk(tid, 0);
 #endif
@@ -530,7 +3215,6 @@ EXPORT INT usermain(void)
 
     tm_printf((UB *)"\n=== Starting Motion Subsystem Test ===\n");
 
-    // Create motion task
     err = motion_task_create();
     if (E_OK != err)
     {
@@ -541,65 +3225,45 @@ EXPORT INT usermain(void)
     // Wait for motion task to initialize
     tk_dly_tsk(2000);
 
-    // Test 1: Run forward for 3 seconds at full speed
-    tm_printf((UB *)"\n[TEST] Test 1: Forward 3 sec (digital full speed)\n");
-    err = motion_set_speed(100, 100);
-    if (E_OK != err)
-    {
-        tm_printf((UB *)"[TEST] motion_set_speed failed: %d\n", err);
-    }
-    tk_dly_tsk(3000);
-
-    // Brake delay before reversing (brownout protection)
-    tm_printf((UB *)"\n[TEST] Braking (500ms delay)...\n");
-    motion_set_speed(0, 0);
-    tk_dly_tsk(500);
-
-    // Test 2: Run reverse for 3 seconds
-    tm_printf((UB *)"\n[TEST] Test 2: Reverse 3 sec\n");
-    err = motion_set_speed(-100, -100);
-    if (E_OK != err)
-    {
-        tm_printf((UB *)"[TEST] motion_set_speed failed: %d\n", err);
-    }
-    tk_dly_tsk(3000);
-
-    // Stop
-    tm_printf((UB *)"\n[TEST] Stopping...\n");
-    motion_set_speed(0, 0);
-    tk_dly_tsk(2000);
-
-    // Test 3: Distance-based movement (50 cm)
-    tm_printf((UB *)"\n[TEST] Test 3: Distance-based 50 cm forward\n");
-    motion_reset_odometry();
-    err = motion_move_forward_cm(50, 100);  // Speed currently ignored (digital mode)
-    if (E_OK == err)
-    {
-        tm_printf((UB *)"[TEST] Distance movement complete!\n");
-    }
-    else
-    {
-        tm_printf((UB *)"[TEST] Distance movement failed: %d\n", err);
-    }
-
-    tk_dly_tsk(2000);
-
-    // Test 4: Another distance test (30 cm)
-    tm_printf((UB *)"\n[TEST] Test 4: Distance-based 30 cm forward\n");
-    motion_reset_odometry();
-    err = motion_move_forward_cm(30, 100);
-    if (E_OK == err)
-    {
-        tm_printf((UB *)"[TEST] Distance movement complete!\n");
-    }
-    else
-    {
-        tm_printf((UB *)"[TEST] Distance movement failed: %d\n", err);
-    }
-
-    tm_printf((UB *)"\n=== Motion Test Complete ===\n");
-    tm_printf((UB *)"Demo tasks (producer/consumer/monitor/blink) continue running.\n");
-    tm_printf((UB *)"Odometry updates every 500ms.\n\n");
+#if MOTION_TEST_MODE == MOTION_TEST_FIXED_TIME
+    motion_test_fixed_time();
+#elif MOTION_TEST_MODE == MOTION_TEST_DUTY_SWEEP
+    motion_test_duty_sweep();
+#elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
+    motion_test_pi_step();
+#elif MOTION_TEST_MODE == IMU_TEST_BRINGUP
+    imu_test_bringup();
+#elif MOTION_TEST_MODE == IMU_TEST_ACCEL_6FACE
+    imu_test_accel_6face();
+#elif MOTION_TEST_MODE == IMU_TEST_MAG_CAL
+    imu_test_mag_cal();
+#elif MOTION_TEST_MODE == IMU_TEST_HEADING
+    imu_test_heading();
+#elif MOTION_TEST_MODE == IMU_TEST_HUMP_LOG
+    imu_test_hump_log();
+#elif MOTION_TEST_MODE == IMU_TEST_TERRAIN
+    imu_test_terrain();
+#elif MOTION_TEST_MODE == ULTRA_TEST_RANGE
+    ultra_test_range();
+#elif MOTION_TEST_MODE == SERVO_TEST_JOG
+    servo_test_jog();
+#elif MOTION_TEST_MODE == SERVO_TEST_MAP
+    servo_test_map();
+#elif MOTION_TEST_MODE == ULTRA_TEST_BEAM
+    ultra_test_beam();
+#elif MOTION_TEST_MODE == ULTRA_TEST_SCAN
+    ultra_test_scan();
+#elif MOTION_TEST_MODE == DEMO_ROAM
+    demo_roam();
+#elif MOTION_TEST_MODE == IR_TEST_LOG
+    ir_test_log();
+#elif MOTION_TEST_MODE == IR_TEST_AO
+    ir_test_ao();
+#elif MOTION_TEST_MODE == MOTION_TEST_HAND
+    motion_test_hand();
+#else
+    motion_test_distance();
+#endif
 
     /* The initial task has nothing left to do. It must not return: on
        return the kernel shuts the system down. */
