@@ -58,6 +58,7 @@
 #include "buddy5_ultrasonic/ultrasonic.h"
 #include "buddy5_ultrasonic/servo.h"
 #include "buddy5_ultrasonic/scan.h"
+#include "buddy5_ultrasonic/obstacle.h"
 #include "common/console_in.h"
 #include "common/faults.h"
 
@@ -584,6 +585,9 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_SIDE_HUMP     - phase 2: roll-based one-sided hump detector
  *                            live (hump mask on), 5 tall-ramp runs, with
  *                            the bracket-strike IMPACT check replayed.
+ *   OBST_TEST_STOP         - phase 3 step 1: obstacle watch task; 5 runs at
+ *                            300 mm/s to a box (stop gap), 3 runs with
+ *                            objects beside the path (no false stop).
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -610,9 +614,10 @@ LOCAL T_CFLG cflg = {
 #define IMU_TEST_RAMP_ROLL       22
 #define MOTION_TEST_STRAIGHT     23
 #define IMU_TEST_SIDE_HUMP       24
+#define OBST_TEST_STOP           25
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_SIDE_HUMP
+#define MOTION_TEST_MODE         OBST_TEST_STOP
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -711,6 +716,10 @@ LOCAL T_CFLG cflg = {
 #define STRAIGHT_RUNS            5
 #define STRAIGHT_DIST_CM         50
 #define STRAIGHT_SPEED_MM_S      150
+
+#define OBST_RUNS                8
+#define OBST_BOX_RUNS            5
+#define OBST_MAX_DIST_MM         1500  /* drive limit if nothing stops it */
 
 #define DIST_PAUSE_S             10
 
@@ -3702,6 +3711,106 @@ LOCAL void imu_test_side_hump(void)
     }
     tm_printf((UB *)"\n=== One-sided hump detector test complete ===\n");
 }
+#elif MOTION_TEST_MODE == OBST_TEST_STOP
+/* Phase 3 step 1: obstacle watch task (obstacle.c). Key-paced runs:
+   runs 1..OBST_BOX_RUNS drive at OBS_WATCH_MAX_MM_S toward a box on the
+   path and must stop with the IR bracket tip >= 50 mm from it; the
+   remaining runs have objects BESIDE the path and must drive the full
+   OBST_MAX_DIST_MM without stopping. Nothing is printed while driving. */
+LOCAL INT obst_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+LOCAL void obst_run(INT run, BOOL box)
+{
+    INT d_trig = -1, mm_trig = -1, d_end, i, n = 0;
+    W sum = 0;
+    BOOL stopped = FALSE;
+
+    obstacle_watch(TRUE);
+    tk_dly_tsk(300);                 /* a few pings of history first */
+    motion_reset_odometry();
+    motion_set_velocity(OBS_WATCH_MAX_MM_S, OBS_WATCH_MAX_MM_S);
+
+    while(obst_dist_mm() < OBST_MAX_DIST_MM) {
+        if(obstacle_blocked()) {
+            motion_stop();
+            d_trig = obst_dist_mm();
+            mm_trig = obstacle_last_mm();
+            stopped = TRUE;
+            break;
+        }
+        if(0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO))) {
+            motion_stop();
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    if(!stopped) {
+        motion_stop();
+    }
+    tk_dly_tsk(800);
+    d_end = obst_dist_mm();
+
+    /* Reading at rest: mean of 5 good pings */
+    for(i = 0; (i < 12) && (n < 5); i++) {
+        tk_dly_tsk(70);
+        if(obstacle_last_mm() > 0) {
+            sum += obstacle_last_mm();
+            n++;
+        }
+    }
+    obstacle_watch(FALSE);
+
+    tm_printf((UB *)"[OBST] run %d (%s): ", run, box ? "box ahead" : "objects beside");
+    if(stopped) {
+        tm_printf((UB *)"STOPPED, triggered at %d mm travelled with reading %d mm;"
+                  " at rest after %d mm, reading %d mm (braking %d mm)\n",
+                  d_trig, mm_trig, d_end, (n > 0) ? (INT)(sum / n) : -1, d_end - d_trig);
+    } else {
+        tm_printf((UB *)"no stop, drove %d mm%s\n", d_end,
+                  (0u != fault_get()) ? " (FAULT)" : "");
+    }
+    tm_printf((UB *)"[OBST]   faults 0x%x, pings %d. %s\n", (INT)fault_get(),
+              (INT)obstacle_ping_count(),
+              box ? "Measure the gap from the IR bracket tip to the box (mm)."
+                  : (stopped ? "FALSE STOP: note where the objects were."
+                             : "Pass: no false stop."));
+}
+
+LOCAL void obst_test_stop(void)
+{
+    INT run;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[OBST] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[OBST] Obstacle watch: stop when 2 of the last 3 pings <= %d mm"
+              " (raw), driving at %d mm/s.\n", OBS_STOP_MM, OBS_WATCH_MAX_MM_S);
+    tm_printf((UB *)"[OBST] Runs 1-%d: a box ON the path ~80-100 cm ahead. Runs %d-%d:"
+              " no box ahead, objects BESIDE the path.\n", OBST_BOX_RUNS,
+              OBST_BOX_RUNS + 1, OBST_RUNS);
+
+    for(run = 1; run <= OBST_RUNS; run++) {
+        tm_printf((UB *)"\n[OBST] Run %d/%d: set up (%s), press a key.\n", run, OBST_RUNS,
+                  (run <= OBST_BOX_RUNS) ? "box ahead" : "objects beside the path");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        fault_clear(FAULT_MOTION_MASK);
+        obst_run(run, (run <= OBST_BOX_RUNS) ? TRUE : FALSE);
+    }
+    tm_printf((UB *)"\n=== Obstacle watch test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -3912,6 +4021,8 @@ EXPORT INT usermain(void)
     motion_test_straight();
 #elif MOTION_TEST_MODE == IMU_TEST_SIDE_HUMP
     imu_test_side_hump();
+#elif MOTION_TEST_MODE == OBST_TEST_STOP
+    obst_test_stop();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

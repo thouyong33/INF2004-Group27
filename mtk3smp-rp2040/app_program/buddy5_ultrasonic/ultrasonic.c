@@ -104,7 +104,9 @@ ultrasonic_read_us_max(uint32_t *p_echo_us, uint32_t max_us)
     {
         if ((us_now() - t0) > ECHO_START_TIMEOUT_US)
         {
-            return E_TMOUT;
+            /* The HC-SR04 raises ECHO ~0.5 ms after every trigger, target
+             * or not, so a pulse that never starts means no sensor. */
+            return E_IO;
         }
     }
 

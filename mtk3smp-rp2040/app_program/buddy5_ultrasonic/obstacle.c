@@ -1,0 +1,187 @@
+/**
+ * @file obstacle.c
+ * @brief Buddy 5: obstacle watch task.
+ */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <tk/tkernel.h>
+#include <tm/tmonitor.h>
+
+#include "../common/faults.h"
+#include "ultrasonic.h"
+#include "servo.h"
+#include "obstacle.h"
+
+#define OBS_TASK_PRI         6u      /* just below motion (5) */
+#define OBS_STACK_SIZE       1024u
+#define OBS_PING_MS          65u     /* datasheet: >= 60 ms between pings */
+#define OBS_ECHO_MAX_US      5830u   /* ~1 m: no-echo pings end early */
+#define OBS_DEAD_PINGS       5u      /* echo never started this many times */
+#define OBS_HIST_MASK        0x7u    /* last 3 pings, bit 0 = newest */
+
+static ID g_obs_tsk = 0;
+static ID g_scan_flg = 0;
+
+/* Shared with other tasks: one byte each, written only by the obstacle
+ * task. The history byte is replaced whole (never read-modify-written by
+ * readers), so a plain load is a consistent snapshot. */
+static volatile uint8_t g_near_hist = 0u;
+static volatile int16_t g_last_mm = -1;
+static volatile uint32_t g_pings = 0u;
+static volatile uint8_t g_reset_req = 0u;
+
+static uint8_t
+popcount3(uint8_t v)
+{
+    return (uint8_t)((v & 1u) + ((v >> 1) & 1u) + ((v >> 2) & 1u));
+}
+
+static void
+obstacle_task_main(INT stacd, void *exinf)
+{
+    UINT flgptn;
+    uint32_t echo_us;
+    uint32_t dead = 0u;
+    uint8_t hist = 0u;
+    bool near;
+    ER er;
+
+    (void)stacd;
+    (void)exinf;
+
+    while (1)
+    {
+        /* Sleep until watching is on; WATCH stays set while it is */
+        (void)tk_wai_flg(g_scan_flg, OBS_FLG_WATCH, TWF_ORW, &flgptn, TMO_FEVR);
+
+        if (0u != g_reset_req)
+        {
+            g_reset_req = 0u;
+            hist = 0u;
+            g_near_hist = 0u;
+            g_last_mm = -1;
+            g_pings = 0u;
+        }
+
+        er = ultrasonic_read_us_max(&echo_us, OBS_ECHO_MAX_US);
+        near = false;
+        if (E_OK == er)
+        {
+            g_last_mm = (int16_t)ultrasonic_us_to_mm(echo_us);
+            near = (g_last_mm > 0) && (g_last_mm <= OBS_STOP_MM);
+            dead = 0u;
+            if (0u != (fault_get() & FAULT_NO_ECHO))
+            {
+                fault_clear(FAULT_NO_ECHO);
+            }
+        }
+        else
+        {
+            g_last_mm = -1;
+            if (E_IO == er)
+            {
+                if (++dead >= OBS_DEAD_PINGS)
+                {
+                    fault_set(FAULT_NO_ECHO);
+                }
+            }
+            else
+            {
+                dead = 0u;
+            }
+        }
+
+        hist = (uint8_t)(((hist << 1) | (near ? 1u : 0u)) & OBS_HIST_MASK);
+        g_near_hist = hist;
+        g_pings++;
+
+        tk_dly_tsk(OBS_PING_MS);
+    }
+}
+
+ER
+obstacle_task_create(void)
+{
+    T_CFLG cflg;
+    T_CTSK ctsk;
+    ER er;
+
+    if (g_obs_tsk > 0)
+    {
+        return E_OBJ;
+    }
+
+    ultrasonic_init();
+    servo_init(SERVO_CENTRE_US);
+    servo_set_limits(SERVO_RIGHT_US, SERVO_LEFT_US);
+
+    cflg.flgatr = TA_TFIFO | TA_WMUL;
+    cflg.iflgptn = 0u;
+    g_scan_flg = tk_cre_flg(&cflg);
+    if (g_scan_flg <= 0)
+    {
+        return g_scan_flg;
+    }
+
+    ctsk.tskatr = TA_HLNG | TA_RNG3;
+    ctsk.task = obstacle_task_main;
+    ctsk.itskpri = OBS_TASK_PRI;
+    ctsk.stksz = OBS_STACK_SIZE;
+    g_obs_tsk = tk_cre_tsk(&ctsk);
+    if (g_obs_tsk <= 0)
+    {
+        er = g_obs_tsk;
+        g_obs_tsk = 0;
+        (void)tk_del_flg(g_scan_flg);
+        g_scan_flg = 0;
+        return er;
+    }
+
+    er = tk_sta_tsk(g_obs_tsk, 0);
+    if (E_OK != er)
+    {
+        (void)tk_del_tsk(g_obs_tsk);
+        g_obs_tsk = 0;
+        (void)tk_del_flg(g_scan_flg);
+        g_scan_flg = 0;
+    }
+    return er;
+}
+
+void
+obstacle_watch(bool on)
+{
+    if (g_scan_flg <= 0)
+    {
+        return;
+    }
+    if (on)
+    {
+        g_near_hist = 0u;
+        g_reset_req = 1u;
+        (void)tk_set_flg(g_scan_flg, OBS_FLG_WATCH);
+    }
+    else
+    {
+        (void)tk_clr_flg(g_scan_flg, (UINT)~OBS_FLG_WATCH);
+    }
+}
+
+bool
+obstacle_blocked(void)
+{
+    return popcount3(g_near_hist) >= 2u;
+}
+
+int16_t
+obstacle_last_mm(void)
+{
+    return g_last_mm;
+}
+
+uint32_t
+obstacle_ping_count(void)
+{
+    return g_pings;
+}
