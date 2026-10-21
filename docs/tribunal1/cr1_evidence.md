@@ -157,3 +157,51 @@ consistent with the code all along; only its interpretation was wrong.
 | Change log, "edge counters with a 1 ms Motion loop" | 1 ms loop; polls 995–996/s (L1a, L13) | 2 ms loop, 500 passes/s; L1a/L13 counts span 1 s run + 1 s settle |
 | R1 mitigation / all-tasks test pass mark | polls counter 990/s or more | loop rate 495 passes/s or more (`motion_loop_rate()`) |
 | Evidence | L1a, L13 | `MOTION_TEST_SAFETY` and `MOTION_TEST_CPU` logs (21 Oct), commit c45861c test code, kernel `timer.c` |
+
+## Buddy 4: one-sided hump (course test), 21 Oct
+
+Course test (user, 21 Oct): the 1.0 cm or 2.4 cm ramp under the **right
+wheel only**; success = the car rides it, stays straight and still
+follows the line afterwards. No full-width hump on the course.
+
+**Method change.** With one wheel raised, the car rolls rather than
+pitches, so the hump is now measured from roll: height =
+114 mm (track) × sin(roll). Roll is smoothed (7-sample mean, ~0.14 s);
+a side hump starts when |roll| stays past 2.5° for 20 mm and ends when it
+is back within 1.5° for 15 mm; the height uses the most-tilted 30 mm
+mean (`terrain.c`, commits 54af32f, 020259b). The pitch detector's report
+of the same ramp is dropped when the car rolled during it. While on the
+hump, `motion_set_hump_mask()` masks the stall/encoder checks.
+
+**Why not the compass for heading hold.** One-sided ramp log
+(`IMU_TEST_RAMP_ROLL`, e0abadd): on flat floor the compass reported a
+48° turn over 50 cm while the encoders showed 1.5°; the field changes
+with position on this floor, so a compass heading hold would steer the
+car off course.
+
+**Results** (`IMU_TEST_SIDE_HUMP`, 50 cm at 150 mm/s):
+
+| Run | Ramp | Detected | Height | Sideways offset |
+|---|---|---|---|---|
+| A | flat | none | – | – |
+| B | 1.0 cm | right | 12 mm | – |
+| C | 2.4 cm | right | 27 mm | – |
+| 1–6 | 2.4 cm | right (6/6) | 23, 23, 25, 26, 26, 26 mm | 19, 8, 9, 8, 0 mm (5 measured) |
+
+Flat-floor baseline (`MOTION_TEST_STRAIGHT`, 5 × 50 cm): 14, 7, 0, 7,
+2 mm right; tyre difference about 0.5 %, within setup error, no trim
+applied. Hand-turn check: L 6320, R 6327 edges / 10 turns.
+
+**Impact confirmation on the ramp.** Ramp and IR-bracket jolts reached
+1659 mg, above the 500 mg jolt threshold, but the wheels never dropped
+below 81 % of the command, so every one was correctly ignored by the
+wheel-slowdown rule (IMPACT = jolt plus wheels below 60 % within
+250 ms). The only "would count" cases were at the commanded stop and the
+pull-away, where the wheels slow because they are told to; the
+controller therefore confirms impacts only while `motion_is_steady()`.
+
+**Open (hardware).** The IR bracket strikes the 2.4 cm ramp and the left
+IR arm drags on the descent, steering the car by a varying amount
+(offsets 0–19 mm). Software cannot see or correct this; a smooth skid on
+the IR mount is the proposed fix. Line following (Buddy 3) corrects the
+remaining heading after the ramp.
