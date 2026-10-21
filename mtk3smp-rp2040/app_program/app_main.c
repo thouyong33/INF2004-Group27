@@ -574,6 +574,8 @@ LOCAL T_CFLG cflg = {
  *   MOTION_TEST_SAFETY     - Tribunal 1 phase 1, car lifted: loop rate and
  *                            PI error, STOP over queued commands, stall
  *                            (both wheels held), encoder check (one held).
+ *   MOTION_TEST_CPU        - motion task CPU (busy us/s, longest pass) idle
+ *                            and at 150/300/500 mm/s, and stack high-water.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -596,9 +598,10 @@ LOCAL T_CFLG cflg = {
 #define IR_TEST_LOG              18
 #define IR_TEST_AO               19
 #define MOTION_TEST_SAFETY       20
+#define MOTION_TEST_CPU          21
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         MOTION_TEST_SAFETY
+#define MOTION_TEST_MODE         MOTION_TEST_CPU
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -3202,6 +3205,45 @@ LOCAL void motion_test_safety(void)
 
     tm_printf((UB *)"\n=== Motion safety test complete ===\n");
 }
+#elif MOTION_TEST_MODE == MOTION_TEST_CPU
+/* CPU and RAM use of the motion task, car LIFTED. Each step holds a state
+   for 3 s, then reads the last full second: loop passes, busy time and the
+   longest pass, plus the stack high-water mark. Prints only between steps. */
+LOCAL void cpu_report(const char *name)
+{
+    uint32_t busy, max_pass;
+
+    motion_get_cpu(&busy, &max_pass);
+    tm_printf((UB *)"[CPU] %s: %d passes/s, busy %d us/s = %d.%d%d %% CPU, "
+              "longest pass %d us, %d us per pass on average\n", name,
+              (INT)motion_loop_rate(), (INT)busy, (INT)(busy / 10000u),
+              (INT)((busy / 1000u) % 10u), (INT)((busy / 100u) % 10u), (INT)max_pass,
+              (motion_loop_rate() > 0u) ? (INT)(busy / motion_loop_rate()) : 0);
+}
+
+LOCAL void motion_test_cpu(void)
+{
+    static const INT speeds[3] = { 150, 300, 500 };
+    INT i;
+
+    ultrasonic_init();              /* starts the 1 MHz timer the counters use */
+    tm_printf((UB *)"\n[CPU] Motion task CPU and stack. Car LIFTED. Starting in 3 s.\n");
+    tk_dly_tsk(3000);
+
+    cpu_report("idle (stopped)");
+    for(i = 0; i < 3; i++) {
+        motion_set_velocity((int16_t)speeds[i], (int16_t)speeds[i]);
+        tk_dly_tsk(3000);
+        tm_printf((UB *)"[CPU] ");
+        tm_printf((UB *)"%d mm/s:\n", speeds[i]);
+        cpu_report("  driving");
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(1500);
+    tm_printf((UB *)"[CPU] stack: %d of %d bytes used (deepest so far)\n",
+              (INT)motion_stack_used(), (INT)motion_stack_size());
+    tm_printf((UB *)"\n=== CPU test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -3404,6 +3446,8 @@ EXPORT INT usermain(void)
     ir_test_ao();
 #elif MOTION_TEST_MODE == MOTION_TEST_SAFETY
     motion_test_safety();
+#elif MOTION_TEST_MODE == MOTION_TEST_CPU
+    motion_test_cpu();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

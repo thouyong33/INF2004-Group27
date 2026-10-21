@@ -103,6 +103,21 @@ void motion_set_hump_mask(bool on_hump);
 uint32_t motion_loop_rate(void);
 
 /**
+ * @brief CPU used by the motion loop over the last second: microseconds of
+ * work per second (divide by 10000 for percent) and the longest pass.
+ * Measured with the 1 MHz hardware timer, which runs once
+ * ultrasonic_init() has started it; kernel tick and task switch time are
+ * not included.
+ */
+void motion_get_cpu(uint32_t *p_busy_us_per_s, uint32_t *p_max_pass_us);
+
+/** @brief Deepest the motion task's stack has reached, bytes. */
+uint32_t motion_stack_used(void);
+
+/** @brief Size of the motion task's stack, bytes. */
+uint32_t motion_stack_size(void);
+
+/**
  * @brief Start recording one motion_trace_t per control period into RAM.
  * Recording stops when the buffer is full.
  */

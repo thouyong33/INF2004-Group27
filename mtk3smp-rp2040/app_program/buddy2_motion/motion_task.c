@@ -172,6 +172,17 @@ static uint32_t g_enc_r_silent_ms = 0u;
 /* Loop rate: passes of the 1 ms loop counted over LOOP_RATE_WINDOW_MS */
 static volatile uint32_t g_loop_rate = 0u;
 
+/* CPU evidence: time the loop spends working (not sleeping), from the
+ * 1 MHz hardware timer, per second and the longest single pass. Excludes
+ * kernel tick/dispatch overhead. The timer only runs once something has
+ * released it (ultrasonic_init); before that these read 0. */
+static uint32_t g_busy_acc_us = 0u;
+static uint32_t g_busy_pass_max_us = 0u;
+static volatile uint32_t g_busy_us_per_s = 0u;
+static volatile uint32_t g_busy_max_us = 0u;
+
+#define STACK_FILL_WORD           0xA5A5A5A5u
+
 static void motion_checks(uint32_t dt_ms);
 
 /* RAM trace of control periods, printed after a test */
@@ -712,6 +723,8 @@ motion_task_main(INT stacd, void *exinf)
     uint32_t loop_count = 0u;
     uint32_t rate_loops = 0u;
     uint32_t rate_t0_ms;
+    uint32_t t_pass_us;
+    uint32_t busy_us;
     SYSTIM now;
     UINT sts;
 
@@ -732,6 +745,8 @@ motion_task_main(INT stacd, void *exinf)
 
     while (1)
     {
+        t_pass_us = in_w(TIMER_TIMERAWL);
+
         /* Read hardware counters before a new command can change the
          * direction used to sign them */
         encoder_hw_update();
@@ -789,10 +804,14 @@ motion_task_main(INT stacd, void *exinf)
             CRIT_EXIT(&g_odom_lock, sts);
             g_last_speed_calc_ms = now.lo;
 
-            /* Timing evidence: passes per second (995+ = on time) */
+            /* Timing evidence: passes and busy time per second */
             if ((now.lo - rate_t0_ms) >= LOOP_RATE_WINDOW_MS)
             {
                 g_loop_rate = (rate_loops * 1000u) / (now.lo - rate_t0_ms);
+                g_busy_us_per_s = (g_busy_acc_us * 1000u) / (now.lo - rate_t0_ms);
+                g_busy_max_us = g_busy_pass_max_us;
+                g_busy_acc_us = 0u;
+                g_busy_pass_max_us = 0u;
                 rate_loops = 0u;
                 rate_t0_ms = now.lo;
             }
@@ -800,6 +819,14 @@ motion_task_main(INT stacd, void *exinf)
 
         loop_count++;
         rate_loops++;
+
+        busy_us = in_w(TIMER_TIMERAWL) - t_pass_us;
+        g_busy_acc_us += busy_us;
+        if (busy_us > g_busy_pass_max_us)
+        {
+            g_busy_pass_max_us = busy_us;
+        }
+
         tk_dly_tsk(TASK_PERIOD_MS);
     }
 }
@@ -836,6 +863,16 @@ motion_task_create(void)
         tk_del_mbf(motion_msgbuf_id);
         motion_msgbuf_id = 0;
         return E_NOMEM;
+    }
+    {
+        /* Paint the stack so motion_stack_used() can find the high-water mark */
+        uint32_t *p_w = (uint32_t *)motion_task_stack;
+        uint32_t i;
+
+        for (i = 0u; i < (MOTION_STACK_SIZE / 4u); i++)
+        {
+            p_w[i] = STACK_FILL_WORD;
+        }
     }
 
     ctsk.tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF;
@@ -926,6 +963,44 @@ uint32_t
 motion_loop_rate(void)
 {
     return g_loop_rate;
+}
+
+void
+motion_get_cpu(uint32_t *p_busy_us_per_s, uint32_t *p_max_pass_us)
+{
+    if (NULL != p_busy_us_per_s)
+    {
+        *p_busy_us_per_s = g_busy_us_per_s;
+    }
+    if (NULL != p_max_pass_us)
+    {
+        *p_max_pass_us = g_busy_max_us;
+    }
+}
+
+uint32_t
+motion_stack_used(void)
+{
+    const uint32_t *p_w = (const uint32_t *)motion_task_stack;
+    uint32_t untouched = 0u;
+
+    if (NULL == p_w)
+    {
+        return 0u;
+    }
+    /* The stack grows down from the top of the buffer, so the painted
+     * words left at the bottom were never used */
+    while ((untouched < (MOTION_STACK_SIZE / 4u)) && (STACK_FILL_WORD == p_w[untouched]))
+    {
+        untouched++;
+    }
+    return MOTION_STACK_SIZE - (untouched * 4u);
+}
+
+uint32_t
+motion_stack_size(void)
+{
+    return MOTION_STACK_SIZE;
 }
 
 bool
