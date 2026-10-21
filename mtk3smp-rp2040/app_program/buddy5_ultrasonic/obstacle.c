@@ -9,6 +9,7 @@
 #include <tm/tmonitor.h>
 
 #include "../common/faults.h"
+#include "../buddy2_motion/motion_task.h"
 #include "ultrasonic.h"
 #include "servo.h"
 #include "obstacle.h"
@@ -30,6 +31,13 @@ static volatile uint8_t g_near_hist = 0u;
 static volatile int16_t g_last_mm = -1;
 static volatile uint32_t g_pings = 0u;
 static volatile uint8_t g_reset_req = 0u;
+
+/* Ping trace (tests only): written by the obstacle task, read by the test
+ * once watching has stopped */
+#define UM_PER_EDGE          328
+static obstacle_trace_t g_trace[OBS_TRACE_LEN];
+static volatile uint32_t g_trace_n = 0u;
+static volatile uint8_t g_trace_on = 0u;
 
 static uint8_t
 popcount3(uint8_t v)
@@ -95,6 +103,18 @@ obstacle_task_main(INT stacd, void *exinf)
         hist = (uint8_t)(((hist << 1) | (near ? 1u : 0u)) & OBS_HIST_MASK);
         g_near_hist = hist;
         g_pings++;
+
+        if (0u != g_trace_on)
+        {
+            enc_diag_t l, r;
+            obstacle_trace_t *p_t = &g_trace[g_trace_n % OBS_TRACE_LEN];
+
+            (void)motion_get_encoder_diag(&l, &r);
+            p_t->d_mm = (int16_t)((((l.hw_count + r.hw_count) / 2) * UM_PER_EDGE) / 1000);
+            p_t->mm = (E_OK == er) ? g_last_mm : ((E_IO == er) ? -2 : -1);
+            p_t->hist = hist;
+            g_trace_n++;
+        }
 
         tk_dly_tsk(OBS_PING_MS);
     }
@@ -184,4 +204,31 @@ uint32_t
 obstacle_ping_count(void)
 {
     return g_pings;
+}
+
+void
+obstacle_trace_start(void)
+{
+    g_trace_n = 0u;
+    g_trace_on = 1u;
+}
+
+uint32_t
+obstacle_trace_get(obstacle_trace_t *p_out)
+{
+    uint32_t n = g_trace_n;
+    uint32_t first;
+    uint32_t i;
+
+    g_trace_on = 0u;
+    if (NULL == p_out)
+    {
+        return 0u;
+    }
+    first = (n > OBS_TRACE_LEN) ? (n - OBS_TRACE_LEN) : 0u;
+    for (i = first; i < n; i++)
+    {
+        p_out[i - first] = g_trace[i % OBS_TRACE_LEN];
+    }
+    return n - first;
 }

@@ -585,9 +585,9 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_SIDE_HUMP     - phase 2: roll-based one-sided hump detector
  *                            live (hump mask on), 5 tall-ramp runs, with
  *                            the bracket-strike IMPACT check replayed.
- *   OBST_TEST_STOP         - phase 3 step 1: obstacle watch task; 5 runs at
- *                            300 mm/s to a box (stop gap), 3 runs with
- *                            objects beside the path (no false stop).
+ *   OBST_TEST_STOP         - phase 3 step 1: obstacle watch task; runs at
+ *                            300 mm/s to a box (5) and a bottle (2), stop
+ *                            gap and a per-ping trace.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -717,7 +717,7 @@ LOCAL T_CFLG cflg = {
 #define STRAIGHT_DIST_CM         50
 #define STRAIGHT_SPEED_MM_S      150
 
-#define OBST_RUNS                8
+#define OBST_RUNS                7
 #define OBST_BOX_RUNS            5
 #define OBST_MAX_DIST_MM         1500  /* drive limit if nothing stops it */
 
@@ -3712,11 +3712,12 @@ LOCAL void imu_test_side_hump(void)
     tm_printf((UB *)"\n=== One-sided hump detector test complete ===\n");
 }
 #elif MOTION_TEST_MODE == OBST_TEST_STOP
-/* Phase 3 step 1: obstacle watch task (obstacle.c). Key-paced runs:
-   runs 1..OBST_BOX_RUNS drive at OBS_WATCH_MAX_MM_S toward a box on the
-   path and must stop with the IR bracket tip >= 50 mm from it; the
-   remaining runs have objects BESIDE the path and must drive the full
-   OBST_MAX_DIST_MM without stopping. Nothing is printed while driving. */
+/* Phase 3 step 1: obstacle watch task (obstacle.c). Key-paced runs at
+   OBS_WATCH_MAX_MM_S toward a target on the path, which must stop the car
+   with the nose (IR tip) >= 50 mm from it: runs 1..OBST_BOX_RUNS a box,
+   flat face to the car; the rest the round bottle (a weak, narrow echo).
+   Every ping is traced with the distance travelled and printed after the
+   stop. Nothing is printed while driving. */
 LOCAL INT obst_dist_mm(void)
 {
     enc_diag_t l, r;
@@ -3727,13 +3728,15 @@ LOCAL INT obst_dist_mm(void)
 
 LOCAL void obst_run(INT run, BOOL box)
 {
-    INT d_trig = -1, mm_trig = -1, d_end, i, n = 0;
+    static obstacle_trace_t tr[OBS_TRACE_LEN];
+    INT d_trig = -1, mm_trig = -1, d_end, i, n = 0, nt;
     W sum = 0;
     BOOL stopped = FALSE;
 
     obstacle_watch(TRUE);
     tk_dly_tsk(300);                 /* a few pings of history first */
     motion_reset_odometry();
+    obstacle_trace_start();
     motion_set_velocity(OBS_WATCH_MAX_MM_S, OBS_WATCH_MAX_MM_S);
 
     while(obst_dist_mm() < OBST_MAX_DIST_MM) {
@@ -3765,8 +3768,19 @@ LOCAL void obst_run(INT run, BOOL box)
         }
     }
     obstacle_watch(FALSE);
+    nt = (INT)obstacle_trace_get(tr);
 
-    tm_printf((UB *)"[OBST] run %d (%s): ", run, box ? "box ahead" : "objects beside");
+    tm_printf((UB *)"[OBST] run %d pings (d_mm,reading_mm,near_bits; -1 no echo,"
+              " -2 dead):", run);
+    for(i = 0; i < nt; i++) {
+        if((i % 6) == 0) {
+            tm_printf((UB *)"\n[OBST]  ");
+        }
+        tm_printf((UB *)" %d,%d,%d%d%d", tr[i].d_mm, tr[i].mm,
+                  (tr[i].hist >> 2) & 1, (tr[i].hist >> 1) & 1, tr[i].hist & 1);
+    }
+    tm_printf((UB *)"\n");
+    tm_printf((UB *)"[OBST] run %d (%s): ", run, box ? "box" : "bottle");
     if(stopped) {
         tm_printf((UB *)"STOPPED, triggered at %d mm travelled with reading %d mm;"
                   " at rest after %d mm, reading %d mm (braking %d mm)\n",
@@ -3777,9 +3791,7 @@ LOCAL void obst_run(INT run, BOOL box)
     }
     tm_printf((UB *)"[OBST]   faults 0x%x, pings %d. %s\n", (INT)fault_get(),
               (INT)obstacle_ping_count(),
-              box ? "Measure the gap from the IR bracket tip to the box (mm)."
-                  : (stopped ? "FALSE STOP: note where the objects were."
-                             : "Pass: no false stop."));
+              "Measure the gap from the nose (IR tip) to the target (mm).");
 }
 
 LOCAL void obst_test_stop(void)
@@ -3794,13 +3806,13 @@ LOCAL void obst_test_stop(void)
     }
     tm_printf((UB *)"\n[OBST] Obstacle watch: stop when 2 of the last 3 pings <= %d mm"
               " (raw), driving at %d mm/s.\n", OBS_STOP_MM, OBS_WATCH_MAX_MM_S);
-    tm_printf((UB *)"[OBST] Runs 1-%d: a box ON the path ~80-100 cm ahead. Runs %d-%d:"
-              " no box ahead, objects BESIDE the path.\n", OBST_BOX_RUNS,
+    tm_printf((UB *)"[OBST] Runs 1-%d: a BOX, flat face to the car, ~60-100 cm ahead"
+              " on the path. Runs %d-%d: the round BOTTLE instead.\n", OBST_BOX_RUNS,
               OBST_BOX_RUNS + 1, OBST_RUNS);
 
     for(run = 1; run <= OBST_RUNS; run++) {
         tm_printf((UB *)"\n[OBST] Run %d/%d: set up (%s), press a key.\n", run, OBST_RUNS,
-                  (run <= OBST_BOX_RUNS) ? "box ahead" : "objects beside the path");
+                  (run <= OBST_BOX_RUNS) ? "box, flat face to the car" : "round bottle");
         console_flush_input();
         while(console_try_getc() < 0) {
             tk_dly_tsk(50);
