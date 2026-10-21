@@ -71,6 +71,8 @@ static int32_t g_side_in_since = -1;
 static int32_t g_side_out_since = -1;
 static side_hump_event_t g_side;
 static int16_t g_max_roll = 0;           /* largest |filtered roll| seen */
+static int16_t g_hump_roll_max = 0;      /* largest |filtered roll| in a pitch hump */
+static uint32_t g_pitch_dropped = 0u;    /* pitch humps dropped as one-sided */
 
 static terrain_state_t g_state = STATE_LEVEL;
 static int32_t g_below_since = -1;
@@ -229,15 +231,25 @@ side_update(int32_t dist_mm, int16_t fr)
     return events;
 }
 
-static void
+/* Close a pitch hump. Returns false (no event) if the car also rolled
+ * past the side-hump threshold during it: then it was a one-sided ramp,
+ * which the roll detector reports, and counting it here too would report
+ * the same ramp twice (one-sided ramp test, 2026-10-21). */
+static bool
 hump_finish(int32_t dist_mm, hump_event_t *p_hump)
 {
+    bool report = (g_hump_roll_max < SIDE_ENTER_CDEG) && (STATE_LEVEL == g_side_state);
+
     g_hump.end_mm = dist_mm;
     g_hump.height_mm = (int16_t)(WHEELBASE_MM * sin_cdeg(-(int32_t)g_hump.plateau_cdeg) + 0.5f);
-    *p_hump = g_hump;
+    if (report)
+    {
+        *p_hump = g_hump;
+    }
     g_state = STATE_LEVEL;
     g_below_since = -1;
     g_above_since = -1;
+    return report;
 }
 
 void
@@ -255,6 +267,8 @@ terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg)
     g_side_in_since = -1;
     g_side_out_since = -1;
     g_max_roll = 0;
+    g_hump_roll_max = 0;
+    g_pitch_dropped = 0u;
     g_state = STATE_LEVEL;
     g_below_since = -1;
     g_above_since = -1;
@@ -315,6 +329,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
                 g_hump.start_mm = g_below_since;
                 g_hump.plateau_cdeg = fp;
                 g_hump.plateau_mm = dist_mm;
+                g_hump_roll_max = 0;
                 g_above_since = -1;
             }
         }
@@ -325,12 +340,23 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
     }
     else
     {
+        if (abs16(fr) > g_hump_roll_max)
+        {
+            g_hump_roll_max = abs16(fr);
+        }
+
         if (!steady)
         {
             /* Braking or a speed change: tilt is no longer trustworthy,
                so close the hump with what has been seen so far. */
-            hump_finish(dist_mm, p_hump);
-            events |= TERRAIN_EVT_HUMP;
+            if (hump_finish(dist_mm, p_hump))
+            {
+                events |= TERRAIN_EVT_HUMP;
+            }
+            else
+            {
+                g_pitch_dropped++;
+            }
         }
         else if (fp > HUMP_EXIT_CDEG)
         {
@@ -340,8 +366,14 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
             }
             if ((dist_mm - g_above_since) >= HUMP_HOLD_MM)
             {
-                hump_finish(g_above_since, p_hump);
-                events |= TERRAIN_EVT_HUMP;
+                if (hump_finish(g_above_since, p_hump))
+                {
+                    events |= TERRAIN_EVT_HUMP;
+                }
+                else
+                {
+                    g_pitch_dropped++;
+                }
             }
         }
         else
@@ -396,6 +428,12 @@ int16_t
 terrain_max_roll_cdeg(void)
 {
     return g_max_roll;
+}
+
+uint32_t
+terrain_pitch_humps_dropped(void)
+{
+    return g_pitch_dropped;
 }
 
 int16_t

@@ -581,8 +581,9 @@ LOCAL T_CFLG cflg = {
  *                            roll, pitch, heading, wheel distances, jolt.
  *   MOTION_TEST_STRAIGHT   - key-paced 50 cm straight runs at 150 mm/s to
  *                            measure sideways drift (per-wheel trim).
- *   IMU_TEST_SIDE_HUMP     - phase 2 step 2: roll-based one-sided hump
- *                            detector live (hump mask on), flat/small/tall.
+ *   IMU_TEST_SIDE_HUMP     - phase 2: roll-based one-sided hump detector
+ *                            live (hump mask on), 5 tall-ramp runs, with
+ *                            the bracket-strike IMPACT check replayed.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -705,6 +706,7 @@ LOCAL T_CFLG cflg = {
 #define RAMP_SPEED_MM_S          150
 #define RAMP_DIST_MM             500
 #define RAMP_LOG_LEN             300   /* 20 ms samples: 6 s */
+#define SIDE_RUNS                5
 
 #define STRAIGHT_RUNS            5
 #define STRAIGHT_DIST_CM         50
@@ -3505,22 +3507,45 @@ LOCAL void motion_test_straight(void)
     tm_printf((UB *)"\n=== Straight-line test complete ===\n");
 }
 #elif MOTION_TEST_MODE == IMU_TEST_SIDE_HUMP
-/* Phase 2 step 2: the roll-based one-sided hump detector (terrain.c) on
-   the course test. RAMP_DIST_MM at RAMP_SPEED_MM_S with only the RIGHT
-   wheel over the ramp. The detector runs live and sets the motion task's
-   hump mask while on the ramp; events and a per-sample log are printed
-   after the car stops. */
+/* Phase 2: the roll-based one-sided hump detector (terrain.c) on the course
+   test, SIDE_RUNS runs over the TALL ramp under the RIGHT wheel only. The
+   detector runs live and sets the motion task's hump mask on the ramp.
+   Each run also checks the IR bracket strike: for every jolt of at least
+   STRIKE_MG it finds the lowest wheel speed in the next 250 ms, the same
+   test the roam/controller code uses to accept a jolt as an IMPACT
+   (wheels below 60 % of the command). Printed after the car stops. */
+#define STRIKE_MG                300
+#define STRIKE_WIN_MS            250
+#define SPD_WIN_MS               100
+
 typedef struct {
-    int16_t d_mm;
-    int16_t roll;        /* raw, from rest, x0.01 deg */
-    int16_t jolt_mg;
-    uint8_t on_hump;
+    uint16_t t_ms;       /* since the start command */
+    int16_t  d_mm;
+    int16_t  roll;       /* raw, from rest, x0.01 deg */
+    int16_t  jolt_mg;
+    uint8_t  on_hump;
 } side_pt_t;
+
+/* Mean wheel speed over the SPD_WIN_MS before sample i, % of the command */
+LOCAL INT side_v_pct(const side_pt_t *lg, INT i)
+{
+    INT k = i;
+
+    while((k > 0) && ((INT)(lg[i].t_ms - lg[k].t_ms) < SPD_WIN_MS)) {
+        k--;
+    }
+    if(lg[i].t_ms == lg[k].t_ms) {
+        return 100;
+    }
+    return ((lg[i].d_mm - lg[k].d_mm) * 100000)
+           / ((INT)(lg[i].t_ms - lg[k].t_ms) * RAMP_SPEED_MM_S);
+}
 
 LOCAL void side_pass(const char *name)
 {
-    static side_pt_t log[RAMP_LOG_LEN];
+    static side_pt_t lg[RAMP_LOG_LEN];
     static side_hump_event_t sides[TERR_MAX_EVENTS];
+    static hump_event_t humps[TERR_MAX_EVENTS];
     imu_attitude_t att;
     imu_raw_t s;
     hump_event_t h;
@@ -3528,9 +3553,9 @@ LOCAL void side_pass(const char *name)
     enc_diag_t l, r;
     W p0 = 0, r0 = 0;
     INT base_n = 0, n = 0, i, d, ns = 0, nh = 0, nc = 0;
-    INT prev_ax = 0, prev_ay = 0, j, k;
+    INT prev_ax = 0, prev_ay = 0, j, k, vmin, v;
     BOOL have_prev = FALSE, stopping = FALSE;
-    UW ev, t_stop = 0;
+    UW ev, t_stop = 0, t0;
     SYSTIM tim;
 
     for(i = 0; i < 25; i++) {
@@ -3551,19 +3576,22 @@ LOCAL void side_pass(const char *name)
 
     fault_clear(FAULT_MOTION_MASK);
     motion_reset_odometry();
+    tk_get_tim(&tim);
+    t0 = tim.lo;
     motion_set_velocity(RAMP_SPEED_MM_S, RAMP_SPEED_MM_S);
 
     while(n < RAMP_LOG_LEN) {
         if(E_OK == imu_read_attitude(&att, &s)) {
             (void)motion_get_encoder_diag(&l, &r);
+            tk_get_tim(&tim);
             d = (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
             ev = terrain_update(d, &att, &s, motion_is_steady(), &h, &c);
             motion_set_hump_mask(terrain_on_hump());
             if((0u != (ev & TERRAIN_EVT_SIDE_HUMP)) && (ns < TERR_MAX_EVENTS)) {
                 terrain_last_side_hump(&sides[ns++]);
             }
-            if(0u != (ev & TERRAIN_EVT_HUMP)) {
-                nh++;
+            if((0u != (ev & TERRAIN_EVT_HUMP)) && (nh < TERR_MAX_EVENTS)) {
+                humps[nh++] = h;
             }
             if(0u != (ev & TERRAIN_EVT_COLLISION)) {
                 nc++;
@@ -3580,13 +3608,13 @@ LOCAL void side_pass(const char *name)
             prev_ax = s.ax;
             prev_ay = s.ay;
             have_prev = TRUE;
-            log[n].d_mm = (int16_t)d;
-            log[n].roll = (int16_t)(att.roll_cdeg - r0);
-            log[n].jolt_mg = (int16_t)j;
-            log[n].on_hump = terrain_on_hump() ? 1u : 0u;
+            lg[n].t_ms = (uint16_t)(tim.lo - t0);
+            lg[n].d_mm = (int16_t)d;
+            lg[n].roll = (int16_t)(att.roll_cdeg - r0);
+            lg[n].jolt_mg = (int16_t)j;
+            lg[n].on_hump = terrain_on_hump() ? 1u : 0u;
             n++;
 
-            tk_get_tim(&tim);
             if((!stopping) && ((d >= RAMP_DIST_MM)
                                || (0u != (fault_get() & FAULT_MOTION_MASK)))) {
                 motion_set_velocity(0, 0);
@@ -3605,10 +3633,10 @@ LOCAL void side_pass(const char *name)
 
     tm_printf((UB *)"\n[SIDE] %s: %d samples, rest roll %d (x0.01 deg), faults 0x%x\n",
               name, n, (INT)r0, (INT)fault_get());
-    tm_printf((UB *)"[SIDE] i,d_mm,roll,jolt_mg,on_hump\n");
+    tm_printf((UB *)"[SIDE] i,t_ms,d_mm,roll,jolt_mg,speed_pct,on_hump\n");
     for(i = 0; i < n; i++) {
-        tm_printf((UB *)"[SIDE] %d,%d,%d,%d,%d\n", i, log[i].d_mm, log[i].roll,
-                  log[i].jolt_mg, (INT)log[i].on_hump);
+        tm_printf((UB *)"[SIDE] %d,%d,%d,%d,%d,%d,%d\n", i, (INT)lg[i].t_ms, lg[i].d_mm,
+                  lg[i].roll, lg[i].jolt_mg, side_v_pct(lg, i), (INT)lg[i].on_hump);
     }
     tm_printf((UB *)"[SIDE] summary %s:\n", name);
     tm_printf((UB *)"[SIDE]   %d one-sided hump(s):\n", ns);
@@ -3619,41 +3647,58 @@ LOCAL void side_pass(const char *name)
                   (INT)sides[i].start_mm, (INT)sides[i].end_mm, sides[i].height_mm,
                   sides[i].plateau_cdeg, (INT)sides[i].plateau_mm);
     }
-    tm_printf((UB *)"[SIDE]   largest filtered roll %d, largest jolt %d mg;"
-              " %d pitch hump(s), %d collision(s)\n",
-              terrain_max_roll_cdeg(), terrain_max_jolt_mg(), nh, nc);
+    tm_printf((UB *)"[SIDE]   %d pitch hump(s) reported, %d dropped as one-sided\n",
+              nh, (INT)terrain_pitch_humps_dropped());
+    for(i = 0; i < nh; i++) {
+        tm_printf((UB *)"[SIDE]     pitch hump %d..%d mm, height ~%d mm\n",
+                  (INT)humps[i].start_mm, (INT)humps[i].end_mm, humps[i].height_mm);
+    }
+    tm_printf((UB *)"[SIDE]   largest filtered roll %d, largest jolt %d mg, %d collision(s)\n",
+              terrain_max_roll_cdeg(), terrain_max_jolt_mg(), nc);
+
+    /* Bracket strike: would any jolt pass the IMPACT confirmation? */
+    for(i = 1; i < n; i++) {
+        if(lg[i].jolt_mg < STRIKE_MG) {
+            continue;
+        }
+        vmin = 1000;
+        for(k = i; (k < n) && ((INT)(lg[k].t_ms - lg[i].t_ms) <= STRIKE_WIN_MS); k++) {
+            v = side_v_pct(lg, k);
+            if(v < vmin) {
+                vmin = v;
+            }
+        }
+        tm_printf((UB *)"[SIDE]   jolt %d mg at %d mm: wheels down to %d %% within"
+                  " %d ms -> %s\n", lg[i].jolt_mg, lg[i].d_mm, vmin, STRIKE_WIN_MS,
+                  (vmin < ROAM_JOLT_SLOW_PCT) ? "WOULD count as IMPACT" : "ignored");
+    }
     tm_printf((UB *)"[SIDE]   Now measure how far sideways the car ended up"
               " (mm, left or right).\n");
 }
 
 LOCAL void imu_test_side_hump(void)
 {
-    static const char *const passes[3] = {
-        "Pass 1/3: FLAT floor, no ramp (expect: no hump)",
-        "Pass 2/3: SMALL ramp (1.0 cm) under the RIGHT wheel (expect ~10 mm)",
-        "Pass 3/3: TALL ramp (2.4 cm) under the RIGHT wheel (expect ~24 mm)",
-    };
-    INT p;
+    INT run;
 
     i2c1_init();
     if(E_OK != imu_init()) {
         tm_printf((UB *)"[SIDE] imu_init failed, check the IMU\n");
         return;
     }
-    tm_printf((UB *)"\n[SIDE] One-sided hump detector: %d mm at %d mm/s.\n",
-              RAMP_DIST_MM, RAMP_SPEED_MM_S);
-    tm_printf((UB *)"[SIDE] Ramp start ~15 cm ahead of the RIGHT wheel only. Roll the\n");
-    tm_printf((UB *)"[SIDE] car forward a few cm by hand first so the castor trails.\n");
+    tm_printf((UB *)"\n[SIDE] One-sided hump: %d runs over the TALL ramp (2.4 cm), RIGHT"
+              " wheel only, %d mm at %d mm/s.\n", SIDE_RUNS, RAMP_DIST_MM, RAMP_SPEED_MM_S);
+    tm_printf((UB *)"[SIDE] Ramp start ~15 cm ahead of the right wheel. Roll the car\n");
+    tm_printf((UB *)"[SIDE] forward a few cm by hand first so the castor trails.\n");
 
-    for(p = 0; p < 3; p++) {
-        tm_printf((UB *)"\n[SIDE] %s.\n", passes[p]);
-        tm_printf((UB *)"[SIDE] Set up, keep the car still, then press a key to drive.\n");
+    for(run = 1; run <= SIDE_RUNS; run++) {
+        tm_printf((UB *)"\n[SIDE] Run %d/%d: set up, keep the car still, press a key.\n",
+                  run, SIDE_RUNS);
         console_flush_input();
         while(console_try_getc() < 0) {
             tk_dly_tsk(50);
         }
         tk_dly_tsk(1000);
-        side_pass(passes[p]);
+        side_pass("TALL ramp, right wheel");
     }
     tm_printf((UB *)"\n=== One-sided hump detector test complete ===\n");
 }
