@@ -46,19 +46,10 @@ typedef struct {
 } odometry_t;
 
 /**
- * @brief Encoder diagnostic counters (reset with motion_reset_odometry).
- *
- * For a clean quadrature signal, a_edges + b_edges equals the number of
- * valid steps, so it should match |count| when the wheel turned one way.
- * invalid counts polls where A and B both changed at once: a skipped
- * state (polling too slow) or noise. Those polls add 0 to count.
+ * @brief Hardware edge counters for one wheel (reset with
+ * motion_reset_odometry). Read as one consistent snapshot.
  */
 typedef struct {
-    int32_t  count;    /**< Signed quadrature count */
-    uint32_t a_edges;  /**< Raw transitions seen on channel A */
-    uint32_t b_edges;  /**< Raw transitions seen on channel B */
-    uint32_t invalid;  /**< Polls where both channels changed */
-    uint32_t polls;    /**< Encoder polls since reset (same for both) */
     uint32_t hw_edges; /**< Rising edges counted by the PWM slice */
     int32_t  hw_count; /**< hw_edges signed by commanded direction */
 } enc_diag_t;
@@ -92,6 +83,26 @@ ER motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s);
 bool motion_is_steady(void);
 
 /**
+ * @brief Stop both wheels now, from any task. Bypasses the command queue
+ * (and discards what is queued), so it works even while another task owns
+ * the motors, e.g. during an obstacle scan. Under PI the wheels brake along
+ * the normal slew; in open loop the duty ramps to zero.
+ */
+void motion_stop(void);
+
+/**
+ * @brief Tell the motion task the car is on a hump (Buddy 4). While set,
+ * the stall and encoder checks are masked: wheels slow and slip there.
+ */
+void motion_set_hump_mask(bool on_hump);
+
+/**
+ * @brief Passes of the 1 ms motion loop per second, over the last second.
+ * About 995 or more means the loop keeps its period (timing evidence).
+ */
+uint32_t motion_loop_rate(void);
+
+/**
  * @brief Start recording one motion_trace_t per control period into RAM.
  * Recording stops when the buffer is full.
  */
@@ -114,12 +125,13 @@ ER motion_get_odometry(odometry_t *p_odom);
 void motion_reset_odometry(void);
 
 /**
- * @brief Snapshot encoder diagnostic counters for both wheels.
+ * @brief Snapshot both wheels' hardware counters in one go.
  */
 ER motion_get_encoder_diag(enc_diag_t *p_left, enc_diag_t *p_right);
 
 /**
- * @brief Print encoder diagnostic counters for both wheels on one line.
+ * @brief Print both wheels' hardware counters on one line. Not while the
+ * motors run under a higher-priority caller: printing is slow.
  */
 void motion_print_encoder_diag(const char *p_label);
 

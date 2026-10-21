@@ -2,12 +2,17 @@
  * @file motion_task.c
  * @brief Motion control with speed calculation and distance tracking
  *
- * Current implementation notes:
- * - Motor drive is open-loop 20 kHz PWM: command -100..100 = % duty,
- *   ramped at MOTOR_RAMP_STEP_X10 per loop to limit inrush. No PID yet.
- * - Odometry uses PWM-slice hardware edge counters (one channel per
- *   wheel), signed by the applied motor direction.
- * - Distance move uses encoder count progress only.
+ * - Motor drive: 20 kHz PWM, either open-loop % duty (ramped to limit
+ *   inrush) or per-wheel PI speed control in mm/s.
+ * - Odometry: PWM-slice hardware edge counters (one channel per wheel),
+ *   signed by the applied motor direction. The old polled quadrature
+ *   decoder is gone: it missed edges at speed and the counters replaced it.
+ * - Safety (Tribunal 1): STOP is a flag the loop checks every pass, so it
+ *   never waits behind queued commands. A stall or a silent encoder raises
+ *   a bit in the shared fault mask and stops the motors until cleared.
+ * - Nothing in the loop prints: a UART print blocks for milliseconds and
+ *   would stretch the 1 ms control period. Counts shared with other tasks
+ *   are written and read inside a short critical section.
  */
 
 #include <stdint.h>
@@ -17,6 +22,8 @@
 #include <sys/sysdef.h>
 
 #include "../common/pin_defs.h"
+#include "../common/critical.h"
+#include "../common/faults.h"
 #include "motion_task.h"
 
 /*----------------------------------------------------------------------------
@@ -39,9 +46,7 @@
  *---------------------------------------------------------------------------*/
 #define TASK_PERIOD_MS            1u
 #define SPEED_CALC_INTERVAL_MS    100u
-#define ODOM_PRINT_INTERVAL_MS    500u
-#define MOTOR_BRAKE_DELAY_MS      500u
-#define GPIO_FUNCTION_SIO         5u
+#define LOOP_RATE_WINDOW_MS       1000u
 #define MOTION_MSGBUF_DEPTH       4u
 #define MOTION_STACK_SIZE         4096u
 
@@ -67,21 +72,6 @@ static ID motion_task_id = 0;
 static ID motion_msgbuf_id = 0;
 static void *motion_task_stack = NULL;
 
-/* Encoder state */
-static volatile int32_t g_enc_left_count = 0;
-static volatile int32_t g_enc_right_count = 0;
-static uint8_t g_enc_left_last_state = 0u;
-static uint8_t g_enc_right_last_state = 0u;
-
-/* Encoder diagnostics: raw per-channel edges and invalid (both-changed) polls */
-static volatile uint32_t g_enc_left_a_edges = 0u;
-static volatile uint32_t g_enc_left_b_edges = 0u;
-static volatile uint32_t g_enc_right_a_edges = 0u;
-static volatile uint32_t g_enc_right_b_edges = 0u;
-static volatile uint32_t g_enc_left_invalid = 0u;
-static volatile uint32_t g_enc_right_invalid = 0u;
-static volatile uint32_t g_enc_polls = 0u;
-
 /* Hardware edge counters: a PWM slice in "B pin rising edge" mode counts
  * one encoder channel in hardware; the task only reads the counter. The
  * pin must be a PWM B pin (odd GPIO). Direction comes from the motor
@@ -106,6 +96,9 @@ static volatile int32_t g_hw_left_count = 0;
 static volatile int32_t g_hw_right_count = 0;
 static int8_t g_hw_left_dir = 1;
 static int8_t g_hw_right_dir = 1;
+
+/* Guards the counts and speeds that other tasks read */
+static crit_lock_t g_odom_lock;
 
 /* Motor PWM: Robo Pico driver PWM is specified at 20 kHz */
 #define MOTOR_PWM_FREQ_HZ         20000u
@@ -137,6 +130,17 @@ static int16_t g_target_right_x10 = 0;
 #define PID_I_LIMIT_X10           300L  /* integral clamp: +/- 30 % duty */
 #define PID_SLEW_EPS              50L   /* setpoint change per period */
 
+/* Fault checks, run every PI period while both wheels hold a settled,
+ * non-zero setpoint. Provisional thresholds (Tribunal 1, R4), to be tuned
+ * from logs. Masked for PULLAWAY_MASK_MS after the setpoint settles and
+ * while Buddy 4 reports the car is on a hump. */
+#define PULLAWAY_MASK_MS          300u
+#define STALL_PCT                 30L   /* both wheels under 30 % of setpoint */
+#define STALL_MS                  200u
+#define ENC_FAULT_DUTY_X10        400   /* wheel driven at >= 40 % duty... */
+#define ENC_FAULT_OTHER_PCT       50L   /* ...other wheel >= 50 % of setpoint */
+#define ENC_FAULT_MS              200u  /* ...and no edges for this long */
+
 /* motion_move_forward_cm() */
 #define MOVE_MIN_SPEED_MM_S       50
 #define MOVE_POLL_MS              10u
@@ -157,6 +161,19 @@ static wheel_pi_t g_pi_left;
 static wheel_pi_t g_pi_right;
 static uint32_t g_last_pi_ms = 0u;
 
+/* Safety */
+static volatile uint8_t g_stop_req = 0u;    /* byte store: no lock needed */
+static volatile uint8_t g_hump_mask = 0u;
+static uint32_t g_settled_ms = 0u;          /* settled for this long */
+static uint32_t g_stall_ms = 0u;
+static uint32_t g_enc_l_silent_ms = 0u;
+static uint32_t g_enc_r_silent_ms = 0u;
+
+/* Loop rate: passes of the 1 ms loop counted over LOOP_RATE_WINDOW_MS */
+static volatile uint32_t g_loop_rate = 0u;
+
+static void motion_checks(uint32_t dt_ms);
+
 /* RAM trace of control periods, printed after a test */
 #define TRACE_LEN                 300u  /* 6 s at 20 ms */
 static motion_trace_t g_trace[TRACE_LEN];
@@ -171,55 +188,14 @@ static int32_t g_left_speed_tenths_cm_s = 0;   /* scaled x10 */
 static int32_t g_right_speed_tenths_cm_s = 0;  /* scaled x10 */
 static uint32_t g_last_speed_calc_ms = 0u;
 
-/* Current commanded state (% duty or mm/s, see g_closed_loop) */
-static int16_t g_current_left_speed_cmd = 0;
-static int16_t g_current_right_speed_cmd = 0;
-
-static const int8_t g_quad_decode_table[16] = {
-    0,  -1,   1,   0,
-    1,   0,   0,  -1,
-   -1,   0,   0,   1,
-    0,   1,  -1,   0
-};
 
 /*----------------------------------------------------------------------------
  * Helper Functions
  *---------------------------------------------------------------------------*/
-static int8_t
-quadrature_decode(uint8_t prev_state, uint8_t curr_state)
-{
-    uint8_t index;
-
-    index = (uint8_t)((prev_state << 2) | curr_state);
-    return g_quad_decode_table[index];
-}
-
-static inline uint8_t
-gpio_read(uint8_t pin)
-{
-    return (in_w(GPIO_IN) & (1u << pin)) ? 1u : 0u;
-}
-
 static int32_t
 abs_i32(int32_t value)
 {
     return (value < 0) ? -value : value;
-}
-
-static void
-format_signed_tenths(int32_t value_x10, int32_t *whole, int32_t *frac)
-{
-    int32_t abs_value;
-
-    if ((NULL == whole) || (NULL == frac))
-    {
-        return;
-    }
-
-    abs_value = abs_i32(value_x10);
-
-    *whole = abs_value / 10;
-    *frac = abs_value % 10;
 }
 
 static int8_t
@@ -233,7 +209,16 @@ sign_i16(int16_t value)
 static int32_t
 average_progress_counts(void)
 {
-    return (abs_i32(g_hw_left_count) + abs_i32(g_hw_right_count)) / 2;
+    UINT sts;
+    int32_t l;
+    int32_t r;
+
+    CRIT_ENTER(&g_odom_lock, sts);
+    l = g_hw_left_count;
+    r = g_hw_right_count;
+    CRIT_EXIT(&g_odom_lock, sts);
+
+    return (abs_i32(l) + abs_i32(r)) / 2;
 }
 
 /*----------------------------------------------------------------------------
@@ -318,9 +303,6 @@ motor_gpio_init(void)
 
     motor_pwm_slice_init(MOTOR_LEFT_FWD);
     motor_pwm_slice_init(MOTOR_RIGHT_FWD);
-
-    tm_printf((UB *)"[MOTION] Motor PWM initialized (%u Hz, TOP=%u)\n",
-              MOTOR_PWM_FREQ_HZ, MOTOR_PWM_TOP);
 }
 
 /* Move one applied duty a step toward its target. */
@@ -486,105 +468,13 @@ pi_update(uint32_t now_ms)
     g_target_right_x10 = g_pi_right.duty_x10;
 
     trace_record(now_ms);
+    motion_checks(dt_ms);
 }
 
 
 /*----------------------------------------------------------------------------
  * Encoder Handling
  *---------------------------------------------------------------------------*/
-static void
-encoder_init(void)
-{
-    uint8_t l_a;
-    uint8_t l_b;
-    uint8_t r_a;
-    uint8_t r_b;
-
-    out_w(GPIO_CTRL(ENC_LEFT_A), GPIO_FUNCTION_SIO);
-    out_w(GPIO_CTRL(ENC_LEFT_B), GPIO_FUNCTION_SIO);
-    out_w(GPIO_CTRL(ENC_RIGHT_A), GPIO_FUNCTION_SIO);
-    out_w(GPIO_CTRL(ENC_RIGHT_B), GPIO_FUNCTION_SIO);
-
-    l_a = gpio_read(ENC_LEFT_A);
-    l_b = gpio_read(ENC_LEFT_B);
-    r_a = gpio_read(ENC_RIGHT_A);
-    r_b = gpio_read(ENC_RIGHT_B);
-
-    g_enc_left_last_state = (uint8_t)((l_a << 1) | l_b);
-    g_enc_right_last_state = (uint8_t)((r_a << 1) | r_b);
-
-    tm_printf((UB *)"[MOTION] Encoders initialized (%u edges/rev, %ld um/edge)\n",
-              EDGES_PER_REV,
-              UM_PER_EDGE);
-}
-
-/* State is (A << 1) | B. Count each channel's edges separately, and flag
- * polls where both channels changed: quadrature never does that in one
- * step, so it means a state was skipped or a line glitched. */
-static void
-encoder_diag_update(uint8_t prev_state, uint8_t curr_state,
-                    volatile uint32_t *p_a_edges,
-                    volatile uint32_t *p_b_edges,
-                    volatile uint32_t *p_invalid)
-{
-    uint8_t changed;
-
-    changed = (uint8_t)(prev_state ^ curr_state);
-
-    if (0u != (changed & 0x2u))
-    {
-        (*p_a_edges)++;
-    }
-
-    if (0u != (changed & 0x1u))
-    {
-        (*p_b_edges)++;
-    }
-
-    if (0x3u == changed)
-    {
-        (*p_invalid)++;
-    }
-}
-
-static void
-encoder_update(void)
-{
-    uint8_t l_a;
-    uint8_t l_b;
-    uint8_t r_a;
-    uint8_t r_b;
-    uint8_t left_state;
-    uint8_t right_state;
-    int8_t left_delta;
-    int8_t right_delta;
-
-    l_a = gpio_read(ENC_LEFT_A);
-    l_b = gpio_read(ENC_LEFT_B);
-    r_a = gpio_read(ENC_RIGHT_A);
-    r_b = gpio_read(ENC_RIGHT_B);
-
-    left_state = (uint8_t)((l_a << 1) | l_b);
-    right_state = (uint8_t)((r_a << 1) | r_b);
-
-    left_delta = quadrature_decode(g_enc_left_last_state, left_state);
-    right_delta = quadrature_decode(g_enc_right_last_state, right_state);
-
-    encoder_diag_update(g_enc_left_last_state, left_state,
-                        &g_enc_left_a_edges, &g_enc_left_b_edges,
-                        &g_enc_left_invalid);
-    encoder_diag_update(g_enc_right_last_state, right_state,
-                        &g_enc_right_a_edges, &g_enc_right_b_edges,
-                        &g_enc_right_invalid);
-
-    g_enc_left_count += (int32_t)left_delta;
-    g_enc_right_count += (int32_t)right_delta;
-
-    g_enc_left_last_state = left_state;
-    g_enc_right_last_state = right_state;
-    g_enc_polls++;
-}
-
 static void
 encoder_hw_slice_init(uint8_t pin)
 {
@@ -599,8 +489,6 @@ encoder_hw_slice_init(uint8_t pin)
     out_w(PWM_SLICE_REG(slice, PWM_CHx_CSR),
           PWM_CSR_DIVMODE_B_RISE | PWM_CSR_EN);
 
-    /* Route the pin to PWM. SIO GPIO_IN still reads the pad, so the
-     * polled decoder keeps working on this pin for comparison. */
     out_w(GPIO_CTRL(pin), GPIO_CTRL_FUNCSEL_PWM);
 }
 
@@ -616,10 +504,6 @@ encoder_hw_init(void)
         PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_LEFT_PIN), PWM_CHx_CTR));
     g_hw_right_last_ctr = (uint16_t)in_w(
         PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_RIGHT_PIN), PWM_CHx_CTR));
-
-    tm_printf((UB *)"[MOTION] HW edge counters: L=GP%u (PWM%u) R=GP%u (PWM%u)\n",
-              ENC_HW_LEFT_PIN, PWM_SLICE_OF(ENC_HW_LEFT_PIN),
-              ENC_HW_RIGHT_PIN, PWM_SLICE_OF(ENC_HW_RIGHT_PIN));
 }
 
 /* Read one hardware counter and fold the edges since the last read into
@@ -653,14 +537,20 @@ encoder_hw_read(uint8_t pin, uint16_t *p_last_ctr, int8_t cmd, int8_t *p_dir,
 static void
 encoder_hw_update(void)
 {
+    UINT sts;
+
     /* Sign edges by the duty actually applied, not the target, so a wheel
-     * still ramping down after a reversal command keeps its old sign */
+     * still ramping down after a reversal command keeps its old sign.
+     * Locked so a reader never sees the left and right counts from
+     * different passes. */
+    CRIT_ENTER(&g_odom_lock, sts);
     encoder_hw_read(ENC_HW_LEFT_PIN, &g_hw_left_last_ctr,
                     sign_i16(g_applied_left_x10), &g_hw_left_dir,
                     &g_hw_left_edges, &g_hw_left_count);
     encoder_hw_read(ENC_HW_RIGHT_PIN, &g_hw_right_last_ctr,
                     sign_i16(g_applied_right_x10), &g_hw_right_dir,
                     &g_hw_right_edges, &g_hw_right_count);
+    CRIT_EXIT(&g_odom_lock, sts);
 }
 
 /*----------------------------------------------------------------------------
@@ -688,19 +578,128 @@ speed_calculate(uint32_t dt_ms)
     g_last_right_count = g_hw_right_count;
 }
 
-static int32_t
-distance_cm_from_counts(void)
+/*----------------------------------------------------------------------------
+ * Safety: stop request and fault checks
+ *---------------------------------------------------------------------------*/
+/* Stop both wheels. Under PI the setpoints ramp down (controlled braking);
+ * in open loop the duty ramps to zero. Commands queued before the stop are
+ * discarded so they cannot restart the car. */
+static void
+motion_apply_stop(void)
 {
-    int32_t avg_counts;
-    int32_t distance_um;
-    int32_t distance_cm;
+    motor_cmd_t junk;
 
-    avg_counts = (g_hw_left_count + g_hw_right_count) / 2;
-    distance_um = avg_counts * UM_PER_EDGE;
-    distance_cm = distance_um / 10000L;
+    while (tk_rcv_mbf(motion_msgbuf_id, &junk, TMO_POL) > 0)
+    {
+        ;
+    }
 
-    return distance_cm;
+    if (g_closed_loop)
+    {
+        g_pi_left.target_eps = 0;
+        g_pi_right.target_eps = 0;
+    }
+    else
+    {
+        g_target_left_x10 = 0;
+        g_target_right_x10 = 0;
+    }
 }
+
+/* A fault drops to open loop with zero duty: the PI cannot be trusted when
+ * a wheel's speed reading is wrong. The duty still ramps down. */
+static void
+motion_fault_stop(uint8_t bits)
+{
+    fault_set(bits);
+    g_closed_loop = false;
+    g_target_left_x10 = 0;
+    g_target_right_x10 = 0;
+}
+
+static bool
+below_pct(int32_t meas, int32_t setpoint, int32_t pct)
+{
+    return (abs_i32(meas) * 100L) < (abs_i32(setpoint) * pct);
+}
+
+static void
+motion_checks(uint32_t dt_ms)
+{
+    bool settled;
+
+    settled = g_closed_loop
+        && (0 != g_pi_left.target_eps) && (0 != g_pi_right.target_eps)
+        && (g_pi_left.setpoint_eps == g_pi_left.target_eps)
+        && (g_pi_right.setpoint_eps == g_pi_right.target_eps);
+
+    if (!settled)
+    {
+        g_settled_ms = 0u;
+    }
+    else if (g_settled_ms < PULLAWAY_MASK_MS)
+    {
+        g_settled_ms += dt_ms;
+    }
+
+    if ((!settled) || (g_settled_ms < PULLAWAY_MASK_MS) || (0u != g_hump_mask))
+    {
+        g_stall_ms = 0u;
+        g_enc_l_silent_ms = 0u;
+        g_enc_r_silent_ms = 0u;
+        return;
+    }
+
+    /* Stall: both wheels far below their setpoints (blocked car) */
+    if (below_pct(g_pi_left.meas_eps, g_pi_left.setpoint_eps, STALL_PCT)
+        && below_pct(g_pi_right.meas_eps, g_pi_right.setpoint_eps, STALL_PCT))
+    {
+        g_stall_ms += dt_ms;
+    }
+    else
+    {
+        g_stall_ms = 0u;
+    }
+
+    /* Encoder plausibility: one wheel shows no edges at all while it is
+     * driven hard and the other wheel turns normally (unplugged or broken
+     * encoder, or a jammed wheel). The PI would otherwise run it flat out. */
+    if ((0 == g_pi_left.meas_eps)
+        && (abs_i32(g_pi_left.duty_x10) >= ENC_FAULT_DUTY_X10)
+        && (!below_pct(g_pi_right.meas_eps, g_pi_right.setpoint_eps, ENC_FAULT_OTHER_PCT)))
+    {
+        g_enc_l_silent_ms += dt_ms;
+    }
+    else
+    {
+        g_enc_l_silent_ms = 0u;
+    }
+
+    if ((0 == g_pi_right.meas_eps)
+        && (abs_i32(g_pi_right.duty_x10) >= ENC_FAULT_DUTY_X10)
+        && (!below_pct(g_pi_left.meas_eps, g_pi_left.setpoint_eps, ENC_FAULT_OTHER_PCT)))
+    {
+        g_enc_r_silent_ms += dt_ms;
+    }
+    else
+    {
+        g_enc_r_silent_ms = 0u;
+    }
+
+    if (g_stall_ms >= STALL_MS)
+    {
+        motion_fault_stop(FAULT_MOTOR_STALL);
+    }
+    else if (g_enc_l_silent_ms >= ENC_FAULT_MS)
+    {
+        motion_fault_stop(FAULT_ENC_LEFT);
+    }
+    else if (g_enc_r_silent_ms >= ENC_FAULT_MS)
+    {
+        motion_fault_stop(FAULT_ENC_RIGHT);
+    }
+}
+
 
 /*----------------------------------------------------------------------------
  * Motion Task
@@ -711,29 +710,25 @@ motion_task_main(INT stacd, void *exinf)
     motor_cmd_t cmd;
     INT msg_size;
     uint32_t loop_count = 0u;
-    uint32_t print_divider;
+    uint32_t rate_loops = 0u;
+    uint32_t rate_t0_ms;
     SYSTIM now;
+    UINT sts;
 
     (void)stacd;
     (void)exinf;
 
     motor_gpio_init();
-    encoder_init();
     encoder_hw_init();
 
-    tm_printf((UB *)"[MOTION] Task started (period=%u ms)\n", TASK_PERIOD_MS);
-    tm_printf((UB *)"[MOTION] Wheel: %u mm diameter, %u mm circumference\n",
-              WHEEL_DIAMETER_MM,
-              WHEEL_CIRCUMFERENCE_MM);
+    /* Before the loop starts, so this one print cannot stretch a period */
+    tm_printf((UB *)"[MOTION] Task started: %u ms loop, 20 kHz PWM, HW edge counters "
+              "L=GP%u R=GP%u, %ld um/edge\n", TASK_PERIOD_MS,
+              ENC_HW_LEFT_PIN, ENC_HW_RIGHT_PIN, UM_PER_EDGE);
 
     tk_get_tim(&now);
     g_last_speed_calc_ms = now.lo;
-
-    print_divider = ODOM_PRINT_INTERVAL_MS / SPEED_CALC_INTERVAL_MS;
-    if (0u == print_divider)
-    {
-        print_divider = 1u;
-    }
+    rate_t0_ms = now.lo;
 
     while (1)
     {
@@ -741,12 +736,19 @@ motion_task_main(INT stacd, void *exinf)
          * direction used to sign them */
         encoder_hw_update();
 
-        msg_size = tk_rcv_mbf(motion_msgbuf_id, &cmd, TMO_POL);
-        if ((INT)sizeof(cmd) == msg_size)
+        /* STOP first: it must never wait behind queued commands */
+        if (0u != g_stop_req)
         {
-            g_current_left_speed_cmd = cmd.left_speed;
-            g_current_right_speed_cmd = cmd.right_speed;
+            g_stop_req = 0u;
+            motion_apply_stop();
+        }
 
+        msg_size = tk_rcv_mbf(motion_msgbuf_id, &cmd, TMO_POL);
+        if (((INT)sizeof(cmd) == msg_size)
+            && ((0u == (fault_get() & FAULT_MOTION_MASK))
+                || ((0 == cmd.left_speed) && (0 == cmd.right_speed))))
+        {
+            /* While a motion fault is latched only zero commands pass */
             if (0u != cmd.closed_loop)
             {
                 if (!g_closed_loop)
@@ -769,15 +771,6 @@ motion_task_main(INT stacd, void *exinf)
                 g_target_left_x10 = (int16_t)(clamp_i32(cmd.left_speed, -100, 100) * 10);
                 g_target_right_x10 = (int16_t)(clamp_i32(cmd.right_speed, -100, 100) * 10);
             }
-
-            tm_printf((UB *)"[MOTOR] Cmd received: L=%d R=%d %s\n",
-                      (int)cmd.left_speed,
-                      (int)cmd.right_speed,
-                      (0u != cmd.closed_loop) ? "mm/s (PI)" : "% duty");
-        }
-        else if (E_TMOUT != msg_size)
-        {
-            tm_printf((UB *)"[MOTOR] tk_rcv_mbf error: %d\n", msg_size);
         }
 
         if (g_closed_loop)
@@ -787,51 +780,26 @@ motion_task_main(INT stacd, void *exinf)
         }
 
         motor_ramp_update();
-        encoder_update();
 
         if ((loop_count % (SPEED_CALC_INTERVAL_MS / TASK_PERIOD_MS)) == 0u)
         {
-            int32_t dist_cm_int;
-            int32_t left_whole;
-            int32_t left_frac;
-            int32_t right_whole;
-            int32_t right_frac;
-            int32_t left_abs;
-            int32_t right_abs;
-
             tk_get_tim(&now);
+            CRIT_ENTER(&g_odom_lock, sts);
             speed_calculate(now.lo - g_last_speed_calc_ms);
+            CRIT_EXIT(&g_odom_lock, sts);
             g_last_speed_calc_ms = now.lo;
 
-            /* Skip the slow status print while a trace is recording */
-            if ((!g_trace_on) &&
-                (((loop_count / (SPEED_CALC_INTERVAL_MS / TASK_PERIOD_MS)) % print_divider) == 0u))
+            /* Timing evidence: passes per second (995+ = on time) */
+            if ((now.lo - rate_t0_ms) >= LOOP_RATE_WINDOW_MS)
             {
-                dist_cm_int = distance_cm_from_counts();
-
-                format_signed_tenths(g_left_speed_tenths_cm_s, &left_whole, &left_frac);
-                format_signed_tenths(g_right_speed_tenths_cm_s, &right_whole, &right_frac);
-
-                left_abs = abs_i32(g_left_speed_tenths_cm_s);
-                right_abs = abs_i32(g_right_speed_tenths_cm_s);
-
-                tm_printf((UB *)"[ODOM] Dist=%ld cm Spd: L=%s%ld.%ld R=%s%ld.%ld cm/s "
-                          "Pulse: L=%ld R=%ld Cmd: L=%d R=%d\n",
-                          dist_cm_int,
-                          (left_abs != g_left_speed_tenths_cm_s) ? "-" : "",
-                          left_whole,
-                          left_frac,
-                          (right_abs != g_right_speed_tenths_cm_s) ? "-" : "",
-                          right_whole,
-                          right_frac,
-                          g_hw_left_count,
-                          g_hw_right_count,
-                          (int)g_current_left_speed_cmd,
-                          (int)g_current_right_speed_cmd);
+                g_loop_rate = (rate_loops * 1000u) / (now.lo - rate_t0_ms);
+                rate_loops = 0u;
+                rate_t0_ms = now.lo;
             }
         }
 
         loop_count++;
+        rate_loops++;
         tk_dly_tsk(TASK_PERIOD_MS);
     }
 }
@@ -904,9 +872,8 @@ motion_task_create(void)
     return E_OK;
 }
 
-/* The motion task prints each command it receives. No print here: callers
- * may run at a higher priority than the motion task, and a blocking UART
- * print would stall the control loop. */
+/* No print on success: callers may run at a higher priority than the
+ * motion task, and a blocking UART print would stall the control loop. */
 static ER
 motion_send_cmd(int16_t left, int16_t right, uint8_t closed_loop)
 {
@@ -941,6 +908,24 @@ ER
 motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s)
 {
     return motion_send_cmd(left_mm_s, right_mm_s, 1u);
+}
+
+void
+motion_stop(void)
+{
+    g_stop_req = 1u;
+}
+
+void
+motion_set_hump_mask(bool on_hump)
+{
+    g_hump_mask = on_hump ? 1u : 0u;
+}
+
+uint32_t
+motion_loop_rate(void)
+{
+    return g_loop_rate;
 }
 
 bool
@@ -987,23 +972,30 @@ ER
 motion_get_odometry(odometry_t *p_odom)
 {
     SYSTIM now;
-    int32_t avg_counts;
-    int32_t distance_um;
+    UINT sts;
+    int32_t l;
+    int32_t r;
+    int32_t l_spd;
+    int32_t r_spd;
 
     if (NULL == p_odom)
     {
         return E_PAR;
     }
 
-    p_odom->left_pulses = g_hw_left_count;
-    p_odom->right_pulses = g_hw_right_count;
+    /* One consistent snapshot: both counts and speeds from the same pass */
+    CRIT_ENTER(&g_odom_lock, sts);
+    l = g_hw_left_count;
+    r = g_hw_right_count;
+    l_spd = g_left_speed_tenths_cm_s;
+    r_spd = g_right_speed_tenths_cm_s;
+    CRIT_EXIT(&g_odom_lock, sts);
 
-    p_odom->left_speed_cm_s = ((float)g_left_speed_tenths_cm_s) / 10.0f;
-    p_odom->right_speed_cm_s = ((float)g_right_speed_tenths_cm_s) / 10.0f;
-
-    avg_counts = (g_hw_left_count + g_hw_right_count) / 2;
-    distance_um = avg_counts * UM_PER_EDGE;
-    p_odom->distance_cm = ((float)distance_um) / 10000.0f;
+    p_odom->left_pulses = l;
+    p_odom->right_pulses = r;
+    p_odom->left_speed_cm_s = ((float)l_spd) / 10.0f;
+    p_odom->right_speed_cm_s = ((float)r_spd) / 10.0f;
+    p_odom->distance_cm = ((float)(((l + r) / 2) * UM_PER_EDGE)) / 10000.0f;
 
     tk_get_tim(&now);
     p_odom->timestamp_ms = now.lo;
@@ -1014,58 +1006,40 @@ motion_get_odometry(odometry_t *p_odom)
 void
 motion_reset_odometry(void)
 {
-    g_enc_left_count = 0;
-    g_enc_right_count = 0;
+    UINT sts;
+
+    /* The PI's last-count moves with the counts, or its next speed sample
+     * would see the reset as a huge jump */
+    CRIT_ENTER(&g_odom_lock, sts);
     g_last_left_count = 0;
     g_last_right_count = 0;
     g_left_speed_tenths_cm_s = 0;
     g_right_speed_tenths_cm_s = 0;
-
-    g_enc_left_a_edges = 0u;
-    g_enc_left_b_edges = 0u;
-    g_enc_right_a_edges = 0u;
-    g_enc_right_b_edges = 0u;
-    g_enc_left_invalid = 0u;
-    g_enc_right_invalid = 0u;
-    g_enc_polls = 0u;
-
     g_hw_left_edges = 0u;
     g_hw_right_edges = 0u;
     g_hw_left_count = 0;
     g_hw_right_count = 0;
-
-    /* Keep the PI's last-count in step, or its next speed sample would
-     * see the reset as a huge jump */
     g_pi_left.last_count = 0;
     g_pi_right.last_count = 0;
-
-    tm_printf((UB *)"[ODOM] Reset\n");
+    CRIT_EXIT(&g_odom_lock, sts);
 }
 
 ER
 motion_get_encoder_diag(enc_diag_t *p_left, enc_diag_t *p_right)
 {
+    UINT sts;
+
     if ((NULL == p_left) || (NULL == p_right))
     {
         return E_PAR;
     }
 
-    p_left->count = g_enc_left_count;
-    p_left->a_edges = g_enc_left_a_edges;
-    p_left->b_edges = g_enc_left_b_edges;
-    p_left->invalid = g_enc_left_invalid;
-
-    p_right->count = g_enc_right_count;
-    p_right->a_edges = g_enc_right_a_edges;
-    p_right->b_edges = g_enc_right_b_edges;
-    p_right->invalid = g_enc_right_invalid;
-    p_left->polls = g_enc_polls;
-    p_right->polls = g_enc_polls;
-
+    CRIT_ENTER(&g_odom_lock, sts);
     p_left->hw_edges = g_hw_left_edges;
     p_left->hw_count = g_hw_left_count;
     p_right->hw_edges = g_hw_right_edges;
     p_right->hw_count = g_hw_right_count;
+    CRIT_EXIT(&g_odom_lock, sts);
 
     return E_OK;
 }
@@ -1078,12 +1052,6 @@ motion_print_encoder_diag(const char *p_label)
 
     (void)motion_get_encoder_diag(&left, &right);
 
-    tm_printf((UB *)"[ENC] %s L: cnt=%ld A=%lu B=%lu inv=%lu | "
-              "R: cnt=%ld A=%lu B=%lu inv=%lu | polls=%lu\n",
-              (NULL != p_label) ? p_label : "",
-              left.count, left.a_edges, left.b_edges, left.invalid,
-              right.count, right.a_edges, right.b_edges, right.invalid,
-              left.polls);
     tm_printf((UB *)"[HW]  %s L: edges=%lu cnt=%ld | R: edges=%lu cnt=%ld\n",
               (NULL != p_label) ? p_label : "",
               left.hw_edges, left.hw_count,
@@ -1167,10 +1135,9 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
 
     final_mm = (progress * UM_PER_EDGE) / 1000L;
     tm_printf((UB *)"[MOTION] Done: target %u mm, encoders %ld mm "
-              "(error %ld mm)  L=%ld R=%ld edges\n",
+              "(error %ld mm)\n",
               (unsigned int)(distance_cm * 10u), final_mm,
-              final_mm - ((int32_t)distance_cm * 10L),
-              g_hw_left_count, g_hw_right_count);
+              final_mm - ((int32_t)distance_cm * 10L));
 
     return E_OK;
 }

@@ -59,6 +59,7 @@
 #include "buddy5_ultrasonic/servo.h"
 #include "buddy5_ultrasonic/scan.h"
 #include "common/console_in.h"
+#include "common/faults.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -570,6 +571,9 @@ LOCAL T_CFLG cflg = {
  *   IR_TEST_AO             - Buddy 3 step 1b: left IR analog out (GP27)
  *                            against distance, hand-pushed over a barcode:
  *                            levels, bar widths and the raw profile.
+ *   MOTION_TEST_SAFETY     - Tribunal 1 phase 1, car lifted: loop rate and
+ *                            PI error, STOP over queued commands, stall
+ *                            (both wheels held), encoder check (one held).
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -591,9 +595,10 @@ LOCAL T_CFLG cflg = {
 #define DEMO_ROAM                17
 #define IR_TEST_LOG              18
 #define IR_TEST_AO               19
+#define MOTION_TEST_SAFETY       20
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IR_TEST_AO
+#define MOTION_TEST_MODE         MOTION_TEST_SAFETY
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -677,8 +682,6 @@ LOCAL T_CFLG cflg = {
 #define ROAM_SPD_SETTLE_MS       400   /* skip speed checks while starting */
 #define ROAM_JOLT_CONFIRM_MS     250   /* a jolt must slow the wheels within this */
 #define ROAM_JOLT_SLOW_PCT       60    /* ...to below this % of the command */
-#define ROAM_STALL_PCT           30    /* below this %, for ROAM_STALL_N loops: stuck */
-#define ROAM_STALL_N             3
 #define ROAM_IGNORED_MAX         4
 
 #define IR_LOG_LEN               400   /* sensor changes per pass */
@@ -2570,7 +2573,7 @@ LOCAL void demo_roam(void)
     static INT ring_d[ROAM_SPD_RING];
     static INT ign_mg[ROAM_IGNORED_MAX];
     static INT ign_pct[ROAM_IGNORED_MAX];
-    INT ring_n, ring_i, k, j, v_pct, min_pct, stall_n, n_ign, dist;
+    INT ring_n, ring_i, k, j, v_pct, min_pct, n_ign, dist;
     UW t, leg_t0, jolt_t;
     BOOL jolt_pending, stalled;
     W p0 = 0;
@@ -2655,7 +2658,6 @@ LOCAL void demo_roam(void)
         min_pct = 100;
         v_pct = 100;
         n_ign = 0;
-        stall_n = 0;
         ring_n = 0;
         ring_i = 0;
         near_n = 0;
@@ -2717,14 +2719,13 @@ LOCAL void demo_roam(void)
                     jolt_pending = FALSE;
                 }
             }
-            /* Pushing against something the sonar missed, jolt or not */
-            if(v_pct < ROAM_STALL_PCT) {
-                if(++stall_n >= ROAM_STALL_N) {
-                    stalled = TRUE;
-                    break;
-                }
-            } else {
-                stall_n = 0;
+            /* Pushing against something the sonar missed, jolt or not:
+               the motion task's stall/encoder checks raise a fault and
+               stop the wheels. They are masked while on a hump. */
+            motion_set_hump_mask(terrain_on_hump());
+            if(0u != (fault_get() & FAULT_MOTION_MASK)) {
+                stalled = TRUE;
+                break;
             }
 
             if(++tick >= ROAM_PING_EVERY) {
@@ -2744,9 +2745,12 @@ LOCAL void demo_roam(void)
             }
             tk_dly_tsk(20);
         }
-        motion_set_velocity(0, 0);
+        motion_stop();
+        motion_set_hump_mask(FALSE);
         tk_dly_tsk(500);
 
+        tm_printf((UB *)"[ROAM]   motion loop %d passes/s, faults 0x%x\n",
+                  (INT)motion_loop_rate(), (INT)fault_get());
         for(j = 0; j < n_ign; j++) {
             tm_printf((UB *)"[ROAM]   ignored jolt %d mg: wheels kept %d%% speed\n",
                       ign_mg[j], ign_pct[j]);
@@ -2757,7 +2761,11 @@ LOCAL void demo_roam(void)
                 tm_printf((UB *)": BUMP (jolt %d mg, wheels down to %d%%), backing off\n",
                           coll.jolt_mg, min_pct);
             } else {
-                tm_printf((UB *)": STALLED (wheels at %d%%), backing off\n", v_pct);
+                tm_printf((UB *)": %s (wheels at %d%%), backing off\n",
+                          (0u != (fault_get() & FAULT_MOTOR_STALL)) ? "STALLED"
+                          : "ENCODER FAULT", v_pct);
+                /* Cleared by the controller once it has handled it */
+                fault_clear(FAULT_MOTION_MASK);
             }
             motion_set_velocity(-ROAM_BACK_MM_S, -ROAM_BACK_MM_S);
             tk_dly_tsk(ROAM_BACK_MS);
@@ -3059,6 +3067,141 @@ LOCAL void ir_test_ao(void)
         }
     }
 }
+#elif MOTION_TEST_MODE == MOTION_TEST_SAFETY
+/* Phase 1 check (Tribunal 1): car LIFTED, wheels free. Key-paced parts:
+   A timing and PI error, B STOP with commands queued, C stall (hold both
+   wheels), D encoder plausibility (hold one wheel). Nothing is printed
+   while the wheels turn. */
+LOCAL UW safe_now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
+LOCAL void safe_wait_key(const char *what)
+{
+    tm_printf((UB *)"[SAFE] %s Press a key.\n", what);
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tk_dly_tsk(50);
+    }
+}
+
+/* Wait until neither wheel has moved for 100 ms (or 3 s); returns ms */
+LOCAL UW safe_wait_still(UW t0)
+{
+    enc_diag_t l, r;
+    W last = -1, now;
+    UW still = 0;
+
+    while((still < 100u) && ((safe_now_ms() - t0) < 3000u)) {
+        (void)motion_get_encoder_diag(&l, &r);
+        now = (W)(l.hw_edges + r.hw_edges);
+        still = (now == last) ? (still + 5u) : 0u;
+        last = now;
+        tk_dly_tsk(5);
+    }
+    return safe_now_ms() - t0 - still;
+}
+
+/* Drive at v until a motion fault or limit_ms; returns ms to the fault */
+LOCAL UW safe_drive_until_fault(INT v, UW limit_ms)
+{
+    UW t0 = safe_now_ms();
+
+    motion_set_velocity((int16_t)v, (int16_t)v);
+    while(((safe_now_ms() - t0) < limit_ms) && (0u == (fault_get() & FAULT_MOTION_MASK))) {
+        tk_dly_tsk(5);
+    }
+    return safe_now_ms() - t0;
+}
+
+LOCAL void safe_report_fault(UW ms)
+{
+    UB f = fault_get();
+
+    tm_printf((UB *)"[SAFE]   faults 0x%x after %d ms:%s%s%s%s\n", (INT)f, (INT)ms,
+              (0u != (f & FAULT_MOTOR_STALL)) ? " MOTOR_STALL" : "",
+              (0u != (f & FAULT_ENC_LEFT)) ? " ENC_LEFT" : "",
+              (0u != (f & FAULT_ENC_RIGHT)) ? " ENC_RIGHT" : "",
+              (0u == (f & FAULT_MOTION_MASK)) ? " none (no trip)" : "");
+}
+
+LOCAL void motion_test_safety(void)
+{
+    static const INT speeds[3] = { 150, 300, 500 };
+    enc_diag_t l0, r0, l1, r1;
+    INT i, l_mm_s, r_mm_s;
+    UW t0, ms;
+
+    tm_printf((UB *)"\n[SAFE] Motion safety and timing test. Car LIFTED, wheels free.\n");
+
+    /* A: loop rate and speed error at three speeds */
+    safe_wait_key("Part A: timing and PI error at 150/300/500 mm/s.");
+    for(i = 0; i < 3; i++) {
+        motion_set_velocity((int16_t)speeds[i], (int16_t)speeds[i]);
+        tk_dly_tsk(1500);
+        (void)motion_get_encoder_diag(&l0, &r0);
+        tk_dly_tsk(1000);
+        (void)motion_get_encoder_diag(&l1, &r1);
+        motion_set_velocity(0, 0);
+        tk_dly_tsk(800);
+        l_mm_s = (INT)(((l1.hw_count - l0.hw_count) * SWEEP_UM_PER_EDGE) / 1000);
+        r_mm_s = (INT)(((r1.hw_count - r0.hw_count) * SWEEP_UM_PER_EDGE) / 1000);
+        tm_printf((UB *)"[SAFE]   %d mm/s: L %d R %d mm/s (error L %d R %d %%), loop %d passes/s\n",
+                  speeds[i], l_mm_s, r_mm_s,
+                  ((l_mm_s - speeds[i]) * 100) / speeds[i],
+                  ((r_mm_s - speeds[i]) * 100) / speeds[i],
+                  (INT)motion_loop_rate());
+    }
+
+    /* B: STOP overtakes queued commands */
+    safe_wait_key("Part B: STOP at 300 mm/s with 3 commands queued behind it.");
+    motion_set_velocity(300, 300);
+    tk_dly_tsk(1500);
+    motion_set_velocity(300, 300);
+    motion_set_velocity(300, 300);
+    motion_set_velocity(300, 300);
+    t0 = safe_now_ms();
+    motion_stop();
+    ms = safe_wait_still(t0);
+    tk_dly_tsk(500);
+    (void)motion_get_encoder_diag(&l0, &r0);
+    tk_dly_tsk(500);
+    (void)motion_get_encoder_diag(&l1, &r1);
+    tm_printf((UB *)"[SAFE]   wheels still %d ms after STOP; %s\n", (INT)ms,
+              ((l1.hw_edges == l0.hw_edges) && (r1.hw_edges == r0.hw_edges))
+              ? "stayed stopped (queued commands discarded)" : "MOVED AGAIN");
+
+    /* C: stall, both wheels held */
+    safe_wait_key("Part C: wheels spin at 200 mm/s; after ~1 s grip BOTH wheels"
+                  " firmly until they stop.");
+    ms = safe_drive_until_fault(200, 10000u);
+    motion_set_velocity(0, 0);
+    safe_report_fault(ms);
+    tk_dly_tsk(800);
+    fault_clear(FAULT_MOTION_MASK);
+
+    /* D: one wheel held */
+    safe_wait_key("Part D: wheels spin at 200 mm/s; after ~1 s grip only the"
+                  " LEFT wheel until it stops.");
+    ms = safe_drive_until_fault(200, 10000u);
+    motion_set_velocity(0, 0);
+    safe_report_fault(ms);
+    tk_dly_tsk(800);
+    fault_clear(FAULT_MOTION_MASK);
+
+    /* E: no false trips while running free */
+    safe_wait_key("Part E: 10 s free running at 300 mm/s, hands off (expect no trip).");
+    ms = safe_drive_until_fault(300, 10000u);
+    motion_set_velocity(0, 0);
+    safe_report_fault(ms);
+    fault_clear(FAULT_MOTION_MASK);
+
+    tm_printf((UB *)"\n=== Motion safety test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -3259,6 +3402,8 @@ EXPORT INT usermain(void)
     ir_test_log();
 #elif MOTION_TEST_MODE == IR_TEST_AO
     ir_test_ao();
+#elif MOTION_TEST_MODE == MOTION_TEST_SAFETY
+    motion_test_safety();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

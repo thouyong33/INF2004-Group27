@@ -253,6 +253,12 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
     return events;
 }
 
+bool
+terrain_on_hump(void)
+{
+    return STATE_IN_HUMP == g_state;
+}
+
 int16_t
 terrain_max_jolt_mg(void)
 {

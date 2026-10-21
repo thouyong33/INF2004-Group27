@@ -60,6 +60,9 @@ uint32_t terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
                         const imu_raw_t *p_cal, bool steady,
                         hump_event_t *p_hump, collision_event_t *p_coll);
 
+/** @brief True while the detector is inside a hump (nose-down stretch). */
+bool terrain_on_hump(void);
+
 /** @brief Largest horizontal jolt seen since terrain_reset (for tuning). */
 int16_t terrain_max_jolt_mg(void);
 
