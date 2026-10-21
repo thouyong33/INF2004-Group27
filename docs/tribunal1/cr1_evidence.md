@@ -53,6 +53,20 @@ touches the final structures.
 Most of motion_task.o's bss is the 300-entry PI trace (4200 bytes, test
 only); it will be compiled out of the final build in the packing phase.
 
-Timing/correctness after phase 1: see the `MOTION_TEST_SAFETY` log
-(loop passes/s and PI error at 150/300/500 mm/s, STOP, stall and encoder
-trips) — to be filled in from the run.
+Timing/correctness after phase 1 (`MOTION_TEST_SAFETY`, car lifted,
+21 Oct):
+
+| Check | Result |
+|---|---|
+| PI at 150 / 300 / 500 mm/s | L 148 / 298 / 498, R 147 / 300 / 498 mm/s (within 2 %) |
+| Motion loop rate | 500 passes/s (see note) |
+| STOP at 300 mm/s, 3 commands queued | wheels still after 386 ms; queued commands discarded |
+| Both wheels held | MOTOR_STALL raised, wheels stopped |
+| Left wheel held | ENC_LEFT raised, wheels stopped |
+| 10 s free running at 300 mm/s | no fault |
+
+Note on the loop rate: `tk_dly_tsk(1)` with a 1 ms tick sleeps until the
+second tick boundary, so the motion loop runs every 2 ms (500 passes/s),
+not every 1 ms. The PI runs every 20 ms and the encoders are hardware
+counters, so control is unaffected; the "995 passes/s" figure quoted in
+Tribunal 1 does not match this measurement and needs correcting.
