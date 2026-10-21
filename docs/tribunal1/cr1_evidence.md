@@ -67,6 +67,15 @@ Timing/correctness after phase 1 (`MOTION_TEST_SAFETY`, car lifted,
 
 Note on the loop rate: `tk_dly_tsk(1)` with a 1 ms tick sleeps until the
 second tick boundary, so the motion loop runs every 2 ms (500 passes/s),
-not every 1 ms. The PI runs every 20 ms and the encoders are hardware
-counters, so control is unaffected; the "995 passes/s" figure quoted in
-Tribunal 1 does not match this measurement and needs correcting.
+not every 1 ms. This is not a change: the loop has always run at this
+rate. The 7 Oct "polls=995/996" figure (Appendix L1a/L13) was counted
+from `motion_reset_odometry()` to the print, which spans the 1000 ms run
+plus the 1000 ms settle (`FIXED_RUN_MS` + `FIXED_SETTLE_MS`), i.e. about
+995 passes in 2 s = ~500 per second. Quoting it as "995 per second" was a
+misreading. The PI runs every 20 ms and the encoders are hardware
+counters, so control is unaffected.
+
+Motion task CPU and RAM (`MOTION_TEST_CPU`, lifted, 21 Oct): 0.20 % CPU
+stopped, 0.33 % driving at 150/300/500 mm/s (about 6 us per pass, longest
+13 us), not counting kernel task switches; stack high-water 296 of 4096
+bytes.
