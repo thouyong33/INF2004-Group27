@@ -579,6 +579,8 @@ LOCAL T_CFLG cflg = {
  *   IMU_TEST_RAMP_ROLL     - phase 2 step 1: 50 cm at 150 mm/s with only the
  *                            right wheel over a ramp (flat/small/tall); logs
  *                            roll, pitch, heading, wheel distances, jolt.
+ *   MOTION_TEST_STRAIGHT   - key-paced 50 cm straight runs at 150 mm/s to
+ *                            measure sideways drift (per-wheel trim).
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -603,9 +605,10 @@ LOCAL T_CFLG cflg = {
 #define MOTION_TEST_SAFETY       20
 #define MOTION_TEST_CPU          21
 #define IMU_TEST_RAMP_ROLL       22
+#define MOTION_TEST_STRAIGHT     23
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IMU_TEST_RAMP_ROLL
+#define MOTION_TEST_MODE         MOTION_TEST_STRAIGHT
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -699,6 +702,10 @@ LOCAL T_CFLG cflg = {
 #define RAMP_SPEED_MM_S          150
 #define RAMP_DIST_MM             500
 #define RAMP_LOG_LEN             300   /* 20 ms samples: 6 s */
+
+#define STRAIGHT_RUNS            5
+#define STRAIGHT_DIST_CM         50
+#define STRAIGHT_SPEED_MM_S      150
 
 #define DIST_PAUSE_S             10
 
@@ -3454,6 +3461,40 @@ LOCAL void imu_test_ramp_roll(void)
     }
     tm_printf((UB *)"\n=== One-sided hump log complete ===\n");
 }
+#elif MOTION_TEST_MODE == MOTION_TEST_STRAIGHT
+/* Straight-line drift check: STRAIGHT_RUNS key-paced runs of
+   STRAIGHT_DIST_CM at STRAIGHT_SPEED_MM_S. After each run, measure how far
+   sideways the car ended up from its start line. The encoders only show
+   that both wheels turned the same amount; ground drift is the ruler's job. */
+LOCAL void motion_test_straight(void)
+{
+    enc_diag_t l, r;
+    INT run;
+
+    tm_printf((UB *)"\n[STRAIGHT] %d runs of %d cm at %d mm/s on the floor.\n",
+              STRAIGHT_RUNS, STRAIGHT_DIST_CM, STRAIGHT_SPEED_MM_S);
+    tm_printf((UB *)"[STRAIGHT] Put a straight tape line on the floor beside the LEFT\n");
+    tm_printf((UB *)"[STRAIGHT] wheel, car parallel to it. After each run measure the gap\n");
+    tm_printf((UB *)"[STRAIGHT] between the tape and the left wheel at the start and end.\n");
+
+    for(run = 1; run <= STRAIGHT_RUNS; run++) {
+        tm_printf((UB *)"\n[STRAIGHT] Run %d/%d: line the car up, press a key.\n",
+                  run, STRAIGHT_RUNS);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);           /* hands off */
+        (void)motion_move_forward_cm(STRAIGHT_DIST_CM, STRAIGHT_SPEED_MM_S);
+        (void)motion_get_encoder_diag(&l, &r);
+        tm_printf((UB *)"[STRAIGHT]   wheels L %d R %d mm (L-R %d mm)\n",
+                  (INT)((l.hw_count * SWEEP_UM_PER_EDGE) / 1000),
+                  (INT)((r.hw_count * SWEEP_UM_PER_EDGE) / 1000),
+                  (INT)(((l.hw_count - r.hw_count) * SWEEP_UM_PER_EDGE) / 1000));
+        tm_printf((UB *)"[STRAIGHT]   now measure the sideways offset (mm, left or right)\n");
+    }
+    tm_printf((UB *)"\n=== Straight-line test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -3660,6 +3701,8 @@ EXPORT INT usermain(void)
     motion_test_cpu();
 #elif MOTION_TEST_MODE == IMU_TEST_RAMP_ROLL
     imu_test_ramp_roll();
+#elif MOTION_TEST_MODE == MOTION_TEST_STRAIGHT
+    motion_test_straight();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
