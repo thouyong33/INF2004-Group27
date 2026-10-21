@@ -8,6 +8,16 @@
  *   2.4 cm ramps, most nose-down 30 mm mean -17.9 deg
  * A hump starts when filtered pitch stays more than 4 deg nose-down for
  * 15 mm, and ends when it stays within 2 deg of level for 15 mm.
+ *
+ * One-sided hump (the course test: a ramp under one wheel only). The car
+ * rolls instead of pitching: with one wheel raised h above the other,
+ * roll = asin(h / track). One-sided ramp log of 2026-10-21 (150 mm/s,
+ * 114 mm track): raw roll noise +/-3-6 deg while driving; mean roll on
+ * the 1.0 cm ramp about -4.4 deg (h ~ 9 mm), on the 2.4 cm ramp about
+ * -13 deg (h ~ 26 mm). A side hump starts when filtered roll stays past
+ * 2.5 deg for 20 mm and ends when it stays within 1.5 deg for 15 mm; the
+ * height comes from the most-tilted 30 mm mean. Roll is not gated on
+ * steady speed: braking and speeding up tilt the car in pitch, not roll.
  */
 
 #include <stdint.h>
@@ -25,6 +35,11 @@
 #define HUMP_HOLD_MM             15      /* ... for this much travel */
 #define WHEELBASE_MM             80.0f   /* drive axle to castor */
 #define COLL_JOLT_MG             500     /* first guess; see terrain_max_jolt_mg */
+#define SIDE_ENTER_CDEG          250     /* |roll| past 2.5 deg ... */
+#define SIDE_ENTER_MM            20      /* ... for this much travel */
+#define SIDE_EXIT_CDEG           150     /* back within 1.5 deg ... */
+#define SIDE_EXIT_MM             15      /* ... for this much travel */
+#define TRACK_MM                 114.0f  /* wheel track: lever for roll */
 #define COLL_HOLDOFF_MM          100     /* one collision per 10 cm */
 
 typedef enum {
@@ -36,10 +51,26 @@ static int16_t g_rest_pitch = 0;
 static int16_t g_pitch_ring[FILT_N];
 static uint32_t g_pitch_n = 0u;
 
-static int32_t g_win_d[WIN_MAX];
-static int16_t g_win_p[WIN_MAX];
-static uint32_t g_win_head = 0u;         /* index of the oldest entry */
-static uint32_t g_win_count = 0u;
+/* Distance window of filtered tilt samples, for the 30 mm plateau mean */
+typedef struct {
+    int32_t  d[WIN_MAX];
+    int16_t  v[WIN_MAX];
+    uint32_t head;                       /* index of the oldest entry */
+    uint32_t count;
+} tilt_win_t;
+
+static tilt_win_t g_pwin;                /* pitch */
+static tilt_win_t g_rwin;                /* roll */
+
+/* One-sided hump (roll) */
+static int16_t g_rest_roll = 0;
+static int16_t g_roll_ring[FILT_N];
+static uint32_t g_roll_n = 0u;
+static terrain_state_t g_side_state = STATE_LEVEL;
+static int32_t g_side_in_since = -1;
+static int32_t g_side_out_since = -1;
+static side_hump_event_t g_side;
+static int16_t g_max_roll = 0;           /* largest |filtered roll| seen */
 
 static terrain_state_t g_state = STATE_LEVEL;
 static int32_t g_below_since = -1;
@@ -69,43 +100,133 @@ abs16(int16_t v)
     return (v < 0) ? (int16_t)(-v) : v;
 }
 
-/* Push one (distance, pitch) pair and drop entries older than 30 mm.
+/* Push one (distance, tilt) pair and drop entries older than 30 mm.
  * Returns true and the window mean once the window spans enough travel. */
 static bool
-window_push(int32_t dist_mm, int16_t fp, int16_t *p_mean, int32_t *p_from_mm)
+window_push(tilt_win_t *p_w, int32_t dist_mm, int16_t v, int16_t *p_mean,
+            int32_t *p_from_mm)
 {
     uint32_t i;
     uint32_t idx;
     int32_t sum = 0;
 
-    if (WIN_MAX == g_win_count)
+    if (WIN_MAX == p_w->count)
     {
-        g_win_head = (g_win_head + 1u) % WIN_MAX;
-        g_win_count--;
+        p_w->head = (p_w->head + 1u) % WIN_MAX;
+        p_w->count--;
     }
-    idx = (g_win_head + g_win_count) % WIN_MAX;
-    g_win_d[idx] = dist_mm;
-    g_win_p[idx] = fp;
-    g_win_count++;
+    idx = (p_w->head + p_w->count) % WIN_MAX;
+    p_w->d[idx] = dist_mm;
+    p_w->v[idx] = v;
+    p_w->count++;
 
-    while ((g_win_count > 1u) && ((dist_mm - g_win_d[g_win_head]) > PLAT_MM))
+    while ((p_w->count > 1u) && ((dist_mm - p_w->d[p_w->head]) > PLAT_MM))
     {
-        g_win_head = (g_win_head + 1u) % WIN_MAX;
-        g_win_count--;
+        p_w->head = (p_w->head + 1u) % WIN_MAX;
+        p_w->count--;
     }
 
-    if ((dist_mm - g_win_d[g_win_head]) < PLAT_MIN_SPAN_MM)
+    if ((dist_mm - p_w->d[p_w->head]) < PLAT_MIN_SPAN_MM)
     {
         return false;
     }
 
-    for (i = 0u; i < g_win_count; i++)
+    for (i = 0u; i < p_w->count; i++)
     {
-        sum += g_win_p[(g_win_head + i) % WIN_MAX];
+        sum += p_w->v[(p_w->head + i) % WIN_MAX];
     }
-    *p_mean = (int16_t)(sum / (int32_t)g_win_count);
-    *p_from_mm = g_win_d[g_win_head];
+    *p_mean = (int16_t)(sum / (int32_t)p_w->count);
+    *p_from_mm = p_w->d[p_w->head];
     return true;
+}
+
+/* Causal moving average over the last FILT_N samples */
+static int16_t
+filt_push(int16_t *p_ring, uint32_t *p_n, int16_t v)
+{
+    uint32_t i;
+    uint32_t n;
+    int32_t sum = 0;
+
+    p_ring[*p_n % FILT_N] = v;
+    (*p_n)++;
+    n = (*p_n < FILT_N) ? *p_n : FILT_N;
+    for (i = 0u; i < n; i++)
+    {
+        sum += p_ring[i];
+    }
+    return (int16_t)(sum / (int32_t)n);
+}
+
+/* One-sided hump: roll state machine, one call per sample */
+static uint32_t
+side_update(int32_t dist_mm, int16_t fr)
+{
+    int16_t mean;
+    int16_t afr = abs16(fr);
+    int32_t from_mm;
+    uint32_t events = 0u;
+
+    if (afr > g_max_roll)
+    {
+        g_max_roll = afr;
+    }
+
+    if (window_push(&g_rwin, dist_mm, fr, &mean, &from_mm)
+        && (STATE_IN_HUMP == g_side_state)
+        && (abs16(mean) > abs16(g_side.plateau_cdeg)))
+    {
+        g_side.plateau_cdeg = mean;
+        g_side.plateau_mm = from_mm;
+    }
+
+    if (STATE_LEVEL == g_side_state)
+    {
+        if (afr > SIDE_ENTER_CDEG)
+        {
+            if (g_side_in_since < 0)
+            {
+                g_side_in_since = dist_mm;
+            }
+            if ((dist_mm - g_side_in_since) >= SIDE_ENTER_MM)
+            {
+                g_side_state = STATE_IN_HUMP;
+                g_side.start_mm = g_side_in_since;
+                g_side.plateau_cdeg = fr;
+                g_side.plateau_mm = dist_mm;
+                g_side_out_since = -1;
+            }
+        }
+        else
+        {
+            g_side_in_since = -1;
+        }
+    }
+    else if (afr < SIDE_EXIT_CDEG)
+    {
+        if (g_side_out_since < 0)
+        {
+            g_side_out_since = dist_mm;
+        }
+        if ((dist_mm - g_side_out_since) >= SIDE_EXIT_MM)
+        {
+            g_side.end_mm = g_side_out_since;
+            g_side.height_mm = (int16_t)(TRACK_MM
+                * sin_cdeg((int32_t)abs16(g_side.plateau_cdeg)) + 0.5f);
+            /* Roll is right-side-down positive: raised right wheel = negative */
+            g_side.right_side = (g_side.plateau_cdeg < 0) ? 1u : 0u;
+            g_side_state = STATE_LEVEL;
+            g_side_in_since = -1;
+            g_side_out_since = -1;
+            events |= TERRAIN_EVT_SIDE_HUMP;
+        }
+    }
+    else
+    {
+        g_side_out_since = -1;
+    }
+
+    return events;
 }
 
 static void
@@ -120,12 +241,20 @@ hump_finish(int32_t dist_mm, hump_event_t *p_hump)
 }
 
 void
-terrain_reset(int16_t rest_pitch_cdeg)
+terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg)
 {
     g_rest_pitch = rest_pitch_cdeg;
     g_pitch_n = 0u;
-    g_win_head = 0u;
-    g_win_count = 0u;
+    g_pwin.head = 0u;
+    g_pwin.count = 0u;
+    g_rest_roll = rest_roll_cdeg;
+    g_roll_n = 0u;
+    g_rwin.head = 0u;
+    g_rwin.count = 0u;
+    g_side_state = STATE_LEVEL;
+    g_side_in_since = -1;
+    g_side_out_since = -1;
+    g_max_roll = 0;
     g_state = STATE_LEVEL;
     g_below_since = -1;
     g_above_since = -1;
@@ -141,10 +270,8 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
                hump_event_t *p_hump, collision_event_t *p_coll)
 {
     uint32_t events = 0u;
-    uint32_t i;
-    uint32_t n;
-    int32_t sum = 0;
     int16_t fp;
+    int16_t fr;
     int16_t mean;
     int32_t from_mm;
     int16_t jolt;
@@ -154,15 +281,12 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
         return 0u;
     }
 
-    /* Causal moving average of pitch, relative to the rest reading */
-    g_pitch_ring[g_pitch_n % FILT_N] = p_att->pitch_cdeg;
-    g_pitch_n++;
-    n = (g_pitch_n < FILT_N) ? g_pitch_n : FILT_N;
-    for (i = 0u; i < n; i++)
-    {
-        sum += g_pitch_ring[i];
-    }
-    fp = (int16_t)((sum / (int32_t)n) - g_rest_pitch);
+    /* Causal moving averages of pitch and roll, relative to rest */
+    fp = (int16_t)(filt_push(g_pitch_ring, &g_pitch_n, p_att->pitch_cdeg) - g_rest_pitch);
+    fr = (int16_t)(filt_push(g_roll_ring, &g_roll_n, p_att->roll_cdeg) - g_rest_roll);
+
+    /* ---- One-sided hump (roll) ---- */
+    events |= side_update(dist_mm, fr);
 
     if (steady && (fp < g_min_pitch))
     {
@@ -170,7 +294,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
     }
 
     /* ---- Hump ---- */
-    if (window_push(dist_mm, fp, &mean, &from_mm) && (STATE_IN_HUMP == g_state)
+    if (window_push(&g_pwin, dist_mm, fp, &mean, &from_mm) && (STATE_IN_HUMP == g_state)
         && (mean < g_hump.plateau_cdeg))
     {
         g_hump.plateau_cdeg = mean;
@@ -256,7 +380,22 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
 bool
 terrain_on_hump(void)
 {
-    return STATE_IN_HUMP == g_state;
+    return (STATE_IN_HUMP == g_state) || (STATE_IN_HUMP == g_side_state);
+}
+
+void
+terrain_last_side_hump(side_hump_event_t *p_ev)
+{
+    if (NULL != p_ev)
+    {
+        *p_ev = g_side;
+    }
+}
+
+int16_t
+terrain_max_roll_cdeg(void)
+{
+    return g_max_roll;
 }
 
 int16_t
