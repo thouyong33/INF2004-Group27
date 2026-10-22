@@ -735,9 +735,11 @@ LOCAL T_CFLG cflg = {
 #define SCANAB_LONG_MS           90000u /* diagnostic: let a slow scan finish */
 #define SCANAB_A_RUNS            3
 
-#define AVOID_MARGIN_MM          50    /* side clearance beyond the car's half width */
+#define AVOID_HALF_W_MM          75    /* car 14-15 cm wide incl. left IR (user) */
+#define AVOID_GAP_MM             20    /* gap left beside the block */
+#define AVOID_SENSOR_AHEAD_MM    80    /* sonar ~80 mm ahead of the axle */
 #define AVOID_DEPTH_MM           200   /* block depth: not measurable, assumed */
-#define AVOID_PAST_MM            150   /* drive this far past the block's back */
+#define AVOID_PAST_MM            100   /* axle this far past the block's back */
 #define AVOID_AFTER_MM           400   /* carry on along the path afterwards */
 #define AVOID_LEG_MM_S           200
 #define AVOID_LEG_BRAKE_MM       35    /* stop command this early (~v^2/2a) */
@@ -4031,18 +4033,23 @@ LOCAL void scan_test_abort(void)
 #elif MOTION_TEST_MODE == DEMO_AVOID
 /* Obstacle demo version 2 (course): drive with the watch on, stop at the
    block, scan +/-45 deg, then go round it on the side that needs the
-   smaller sideways shift and come back onto the original path:
+   smaller sideways shift, as tight as the scan allows, and come back onto
+   the original path with 90 deg turns on the spot:
 
-        turn 45 toward the side   -> diagonal: shift x sqrt(2)
-        turn back 45 (parallel)   -> straight past the block
-        turn 45 back toward path  -> diagonal: shift x sqrt(2)
-        turn back 45 (original heading) -> carry on driving
+        turn 90 toward the side    -> sideways: shift
+        turn back 90 (parallel)    -> straight past the block's back
+        turn 90 back toward path   -> sideways: shift
+        turn back 90 (original heading) -> carry on driving
 
-   The shift clears the block's measured side by the car's half width plus
-   AVOID_MARGIN_MM. The block's depth is not measured (the sonar only sees
-   its front), so AVOID_DEPTH_MM is assumed. Forward legs keep the watch on
-   and stop if something else is in the way. Until Buddy 3 can find the
-   line, "back on the path" means the original line of travel by encoders. */
+   90 deg legs keep the car's side parallel to the block, so the gap can be
+   small: shift = block side + half the car width (75 mm, car measured
+   14-15 cm with the left IR) + AVOID_GAP_MM. A 45 deg diagonal would
+   swing the car's front corner across the block's near corner at these
+   distances. The block's depth is not measured (the sonar only sees its
+   front), so AVOID_DEPTH_MM is assumed. The sideways legs watch in the
+   direction of travel; the straight beside the block does not (the block
+   is ~20 mm off the car's side and would trip it). Until Buddy 3 can find
+   the line, "back on the path" means the original line by encoders. */
 LOCAL INT avoid_dist_mm(void)
 {
     enc_diag_t l, r;
@@ -4083,7 +4090,7 @@ LOCAL BOOL avoid_leg(INT mm, BOOL watch)
 LOCAL void demo_avoid(void)
 {
     obstacle_profile_t prof;
-    INT run, shift_l, shift_r, shift, diag, straight, d_stop, side, t1;
+    INT run, shift_l, shift_r, shift, straight, d_stop, side, t1;
     UB why;
     ER er;
 
@@ -4094,7 +4101,7 @@ LOCAL void demo_avoid(void)
     }
     tm_printf((UB *)"\n[AVOID] Obstacle demo v2: drive, stop at the block, scan, go round"
               " it, back onto the original path.\n");
-    tm_printf((UB *)"[AVOID] Needs ~45 cm clear on each side of the block. Assumed block"
+    tm_printf((UB *)"[AVOID] Needs ~60 cm clear on each side of the block. Assumed block"
               " depth %d mm.\n", AVOID_DEPTH_MM);
 
     for(run = 1; ; run++) {
@@ -4148,8 +4155,8 @@ LOCAL void demo_avoid(void)
         }
 
         /* 3: pick the side needing the smaller shift (left positive) */
-        shift_l = prof.left_side_mm + SCAN_CAR_HALF_MM + AVOID_MARGIN_MM;
-        shift_r = SCAN_CAR_HALF_MM + AVOID_MARGIN_MM - prof.right_side_mm;
+        shift_l = prof.left_side_mm + AVOID_HALF_W_MM + AVOID_GAP_MM;
+        shift_r = AVOID_HALF_W_MM + AVOID_GAP_MM - prof.right_side_mm;
         if(shift_l < 0) {
             shift_l = 0;
         }
@@ -4158,35 +4165,32 @@ LOCAL void demo_avoid(void)
         }
         side = (shift_l <= shift_r) ? 1 : -1;
         shift = (side > 0) ? shift_l : shift_r;
-        diag = (shift * 1414) / 1000;
-        /* The diagonal already moves the car shift mm forward; the straight
-           leg then reaches past the block's back plus a margin for the car */
-        straight = (prof.nearest_mm - shift) + AVOID_DEPTH_MM + AVOID_PAST_MM;
-        if(straight < AVOID_PAST_MM) {
-            straight = AVOID_PAST_MM;
-        }
+        /* Sideways legs do not move the car forward, so the straight leg
+           runs from here (axle) past the block's back by AVOID_PAST_MM */
+        straight = prof.nearest_mm + AVOID_SENSOR_AHEAD_MM + AVOID_DEPTH_MM
+                 + AVOID_PAST_MM;
         tm_printf((UB *)"[AVOID] block %d mm ahead, sides %d .. %d mm: passing %s,"
-                  " shift %d mm (diagonal %d, straight %d)\n", prof.nearest_mm,
+                  " sideways %d mm, straight %d mm\n", prof.nearest_mm,
                   prof.right_side_mm, prof.left_side_mm,
-                  (side > 0) ? "LEFT" : "RIGHT", shift, diag, straight);
+                  (side > 0) ? "LEFT" : "RIGHT", shift, straight);
 
-        /* 4: go round; each turn is printed only once the car has stopped */
-        t1 = (INT)motion_turn_cdeg(side * 4500, AVOID_TURN_MM_S);
-        if(!avoid_leg(diag, FALSE)) {
-            tm_printf((UB *)"[AVOID] stopped on the first diagonal\n");
+        /* 4: go round; prints only once the car has stopped */
+        t1 = (INT)motion_turn_cdeg(side * 9000, AVOID_TURN_MM_S);
+        if(!avoid_leg(shift, TRUE)) {
+            tm_printf((UB *)"[AVOID] stopped on the sideways leg\n");
             continue;
         }
-        t1 += (INT)motion_turn_cdeg(-side * 4500, AVOID_TURN_MM_S);
-        if(!avoid_leg(straight, TRUE)) {
-            tm_printf((UB *)"[AVOID] something else in the way on the straight: stopped\n");
+        t1 += (INT)motion_turn_cdeg(-side * 9000, AVOID_TURN_MM_S);
+        if(!avoid_leg(straight, FALSE)) {
+            tm_printf((UB *)"[AVOID] stopped on the straight\n");
             continue;
         }
-        t1 += (INT)motion_turn_cdeg(-side * 4500, AVOID_TURN_MM_S);
-        if(!avoid_leg(diag, FALSE)) {
-            tm_printf((UB *)"[AVOID] stopped on the return diagonal\n");
+        t1 += (INT)motion_turn_cdeg(-side * 9000, AVOID_TURN_MM_S);
+        if(!avoid_leg(shift, TRUE)) {
+            tm_printf((UB *)"[AVOID] stopped on the way back to the path\n");
             continue;
         }
-        t1 += (INT)motion_turn_cdeg(side * 4500, AVOID_TURN_MM_S);
+        t1 += (INT)motion_turn_cdeg(side * 9000, AVOID_TURN_MM_S);
         tm_printf((UB *)"[AVOID] back on the original path; net heading error %s%d.%d deg"
                   " (encoders, left +)\n", (t1 < 0) ? "-" : "",
                   ((t1 < 0) ? -t1 : t1) / 100, ((t1 < 0) ? -t1 : t1) % 100 / 10);
