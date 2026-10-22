@@ -730,6 +730,7 @@ LOCAL T_CFLG cflg = {
 #define DEMOSTOP_MM_S            300   /* = OBS_WATCH_MAX_MM_S, validated */
 #define DEMOSTOP_MAX_MM          3000  /* stop anyway after 3 m */
 #define SCANAB_LONG_MS           90000u /* diagnostic: let a slow scan finish */
+#define SCANAB_A_RUNS            3
 
 #define DIST_PAUSE_S             10
 
@@ -3952,6 +3953,7 @@ LOCAL void scan_test_abort(void)
     obstacle_profile_t prof;
     scan_timing_t tmg;
     UW t0, t_still, t_done;
+    INT arun;
     ER er;
 
     er = obstacle_task_create();
@@ -3962,26 +3964,30 @@ LOCAL void scan_test_abort(void)
     tm_printf((UB *)"\n[SCANAB] Scan safety test. Car on the floor, ~20 cm clear around"
               " it, a box ~30-40 cm ahead.\n");
 
-    /* A: normal scan */
-    scanab_key("Part A: one full scan (+/-45 deg), up to 90 s, timed by phase.");
-    t0 = scanab_now_ms();
-    (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
-    er = obstacle_scan_wait(SCANAB_LONG_MS, &prof);
-    tm_printf((UB *)"[SCANAB]   result %d after %d ms\n", er, (INT)(scanab_now_ms() - t0));
-    if((E_OK == er) && prof.found) {
-        tm_printf((UB *)"[SCANAB]   nearest %d mm at %d cdeg, sides %d .. %d mm\n",
-                  prof.nearest_mm, prof.nearest_cdeg, prof.right_side_mm,
-                  prof.left_side_mm);
+    /* A: normal scans, timed by phase */
+    for(arun = 1; arun <= SCANAB_A_RUNS; arun++) {
+        tm_printf((UB *)"\n[SCANAB] Part A run %d/%d (move the box between runs).", arun,
+                  SCANAB_A_RUNS);
+        scanab_key("Part A: one full scan (+/-45 deg), up to 90 s, timed by phase.");
+        t0 = scanab_now_ms();
+        (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+        er = obstacle_scan_wait(SCANAB_LONG_MS, &prof);
+        tm_printf((UB *)"[SCANAB]   result %d after %d ms\n", er, (INT)(scanab_now_ms() - t0));
+        if((E_OK == er) && prof.found) {
+            tm_printf((UB *)"[SCANAB]   nearest %d mm at %d cdeg, sides %d .. %d mm\n",
+                      prof.nearest_mm, prof.nearest_cdeg, prof.right_side_mm,
+                      prof.left_side_mm);
+        }
+        scan_get_timing(&tmg);
+        tm_printf((UB *)"[SCANAB]   time: turn to start %d ms, sweep %d ms (%d pings),"
+                  " return %d ms\n", (INT)tmg.start_ms, (INT)tmg.coarse_ms,
+                  (INT)tmg.coarse_samples, (INT)tmg.return_ms);
+        tm_printf((UB *)"[SCANAB]   fine right edge %d ms, %d steps covering %d cdeg;"
+                  " left edge %d ms, %d steps covering %d cdeg\n",
+                  (INT)tmg.fine_ms[0], (INT)tmg.fine_steps[0], tmg.fine_span_cdeg[0],
+                  (INT)tmg.fine_ms[1], (INT)tmg.fine_steps[1], tmg.fine_span_cdeg[1]);
+        fault_clear(FAULT_SCAN_TIMEOUT);
     }
-    scan_get_timing(&tmg);
-    tm_printf((UB *)"[SCANAB]   time: turn to start %d ms, sweep %d ms (%d pings),"
-              " return %d ms\n", (INT)tmg.start_ms, (INT)tmg.coarse_ms,
-              (INT)tmg.coarse_samples, (INT)tmg.return_ms);
-    tm_printf((UB *)"[SCANAB]   fine right edge %d ms, %d steps covering %d cdeg;"
-              " left edge %d ms, %d steps covering %d cdeg\n",
-              (INT)tmg.fine_ms[0], (INT)tmg.fine_steps[0], tmg.fine_span_cdeg[0],
-              (INT)tmg.fine_ms[1], (INT)tmg.fine_steps[1], tmg.fine_span_cdeg[1]);
-    fault_clear(FAULT_SCAN_TIMEOUT);
 
     /* B: STOP mid-scan */
     scanab_key("Part B: a scan starts; after 3 s it is stopped (abort + STOP).");

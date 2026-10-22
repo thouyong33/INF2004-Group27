@@ -19,9 +19,17 @@
 
 #define TURN_MM_S                60      /* repositioning turns (~60 deg/s) */
 #define TURN_BRAKE_CDEG          150
+#define TURN_SETTLE_MS           200
 #define COARSE_MM_S              25      /* ~25 deg/s: a ping every ~2 deg */
 #define FINE_STEP_MM_S           40
 #define FINE_STEP_CDEG           200     /* stop and look every ~2 deg */
+/* Fine steps: the car coasts ~1 deg after the stop command at 40 mm/s
+ * (scan timing log 2026-10-22: 2 deg steps braked 1.5 deg early moved
+ * 1.45 deg), so brake 1 deg early. Braking from 40 mm/s takes ~60 ms, so
+ * 150 ms is enough to be still before the pings. That log's full scan
+ * took 29.2 s, 22 s of it in 22 fine steps of ~1 s. */
+#define FINE_BRAKE_CDEG          100
+#define FINE_SETTLE_MS           150
 #define FINE_HALF_CDEG           800     /* fine window: edge +/-8 deg */
 #define LOG_MAX                  128
 #define GAP_ALLOW                2       /* missed pings tolerated inside the obstacle */
@@ -100,7 +108,7 @@ ping_median3_mm(void)
 
 /* Turn on the spot to an absolute scan angle and stop */
 static void
-turn_to(int32_t target_cdeg, int16_t speed)
+turn_to_ex(int32_t target_cdeg, int16_t speed, int32_t brake_cdeg, uint32_t settle_ms)
 {
     int32_t a;
     uint32_t i;
@@ -124,8 +132,8 @@ turn_to(int32_t target_cdeg, int16_t speed)
     for (i = 0u; (i < 3000u) && (!aborted()); i++)
     {
         a = angle_cdeg();
-        if ((left && (a >= target_cdeg - TURN_BRAKE_CDEG))
-            || ((!left) && (a <= target_cdeg + TURN_BRAKE_CDEG)))
+        if ((left && (a >= target_cdeg - brake_cdeg))
+            || ((!left) && (a <= target_cdeg + brake_cdeg)))
         {
             break;
         }
@@ -134,8 +142,15 @@ turn_to(int32_t target_cdeg, int16_t speed)
     (void)motion_set_velocity(0, 0);
     if (!aborted())
     {
-        tk_dly_tsk(500);
+        tk_dly_tsk(settle_ms);
     }
+}
+
+/* Repositioning turn */
+static void
+turn_to(int32_t target_cdeg, int16_t speed)
+{
+    turn_to_ex(target_cdeg, speed, TURN_BRAKE_CDEG, TURN_SETTLE_MS);
 }
 
 static bool
@@ -229,7 +244,8 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
         {
             break;
         }
-        turn_to(a + (outward * FINE_STEP_CDEG), FINE_STEP_MM_S);
+        turn_to_ex(a + (outward * FINE_STEP_CDEG), FINE_STEP_MM_S,
+                   FINE_BRAKE_CDEG, FINE_SETTLE_MS);
     }
     g_tm.fine_ms[idx] = now_ms() - t0;
     return best;
@@ -298,7 +314,7 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     {
         return E_RLWAI;
     }
-    tk_dly_tsk(500);
+    tk_dly_tsk(TURN_SETTLE_MS);
 
     if (print)
     {
