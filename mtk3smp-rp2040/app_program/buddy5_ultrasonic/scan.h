@@ -49,6 +49,22 @@ typedef struct {
 ER scan_obstacle(int16_t half_deg, int16_t detect_mm, bool p_print,
                  obstacle_profile_t *p_prof);
 
+/** Where the last scan spent its time (diagnostics). Index 0 = right
+ *  edge, 1 = left edge. */
+typedef struct {
+    uint32_t t0_ms;              /**< scan start (kernel ms) */
+    uint32_t start_ms;           /**< turn to the sweep start */
+    uint32_t coarse_ms;          /**< continuous sweep */
+    uint16_t coarse_samples;
+    uint32_t fine_ms[2];         /**< fine look around each edge */
+    uint16_t fine_steps[2];      /**< stop-and-look steps taken */
+    int16_t  fine_span_cdeg[2];  /**< angle covered by the steps */
+    uint32_t return_ms;          /**< turn back to the start heading */
+} scan_timing_t;
+
+/** @brief Timing of the last scan_obstacle() call. */
+void scan_get_timing(scan_timing_t *p_t);
+
 /**
  * @brief Byte the scan checks at every step; non-zero aborts it.
  * Set by the scan's owner (the obstacle task); NULL disables aborting.

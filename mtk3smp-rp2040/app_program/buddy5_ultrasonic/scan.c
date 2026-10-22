@@ -33,6 +33,16 @@ typedef struct {
 
 static scan_pt_t g_log[LOG_MAX];
 static const volatile uint8_t *g_p_abort = NULL;
+static scan_timing_t g_tm;
+
+static uint32_t
+now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
 static int32_t g_l0;
 static int32_t g_r0;
 
@@ -187,13 +197,24 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
     int16_t mm;
     uint32_t guard;
 
+    uint32_t t0 = now_ms();
+    uint32_t idx = (outward < 0) ? 0u : 1u;
+    int32_t a_first = 0;
+
     from = edge_cdeg - (outward * FINE_HALF_CDEG);
     to = edge_cdeg + (outward * FINE_HALF_CDEG);
     turn_to(from, TURN_MM_S);
+    g_tm.fine_steps[idx] = 0u;
 
     for (guard = 0u; (guard < 30u) && (!aborted()); guard++)
     {
         a = angle_cdeg();
+        if (0u == guard)
+        {
+            a_first = a;
+        }
+        g_tm.fine_steps[idx] = (uint16_t)(guard + 1u);
+        g_tm.fine_span_cdeg[idx] = (int16_t)(a - a_first);
         mm = ping_median3_mm();
         if (print)
         {
@@ -210,6 +231,7 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
         }
         turn_to(a + (outward * FINE_STEP_CDEG), FINE_STEP_MM_S);
     }
+    g_tm.fine_ms[idx] = now_ms() - t0;
     return best;
 }
 
@@ -236,6 +258,17 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
         return E_PAR;
     }
     p_prof->found = false;
+    g_tm.start_ms = 0u;
+    g_tm.coarse_ms = 0u;
+    g_tm.coarse_samples = 0u;
+    g_tm.fine_ms[0] = 0u;
+    g_tm.fine_ms[1] = 0u;
+    g_tm.fine_steps[0] = 0u;
+    g_tm.fine_steps[1] = 0u;
+    g_tm.fine_span_cdeg[0] = 0;
+    g_tm.fine_span_cdeg[1] = 0;
+    g_tm.return_ms = 0u;
+    g_tm.t0_ms = now_ms();
 
     (void)motion_get_encoder_diag(&l, &r);
     g_l0 = l.hw_count;
@@ -244,6 +277,7 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
 
     /* ---- Coarse: continuous sweep right to left ---- */
     turn_to(-(int32_t)half_deg * 100, TURN_MM_S);
+    g_tm.start_ms = now_ms() - g_tm.t0_ms;
     (void)motion_set_velocity((int16_t)-COARSE_MM_S, (int16_t)COARSE_MM_S);
     while ((n < LOG_MAX) && (!aborted()))
     {
@@ -258,6 +292,8 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
         tk_dly_tsk(PING_GAP_MS);
     }
     (void)motion_set_velocity(0, 0);
+    g_tm.coarse_ms = now_ms() - g_tm.t0_ms - g_tm.start_ms;
+    g_tm.coarse_samples = (uint16_t)n;
     if (aborted())
     {
         return E_RLWAI;
@@ -331,7 +367,12 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
         return E_RLWAI;
     }
 
-    turn_to(0, TURN_MM_S);
+    {
+        uint32_t t_ret = now_ms();
+
+        turn_to(0, TURN_MM_S);
+        g_tm.return_ms = now_ms() - t_ret;
+    }
 
     /* ---- Profile ---- */
     span = (int32_t)p_prof->left_cdeg - (int32_t)p_prof->right_cdeg;
@@ -356,4 +397,13 @@ void
 scan_set_abort_flag(const volatile uint8_t *p_flag)
 {
     g_p_abort = p_flag;
+}
+
+void
+scan_get_timing(scan_timing_t *p_t)
+{
+    if (NULL != p_t)
+    {
+        *p_t = g_tm;
+    }
 }
