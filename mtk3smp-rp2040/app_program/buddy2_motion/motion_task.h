@@ -159,4 +159,11 @@ void motion_print_encoder_diag(const char *p_label);
  */
 ER motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s);
 
+/**
+ * @brief Turn on the spot by cdeg hundredths of a degree (left positive)
+ * at speed_mm_s per wheel, measured by the encoders (blocking, no prints).
+ * @return the angle actually turned, x0.01 deg (accuracy ~1-2 deg)
+ */
+int32_t motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s);
+
 #endif /* MOTION_TASK_H */

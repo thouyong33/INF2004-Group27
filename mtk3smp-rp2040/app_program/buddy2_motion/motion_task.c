@@ -1216,3 +1216,79 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
 
     return E_OK;
 }
+/*
+ * Turn on the spot by cdeg (left positive) under PI, measured by the
+ * encoders: angle = (right - left) / 2 x um/edge / (pi x track). Brakes
+ * TURN_BRAKE_CDEG early (the car coasts ~1.5 deg at 60 mm/s, as in the
+ * scan and roam turns) and waits for the wheels to settle. Returns the
+ * angle actually turned, or 0 if a motion fault, STOP from another task
+ * or the timeout ended it early (the angle so far is still returned).
+ */
+#define TURN_TRACK_MM             114L
+#define TURN_BRAKE_CDEG           150L
+#define TURN_SETTLE_MS            300u
+#define TURN_TIMEOUT_MS           6000u
+
+static int32_t
+turn_angle_cdeg(int32_t l0, int32_t r0)
+{
+    UINT sts;
+    int32_t l;
+    int32_t r;
+    float half_diff;
+
+    CRIT_ENTER(&g_odom_lock, sts);
+    l = g_hw_left_count;
+    r = g_hw_right_count;
+    CRIT_EXIT(&g_odom_lock, sts);
+
+    half_diff = ((float)((r - r0) - (l - l0))) * 0.5f;
+    return (int32_t)((half_diff * (float)UM_PER_EDGE * 36000.0f)
+                     / (3.14159265f * (float)TURN_TRACK_MM * 1000.0f));
+}
+
+int32_t
+motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s)
+{
+    UINT sts;
+    int32_t l0;
+    int32_t r0;
+    int32_t a;
+    int16_t v = (int16_t)speed_mm_s;
+    uint32_t waited = 0u;
+
+    if ((cdeg > -50) && (cdeg < 50))
+    {
+        return 0;
+    }
+
+    CRIT_ENTER(&g_odom_lock, sts);
+    l0 = g_hw_left_count;
+    r0 = g_hw_right_count;
+    CRIT_EXIT(&g_odom_lock, sts);
+
+    if (cdeg > 0)
+    {
+        (void)motion_set_velocity((int16_t)-v, v);
+    }
+    else
+    {
+        (void)motion_set_velocity(v, (int16_t)-v);
+    }
+
+    while (waited < TURN_TIMEOUT_MS)
+    {
+        a = turn_angle_cdeg(l0, r0);
+        if (((cdeg > 0) && (a >= (cdeg - TURN_BRAKE_CDEG)))
+            || ((cdeg < 0) && (a <= (cdeg + TURN_BRAKE_CDEG)))
+            || (0u != (fault_get() & FAULT_MOTION_MASK)))
+        {
+            break;
+        }
+        tk_dly_tsk(4u);
+        waited += 4u;
+    }
+    (void)motion_set_velocity(0, 0);
+    tk_dly_tsk(TURN_SETTLE_MS);
+    return turn_angle_cdeg(l0, r0);
+}

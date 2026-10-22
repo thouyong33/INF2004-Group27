@@ -592,6 +592,8 @@ LOCAL T_CFLG cflg = {
  *                            block (>= 5 cm nose gap), stay stopped.
  *   SCAN_TEST_ABORT        - phase 3 step 2: scan in the obstacle task; full
  *                            scan, abort with STOP mid-scan, timeout fault.
+ *   DEMO_AVOID             - obstacle demo v2 (course): stop at the block,
+ *                            scan, go round it, back onto the original path.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -621,9 +623,10 @@ LOCAL T_CFLG cflg = {
 #define OBST_TEST_STOP           25
 #define DEMO_STOP                26
 #define SCAN_TEST_ABORT          27
+#define DEMO_AVOID               28
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         SCAN_TEST_ABORT
+#define MOTION_TEST_MODE         DEMO_AVOID
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -731,6 +734,14 @@ LOCAL T_CFLG cflg = {
 #define DEMOSTOP_MAX_MM          3000  /* stop anyway after 3 m */
 #define SCANAB_LONG_MS           90000u /* diagnostic: let a slow scan finish */
 #define SCANAB_A_RUNS            3
+
+#define AVOID_MARGIN_MM          50    /* side clearance beyond the car's half width */
+#define AVOID_DEPTH_MM           200   /* block depth: not measurable, assumed */
+#define AVOID_PAST_MM            150   /* drive this far past the block's back */
+#define AVOID_AFTER_MM           400   /* carry on along the path afterwards */
+#define AVOID_LEG_MM_S           200
+#define AVOID_LEG_BRAKE_MM       35    /* stop command this early (~v^2/2a) */
+#define AVOID_TURN_MM_S          60
 
 #define DIST_PAUSE_S             10
 
@@ -4017,6 +4028,177 @@ LOCAL void scan_test_abort(void)
 
     tm_printf((UB *)"\n=== Scan safety test complete ===\n");
 }
+#elif MOTION_TEST_MODE == DEMO_AVOID
+/* Obstacle demo version 2 (course): drive with the watch on, stop at the
+   block, scan +/-45 deg, then go round it on the side that needs the
+   smaller sideways shift and come back onto the original path:
+
+        turn 45 toward the side   -> diagonal: shift x sqrt(2)
+        turn back 45 (parallel)   -> straight past the block
+        turn 45 back toward path  -> diagonal: shift x sqrt(2)
+        turn back 45 (original heading) -> carry on driving
+
+   The shift clears the block's measured side by the car's half width plus
+   AVOID_MARGIN_MM. The block's depth is not measured (the sonar only sees
+   its front), so AVOID_DEPTH_MM is assumed. Forward legs keep the watch on
+   and stop if something else is in the way. Until Buddy 3 can find the
+   line, "back on the path" means the original line of travel by encoders. */
+LOCAL INT avoid_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+/* Drive mm forward with the watch on. Returns TRUE if it got there,
+   FALSE if blocked, faulted or a key was pressed (car stopped). */
+LOCAL BOOL avoid_leg(INT mm, BOOL watch)
+{
+    INT d0 = avoid_dist_mm();
+    BOOL ok = TRUE;
+
+    if(watch) {
+        obstacle_watch(TRUE);
+        tk_dly_tsk(200);
+    }
+    motion_set_velocity(AVOID_LEG_MM_S, AVOID_LEG_MM_S);
+    while((avoid_dist_mm() - d0) < (mm - AVOID_LEG_BRAKE_MM)) {
+        if((watch && obstacle_blocked())
+           || (0u != (fault_get() & FAULT_MOTION_MASK))
+           || (console_try_getc() >= 0)) {
+            ok = FALSE;
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_stop();
+    tk_dly_tsk(400);
+    if(watch) {
+        obstacle_watch(FALSE);
+    }
+    return ok;
+}
+
+LOCAL void demo_avoid(void)
+{
+    obstacle_profile_t prof;
+    INT run, shift_l, shift_r, shift, diag, straight, d_stop, side, t1;
+    UB why;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[AVOID] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[AVOID] Obstacle demo v2: drive, stop at the block, scan, go round"
+              " it, back onto the original path.\n");
+    tm_printf((UB *)"[AVOID] Needs ~45 cm clear on each side of the block. Assumed block"
+              " depth %d mm.\n", AVOID_DEPTH_MM);
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[AVOID] Run %d: point the car at the block, press a key"
+                  " (any key while moving stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK | FAULT_SCAN_TIMEOUT);
+
+        /* 1: approach and stop (as demo v1) */
+        obstacle_watch(TRUE);
+        tk_dly_tsk(300);
+        motion_reset_odometry();
+        motion_set_velocity(DEMOSTOP_MM_S, DEMOSTOP_MM_S);
+        why = 0u;
+        while(0u == why) {
+            if(obstacle_blocked()) {
+                why = 1u;
+            } else if(0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO))) {
+                why = 2u;
+            } else if(console_try_getc() >= 0) {
+                why = 3u;
+            } else if(avoid_dist_mm() >= DEMOSTOP_MAX_MM) {
+                why = 4u;
+            } else {
+                tk_dly_tsk(5);
+            }
+        }
+        motion_stop();
+        tk_dly_tsk(800);
+        obstacle_watch(FALSE);
+        d_stop = avoid_dist_mm();
+        if(1u != why) {
+            tm_printf((UB *)"[AVOID] stopped without a block (%s) after %d mm\n",
+                      (2u == why) ? "fault" : (3u == why) ? "key" : "nothing found",
+                      d_stop);
+            continue;
+        }
+
+        /* 2: scan */
+        (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+        er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
+        if((E_OK != er) || (!prof.found)) {
+            tm_printf((UB *)"[AVOID] scan %s (%d): staying stopped\n",
+                      (E_OK == er) ? "found nothing" : "failed", er);
+            continue;
+        }
+
+        /* 3: pick the side needing the smaller shift (left positive) */
+        shift_l = prof.left_side_mm + SCAN_CAR_HALF_MM + AVOID_MARGIN_MM;
+        shift_r = SCAN_CAR_HALF_MM + AVOID_MARGIN_MM - prof.right_side_mm;
+        if(shift_l < 0) {
+            shift_l = 0;
+        }
+        if(shift_r < 0) {
+            shift_r = 0;
+        }
+        side = (shift_l <= shift_r) ? 1 : -1;
+        shift = (side > 0) ? shift_l : shift_r;
+        diag = (shift * 1414) / 1000;
+        /* The diagonal already moves the car shift mm forward; the straight
+           leg then reaches past the block's back plus a margin for the car */
+        straight = (prof.nearest_mm - shift) + AVOID_DEPTH_MM + AVOID_PAST_MM;
+        if(straight < AVOID_PAST_MM) {
+            straight = AVOID_PAST_MM;
+        }
+        tm_printf((UB *)"[AVOID] block %d mm ahead, sides %d .. %d mm: passing %s,"
+                  " shift %d mm (diagonal %d, straight %d)\n", prof.nearest_mm,
+                  prof.right_side_mm, prof.left_side_mm,
+                  (side > 0) ? "LEFT" : "RIGHT", shift, diag, straight);
+
+        /* 4: go round; each turn is printed only once the car has stopped */
+        t1 = (INT)motion_turn_cdeg(side * 4500, AVOID_TURN_MM_S);
+        if(!avoid_leg(diag, FALSE)) {
+            tm_printf((UB *)"[AVOID] stopped on the first diagonal\n");
+            continue;
+        }
+        t1 += (INT)motion_turn_cdeg(-side * 4500, AVOID_TURN_MM_S);
+        if(!avoid_leg(straight, TRUE)) {
+            tm_printf((UB *)"[AVOID] something else in the way on the straight: stopped\n");
+            continue;
+        }
+        t1 += (INT)motion_turn_cdeg(-side * 4500, AVOID_TURN_MM_S);
+        if(!avoid_leg(diag, FALSE)) {
+            tm_printf((UB *)"[AVOID] stopped on the return diagonal\n");
+            continue;
+        }
+        t1 += (INT)motion_turn_cdeg(side * 4500, AVOID_TURN_MM_S);
+        tm_printf((UB *)"[AVOID] back on the original path; net heading error %s%d.%d deg"
+                  " (encoders, left +)\n", (t1 < 0) ? "-" : "",
+                  ((t1 < 0) ? -t1 : t1) / 100, ((t1 < 0) ? -t1 : t1) % 100 / 10);
+
+        /* 5: carry on along the path */
+        if(avoid_leg(AVOID_AFTER_MM, TRUE)) {
+            tm_printf((UB *)"[AVOID] drove %d mm past: run complete\n", AVOID_AFTER_MM);
+        } else {
+            tm_printf((UB *)"[AVOID] stopped after the manoeuvre (blocked or key)\n");
+        }
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -4233,6 +4415,8 @@ EXPORT INT usermain(void)
     demo_stop();
 #elif MOTION_TEST_MODE == SCAN_TEST_ABORT
     scan_test_abort();
+#elif MOTION_TEST_MODE == DEMO_AVOID
+    demo_avoid();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
