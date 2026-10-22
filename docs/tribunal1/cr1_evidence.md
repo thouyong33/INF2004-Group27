@@ -205,3 +205,36 @@ IR arm drags on the descent, steering the car by a varying amount
 (offsets 0–19 mm). Software cannot see or correct this; a smooth skid on
 the IR mount is the proposed fix. Line following (Buddy 3) corrects the
 remaining heading after the ramp.
+
+## Buddy 5: obstacle stop distance (watch task), 21–22 Oct
+
+Decision implemented (Tribunal 1): stop when 2 of the last 3 pings read
+≤ 300 mm from the sensor face; one missed echo no longer clears the
+count; 300 mm/s while watching (`obstacle.c`, commits 5d99d66, b5677e6).
+Course requirement: stop with ≥ 5 cm between the nose (IR tip) and the
+block.
+
+`OBST_TEST_STOP`, 300 mm/s, per-ping trace (22 Oct):
+
+| Run | Target | Reading at trigger | Braking | Reading at rest | Nose gap |
+|---|---|---|---|---|---|
+| 1 | box (flat face) | 247 mm | 65 mm | 185 mm | 12.7 cm |
+| 2 | box | 271 mm | 64 mm | 221 mm | 15.0 cm |
+| 3 | box | 265 mm | 62 mm | 221 mm | 15.0 cm |
+| 4 | box | 283 mm | 65 mm | 208 mm | 14.6 cm |
+| 5 | box | 277 mm | 66 mm | 201 mm | 14.3 cm |
+| 6 | round bottle | 259 mm | 67 mm | (lost) | 10.6 cm |
+| 7 | round bottle | 230 mm | 63 mm | 172 mm | 9.8 cm |
+
+- With a flat face the readings fall smoothly, ~20 mm per ping; the
+  first near ping is the first reading ≤ 300 mm and the stop triggers on
+  the next one. Braking from 300 mm/s is 62–67 mm.
+- The sensor face sits about 6 cm behind the nose (reading at rest minus
+  nose gap: 58–71 mm).
+- A round bottle reflects only a thin strip: near the end the trace
+  shows readings jumping to 372–450 mm (the beam passing it and finding
+  something further away), and readings just above 300 mm delay the
+  trigger. An earlier bottle run (21 Oct) triggered at 191 mm and stopped
+  5.9 cm from the nose; that was the bottle, not a code fault.
+- Result: 7/7 runs meet the ≥ 5 cm requirement (minimum 9.8 cm, bottle);
+  flat-faced box 12.7–15.0 cm. The 300 mm threshold is kept.
