@@ -41,10 +41,18 @@ typedef struct {
 
 /**
  * @brief Scan +/-half_deg around the current heading and profile the
- * nearest obstacle closer than detect_mm. Returns facing the start heading.
+ * nearest obstacle closer than detect_mm. Returns facing the start heading,
+ * or E_RLWAI as soon as the abort flag (scan_set_abort_flag) is set; the
+ * motors are left stopped and the car where it was.
  * @param p_print  true to print the coarse and fine logs ([SCAN] lines)
  */
 ER scan_obstacle(int16_t half_deg, int16_t detect_mm, bool p_print,
                  obstacle_profile_t *p_prof);
+
+/**
+ * @brief Byte the scan checks at every step; non-zero aborts it.
+ * Set by the scan's owner (the obstacle task); NULL disables aborting.
+ */
+void scan_set_abort_flag(const volatile uint8_t *p_flag);
 
 #endif /* BUDDY5_SCAN_H */

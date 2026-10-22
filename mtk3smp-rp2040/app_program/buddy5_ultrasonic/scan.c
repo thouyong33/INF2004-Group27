@@ -32,12 +32,19 @@ typedef struct {
 } scan_pt_t;
 
 static scan_pt_t g_log[LOG_MAX];
+static const volatile uint8_t *g_p_abort = NULL;
 static int32_t g_l0;
 static int32_t g_r0;
 
 /*----------------------------------------------------------------------------
  * Helpers
  *---------------------------------------------------------------------------*/
+/* True once the owner has asked the scan to stop (Tribunal 1, R2) */
+static bool
+aborted(void)
+{
+    return (NULL != g_p_abort) && (0u != *g_p_abort);
+}
 /* Car angle since the scan started, left positive, x0.01 deg */
 static int32_t
 angle_cdeg(void)
@@ -104,7 +111,7 @@ turn_to(int32_t target_cdeg, int16_t speed)
     {
         (void)motion_set_velocity(speed, (int16_t)-speed);
     }
-    for (i = 0u; i < 3000u; i++)
+    for (i = 0u; (i < 3000u) && (!aborted()); i++)
     {
         a = angle_cdeg();
         if ((left && (a >= target_cdeg - TURN_BRAKE_CDEG))
@@ -115,7 +122,10 @@ turn_to(int32_t target_cdeg, int16_t speed)
         tk_dly_tsk(5);
     }
     (void)motion_set_velocity(0, 0);
-    tk_dly_tsk(500);
+    if (!aborted())
+    {
+        tk_dly_tsk(500);
+    }
 }
 
 static bool
@@ -181,7 +191,7 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
     to = edge_cdeg + (outward * FINE_HALF_CDEG);
     turn_to(from, TURN_MM_S);
 
-    for (guard = 0u; guard < 30u; guard++)
+    for (guard = 0u; (guard < 30u) && (!aborted()); guard++)
     {
         a = angle_cdeg();
         mm = ping_median3_mm();
@@ -235,7 +245,7 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     /* ---- Coarse: continuous sweep right to left ---- */
     turn_to(-(int32_t)half_deg * 100, TURN_MM_S);
     (void)motion_set_velocity((int16_t)-COARSE_MM_S, (int16_t)COARSE_MM_S);
-    while (n < LOG_MAX)
+    while ((n < LOG_MAX) && (!aborted()))
     {
         a = angle_cdeg();
         g_log[n].cdeg = (int16_t)a;
@@ -248,6 +258,10 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
         tk_dly_tsk(PING_GAP_MS);
     }
     (void)motion_set_velocity(0, 0);
+    if (aborted())
+    {
+        return E_RLWAI;
+    }
     tk_dly_tsk(500);
 
     if (print)
@@ -311,6 +325,11 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     /* ---- Fine: stop-and-look around each coarse edge ---- */
     p_prof->right_cdeg = (int16_t)fine_edge(g_log[lo].cdeg, -1, detect_mm, print);
     p_prof->left_cdeg = (int16_t)fine_edge(g_log[hi].cdeg, +1, detect_mm, print);
+    if (aborted())
+    {
+        p_prof->found = false;
+        return E_RLWAI;
+    }
 
     turn_to(0, TURN_MM_S);
 
@@ -331,4 +350,10 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     p_prof->right_side_mm = (int16_t)(centre_off - half_w);
 
     return E_OK;
+}
+
+void
+scan_set_abort_flag(const volatile uint8_t *p_flag)
+{
+    g_p_abort = p_flag;
 }

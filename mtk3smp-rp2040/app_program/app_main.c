@@ -588,6 +588,10 @@ LOCAL T_CFLG cflg = {
  *   OBST_TEST_STOP         - phase 3 step 1: obstacle watch task; runs at
  *                            300 mm/s to a box (5) and a bottle (2), stop
  *                            gap and a per-ping trace.
+ *   DEMO_STOP              - obstacle demo v1 (course): drive, stop at the
+ *                            block (>= 5 cm nose gap), stay stopped.
+ *   SCAN_TEST_ABORT        - phase 3 step 2: scan in the obstacle task; full
+ *                            scan, abort with STOP mid-scan, timeout fault.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -615,9 +619,11 @@ LOCAL T_CFLG cflg = {
 #define MOTION_TEST_STRAIGHT     23
 #define IMU_TEST_SIDE_HUMP       24
 #define OBST_TEST_STOP           25
+#define DEMO_STOP                26
+#define SCAN_TEST_ABORT          27
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         OBST_TEST_STOP
+#define MOTION_TEST_MODE         SCAN_TEST_ABORT
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -720,6 +726,9 @@ LOCAL T_CFLG cflg = {
 #define OBST_RUNS                7
 #define OBST_BOX_RUNS            5
 #define OBST_MAX_DIST_MM         1500  /* drive limit if nothing stops it */
+
+#define DEMOSTOP_MM_S            300   /* = OBS_WATCH_MAX_MM_S, validated */
+#define DEMOSTOP_MAX_MM          3000  /* stop anyway after 3 m */
 
 #define DIST_PAUSE_S             10
 
@@ -3823,6 +3832,172 @@ LOCAL void obst_test_stop(void)
     }
     tm_printf((UB *)"\n=== Obstacle watch test complete ===\n");
 }
+#elif MOTION_TEST_MODE == DEMO_STOP
+/* Obstacle demo version 1 (course): drive forward at DEMOSTOP_MM_S with
+   the obstacle watch on, stop at the block (>= 5 cm nose gap; measured
+   12.7-15.0 cm on a flat face at 300 mm/s), stay stopped. A key starts
+   each run; a key while driving stops it too. Faults stop the car. */
+LOCAL INT demostop_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+LOCAL void demo_stop(void)
+{
+    INT run, d_trig, mm_trig, d_end;
+    UB why;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[STOP] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[STOP] Obstacle demo v1: drive at %d mm/s, stop at the block,"
+              " stay stopped.\n", DEMOSTOP_MM_S);
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[STOP] Run %d: point the car at the block, press a key to go"
+                  " (any key while driving stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+
+        obstacle_watch(TRUE);
+        tk_dly_tsk(300);
+        motion_reset_odometry();
+        motion_set_velocity(DEMOSTOP_MM_S, DEMOSTOP_MM_S);
+
+        why = 0u;
+        d_trig = 0;
+        mm_trig = -1;
+        while(0u == why) {
+            if(obstacle_blocked()) {
+                why = 1u;
+            } else if(0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO))) {
+                why = 2u;
+            } else if(console_try_getc() >= 0) {
+                why = 3u;
+            } else if(demostop_dist_mm() >= DEMOSTOP_MAX_MM) {
+                why = 4u;
+            } else {
+                tk_dly_tsk(5);
+            }
+        }
+        motion_stop();
+        d_trig = demostop_dist_mm();
+        mm_trig = obstacle_last_mm();
+        tk_dly_tsk(800);
+        d_end = demostop_dist_mm();
+        obstacle_watch(FALSE);
+
+        tm_printf((UB *)"[STOP] %s after %d mm (sensor %d mm), at rest after %d mm,"
+                  " faults 0x%x\n",
+                  (1u == why) ? "OBSTACLE: stopped" : (2u == why) ? "FAULT: stopped"
+                  : (3u == why) ? "KEY: stopped" : "NOTHING FOUND: stopped at the limit",
+                  d_trig, mm_trig, d_end, (INT)fault_get());
+    }
+}
+#elif MOTION_TEST_MODE == SCAN_TEST_ABORT
+/* Phase 3 step 2: the scan runs in the obstacle task and can be stopped.
+   Car on the floor with ~20 cm clear around it, a box ~30-40 cm ahead.
+   A: a full scan (time and profile). B: abort mid-scan with STOP, time
+   until the wheels are still and until the scan hands back. C: a
+   too-short timeout, which must raise FAULT_SCAN_TIMEOUT and stop. */
+LOCAL UW scanab_now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
+/* ms from t0 until neither wheel has moved for 20 ms (5 ms steps) */
+LOCAL UW scanab_still_ms(UW t0)
+{
+    enc_diag_t l, r;
+    W last = -1, now;
+    UW still = 0;
+
+    while((still < 20u) && ((scanab_now_ms() - t0) < 3000u)) {
+        (void)motion_get_encoder_diag(&l, &r);
+        now = (W)(l.hw_edges + r.hw_edges);
+        still = (now == last) ? (still + 5u) : 0u;
+        last = now;
+        tk_dly_tsk(5);
+    }
+    return scanab_now_ms() - t0 - still;
+}
+
+LOCAL void scanab_key(const char *what)
+{
+    tm_printf((UB *)"\n[SCANAB] %s Press a key.\n", what);
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tk_dly_tsk(50);
+    }
+    tk_dly_tsk(1000);
+}
+
+LOCAL void scan_test_abort(void)
+{
+    obstacle_profile_t prof;
+    UW t0, t_still, t_done;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[SCANAB] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[SCANAB] Scan safety test. Car on the floor, ~20 cm clear around"
+              " it, a box ~30-40 cm ahead.\n");
+
+    /* A: normal scan */
+    scanab_key("Part A: one full scan (+/-45 deg).");
+    t0 = scanab_now_ms();
+    (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+    er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
+    tm_printf((UB *)"[SCANAB]   result %d after %d ms; found %d, nearest %d mm at %d"
+              " cdeg, sides %d .. %d mm\n", er, (INT)(scanab_now_ms() - t0),
+              (INT)prof.found, prof.nearest_mm, prof.nearest_cdeg,
+              prof.right_side_mm, prof.left_side_mm);
+
+    /* B: STOP mid-scan */
+    scanab_key("Part B: a scan starts; after 3 s it is stopped (abort + STOP).");
+    (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+    tk_dly_tsk(3000);
+    t0 = scanab_now_ms();
+    obstacle_scan_abort();
+    motion_stop();
+    t_still = scanab_still_ms(t0);
+    er = obstacle_scan_wait(OBS_ABORT_WAIT_MS, NULL);
+    t_done = scanab_now_ms() - t0;
+    tm_printf((UB *)"[SCANAB]   wheels still %d ms after STOP; scan handed back after"
+              " %d ms with %d (%s)\n", (INT)t_still, (INT)t_done, er,
+              (E_RLWAI == er) ? "aborted, as expected" : "UNEXPECTED");
+
+    /* C: timeout */
+    scanab_key("Part C: a scan with a 4 s timeout (too short on purpose).");
+    fault_clear(FAULT_SCAN_TIMEOUT);
+    (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+    t0 = scanab_now_ms();
+    er = obstacle_scan_wait(4000u, NULL);
+    tm_printf((UB *)"[SCANAB]   wait returned %d after %d ms, faults 0x%x (%s)\n", er,
+              (INT)(scanab_now_ms() - t0), (INT)fault_get(),
+              ((E_TMOUT == er) && (0u != (fault_get() & FAULT_SCAN_TIMEOUT)))
+              ? "timeout fault raised, wheels stopped" : "UNEXPECTED");
+    fault_clear(FAULT_SCAN_TIMEOUT);
+
+    tm_printf((UB *)"\n=== Scan safety test complete ===\n");
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -4035,6 +4210,10 @@ EXPORT INT usermain(void)
     imu_test_side_hump();
 #elif MOTION_TEST_MODE == OBST_TEST_STOP
     obst_test_stop();
+#elif MOTION_TEST_MODE == DEMO_STOP
+    demo_stop();
+#elif MOTION_TEST_MODE == SCAN_TEST_ABORT
+    scan_test_abort();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

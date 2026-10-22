@@ -7,8 +7,15 @@
  * echo can never delay the motor loop. It is driven by an event flag
  * (scan_flg) with one bit per request:
  *   OBS_FLG_WATCH  ping and keep the near/far history (left set)
- *   OBS_FLG_SCAN   reserved for the obstacle scan (phase 3 step 2)
- *   OBS_FLG_ABORT  reserved: abort a running scan
+ *   OBS_FLG_SCAN   run one obstacle scan (scan.c) in this task
+ *   OBS_FLG_ABORT  reserved (abort is a byte the scan checks every step)
+ *   OBS_FLG_DONE   set when the scan has finished or stopped
+ *
+ * Scan safety (Tribunal 1, R2): the scan checks an abort byte at every
+ * step and returns with the motors stopped as soon as it is set. The
+ * owner waits with obstacle_scan_wait(): if the scan overruns the timeout
+ * it raises FAULT_SCAN_TIMEOUT, stops the wheels and aborts the scan.
+ * motion_stop() still works at any time, whoever owns the motors.
  *
  * Stop rule: an obstacle is "blocked" when at least 2 of the last 3 pings
  * read OBS_STOP_MM or less (raw sensor reading, i.e. from the sensor face;
@@ -31,12 +38,17 @@
 #include <stdbool.h>
 #include <tk/tkernel.h>
 
+#include "scan.h"
+
 #define OBS_FLG_WATCH        (1u << 0)
 #define OBS_FLG_SCAN         (1u << 1)
 #define OBS_FLG_ABORT        (1u << 2)
+#define OBS_FLG_DONE         (1u << 3)
 
 #define OBS_STOP_MM          300     /**< raw reading at or below: near */
 #define OBS_WATCH_MAX_MM_S   300     /**< speed cap while watching */
+#define OBS_SCAN_TIMEOUT_MS  30000u  /**< measured full scans take 20-25 s */
+#define OBS_ABORT_WAIT_MS    3000u   /**< scan step limit after an abort */
 
 /** @brief Start the ultrasonic, centre the servo, create the task and flag. */
 ER obstacle_task_create(void);
@@ -70,5 +82,22 @@ void obstacle_trace_start(void);
  * @return number of entries copied (at most OBS_TRACE_LEN)
  */
 uint32_t obstacle_trace_get(obstacle_trace_t *p_out);
+
+/**
+ * @brief Start one obstacle scan in the obstacle task (watching pauses).
+ * The car must be stopped with room to turn on the spot.
+ */
+ER obstacle_scan_start(int16_t half_deg, int16_t detect_mm);
+
+/**
+ * @brief Wait for the scan started by obstacle_scan_start().
+ * @return E_OK with *p_prof filled; E_RLWAI if it was aborted;
+ *         E_TMOUT if it overran timeout_ms (FAULT_SCAN_TIMEOUT raised,
+ *         wheels stopped, scan aborted)
+ */
+ER obstacle_scan_wait(uint32_t timeout_ms, obstacle_profile_t *p_prof);
+
+/** @brief Ask a running scan to stop at its next step (any task). */
+void obstacle_scan_abort(void);
 
 #endif /* BUDDY5_OBSTACLE_H */

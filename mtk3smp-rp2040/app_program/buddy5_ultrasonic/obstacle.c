@@ -12,10 +12,11 @@
 #include "../buddy2_motion/motion_task.h"
 #include "ultrasonic.h"
 #include "servo.h"
+#include "scan.h"
 #include "obstacle.h"
 
 #define OBS_TASK_PRI         6u      /* just below motion (5) */
-#define OBS_STACK_SIZE       1024u
+#define OBS_STACK_SIZE       2048u   /* the scan runs on this stack */
 #define OBS_PING_MS          65u     /* datasheet: >= 60 ms between pings */
 #define OBS_ECHO_MAX_US      5830u   /* ~1 m: no-echo pings end early */
 #define OBS_DEAD_PINGS       5u      /* echo never started this many times */
@@ -31,6 +32,14 @@ static volatile uint8_t g_near_hist = 0u;
 static volatile int16_t g_last_mm = -1;
 static volatile uint32_t g_pings = 0u;
 static volatile uint8_t g_reset_req = 0u;
+
+/* Scan request and result. Parameters are written before OBS_FLG_SCAN is
+ * set and the result before OBS_FLG_DONE, so the flag orders them. */
+static int16_t g_scan_half_deg = 45;
+static int16_t g_scan_detect_mm = 600;
+static obstacle_profile_t g_scan_prof;
+static volatile ER g_scan_er = E_OK;
+static volatile uint8_t g_scan_abort = 0u;   /* read by scan.c every step */
 
 /* Ping trace (tests only): written by the obstacle task, read by the test
  * once watching has stopped */
@@ -58,10 +67,25 @@ obstacle_task_main(INT stacd, void *exinf)
     (void)stacd;
     (void)exinf;
 
+    scan_set_abort_flag(&g_scan_abort);
+
     while (1)
     {
-        /* Sleep until watching is on; WATCH stays set while it is */
-        (void)tk_wai_flg(g_scan_flg, OBS_FLG_WATCH, TWF_ORW, &flgptn, TMO_FEVR);
+        /* Sleep until watching is on or a scan is asked for. WATCH stays
+         * set while watching; SCAN is cleared when the scan starts. */
+        (void)tk_wai_flg(g_scan_flg, OBS_FLG_WATCH | OBS_FLG_SCAN, TWF_ORW,
+                         &flgptn, TMO_FEVR);
+
+        if (0u != (flgptn & OBS_FLG_SCAN))
+        {
+            /* Watching pauses during a scan: the scan pings for itself */
+            (void)tk_clr_flg(g_scan_flg, (UINT)~OBS_FLG_SCAN);
+            g_scan_er = scan_obstacle(g_scan_half_deg, g_scan_detect_mm, false,
+                                      &g_scan_prof);
+            (void)motion_set_velocity(0, 0);
+            (void)tk_set_flg(g_scan_flg, OBS_FLG_DONE);
+            continue;
+        }
 
         if (0u != g_reset_req)
         {
@@ -231,4 +255,58 @@ obstacle_trace_get(obstacle_trace_t *p_out)
         p_out[i - first] = g_trace[i % OBS_TRACE_LEN];
     }
     return n - first;
+}
+
+ER
+obstacle_scan_start(int16_t half_deg, int16_t detect_mm)
+{
+    if (g_scan_flg <= 0)
+    {
+        return E_NOEXS;
+    }
+    g_scan_half_deg = half_deg;
+    g_scan_detect_mm = detect_mm;
+    g_scan_abort = 0u;
+    (void)tk_clr_flg(g_scan_flg, (UINT)~OBS_FLG_DONE);
+    return tk_set_flg(g_scan_flg, OBS_FLG_SCAN);
+}
+
+void
+obstacle_scan_abort(void)
+{
+    g_scan_abort = 1u;
+}
+
+ER
+obstacle_scan_wait(uint32_t timeout_ms, obstacle_profile_t *p_prof)
+{
+    UINT flgptn;
+    ER er;
+
+    if (g_scan_flg <= 0)
+    {
+        return E_NOEXS;
+    }
+
+    er = tk_wai_flg(g_scan_flg, OBS_FLG_DONE, TWF_ORW, &flgptn, (TMO)timeout_ms);
+    if (E_TMOUT == er)
+    {
+        /* Overran: stop the wheels, raise the fault, and wait for the scan
+         * to notice the abort (at most one step) before handing back */
+        fault_set(FAULT_SCAN_TIMEOUT);
+        obstacle_scan_abort();
+        motion_stop();
+        (void)tk_wai_flg(g_scan_flg, OBS_FLG_DONE, TWF_ORW, &flgptn,
+                         (TMO)OBS_ABORT_WAIT_MS);
+        return E_TMOUT;
+    }
+    if (E_OK != er)
+    {
+        return er;
+    }
+    if ((NULL != p_prof) && (E_OK == g_scan_er))
+    {
+        *p_prof = g_scan_prof;
+    }
+    return g_scan_er;
 }
