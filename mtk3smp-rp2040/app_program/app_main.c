@@ -4290,7 +4290,7 @@ LOCAL void line_test_follow(void)
 
         n = (INT)line_trace_get(tr);
         offc = 0;
-        tm_printf((UB *)"[LINE] run %d trace (d_mm,LCR,corr,trim[,s]):", run);
+        tm_printf((UB *)"[LINE] run %d trace (d_mm,LCR,corr,periods[,s]):", run);
         for(i = 0; i < n; i++) {
             if((i % 5) == 0) {
                 tm_printf((UB *)"\n[LINE]  ");
@@ -4300,13 +4300,14 @@ LOCAL void line_test_follow(void)
                       (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 1 : 0,
                       (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 1 : 0,
                       tr[i].corr, tr[i].trim, (0u != tr[i].searching) ? ",s" : "");
-            /* On track = centre on the line, right guard off it */
-            if((0u == tr[i].searching)
-               && ((0u == (tr[i].bits & IR_BIT_CENTRE)) || (0u != (tr[i].bits & IR_BIT_RIGHT)))) {
+            /* Edge following toggles the centre on every crossing; count
+               the periods spent with the right spot on the line instead */
+            if((0u == tr[i].searching) && (0u == (tr[i].bits & IR_BIT_CENTRE))
+               && (0u != (tr[i].bits & IR_BIT_RIGHT))) {
                 offc++;
             }
         }
-        tm_printf((UB *)"\n[LINE] run %d: %s after %d periods; off-centre in %d of them;"
+        tm_printf((UB *)"\n[LINE] run %d: %s after %d periods; right spot only on the line in %d;"
                   " recoveries so far %d; faults 0x%x\n", run,
                   end_txt[line_follow_end() & 3u], n, offc, (INT)line_recoveries(),
                   (INT)fault_get());

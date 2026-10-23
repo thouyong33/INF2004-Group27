@@ -2,21 +2,17 @@
  * @file line.h
  * @brief Buddy 3: line following on the centre and right IR modules.
  *
- * The centre (GP4) and right (GP26) modules sit side by side on the front
- * bracket, but their spots are too far apart to both lie on the 18 mm line
- * (user, 2026-10-23). So the centre follows the line and the right one
- * guards its right edge:
+ * The centre (GP4) and right (GP26) spots are 20 mm apart, wider than the
+ * 18 mm line (user, 2026-10-23), so the centre rides the line's RIGHT EDGE
+ * and the right one only ever sees black on a junction arm:
  *   C R
- *   1 0  on track
- *   1 1  line moving right (car drifting left)  -> steer right
- *   0 1  line well to the right                 -> steer right harder
- *   0 0  line to the left (car drifting right), or lost: steer left for
- *        up to 30 mm of travel, then treat it as lost
- *
- * Steering is a speed difference between the wheels on top of the base
- * speed (Buddy 2 PI): a proportional kick while off to one side, plus a
- * trim that builds up the longer the car stays off to that side and is
- * held while centred, so a curve's steady difference is kept.
+ *   1 0  centre on the line  -> steer right, toward the edge
+ *   0 0  centre on the white -> steer left, toward the edge
+ *   0 1  line under the right spot (car far left) -> steer right hard
+ *   1 1  a junction arm -> drive straight on for 30 mm
+ * The steering grows while it stays on one side (curves) and restarts
+ * small whenever the side changes. The car's centre runs ~1-2 cm to the
+ * right of the line's centre.
  *
  * Course mats are raised (2026-10-23), so the task never drives to look
  * for the line: a lost line stops the car and searches by turning on the
@@ -42,7 +38,7 @@
 typedef struct {
     int16_t d_mm;            /**< distance travelled since the start */
     int16_t corr;            /**< wheel speed difference, mm/s, + = left */
-    int16_t trim;            /**< held part of it */
+    int16_t trim;            /**< periods steering to the same side */
     uint8_t bits;            /**< IR_BIT_LEFT/CENTRE/RIGHT at this period */
     uint8_t searching;       /**< 1 while searching on the spot */
 } line_trace_t;

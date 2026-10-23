@@ -17,19 +17,18 @@
 #define LINE_FLG_RUN         (1u << 0)
 
 #define LINE_PERIOD_MS       20u     /* = the PI period */
-/* Gains from the first mat runs (2026-10-23): 40 + 6/period with a 150
- * cap wound the trim up to -150, so the car turned ~70 deg/s, swept past
- * the line in one period and kept turning away from it. Now gentler, with
- * the trim cleared whenever the line changes side and the steering slewed. */
-#define LINE_KP_MM_S         25      /* kick while off to one side (~25 deg/s) */
-#define LINE_KI_MM_S         1       /* trim build-up per period off-side */
-/* A 15 cm radius arc (course curve mats, assumed) at 100 mm/s needs the
- * wheels ~75 mm/s apart over the 114 mm track */
-#define LINE_TRIM_MAX_MM_S   80
-#define LINE_CORR_MAX_MM_S   120
+/* Right-edge following gains. The first runs (40 + 6/period trim, then
+ * 25 + 1/period) swung or weaved; now the steering starts at LINE_KP and
+ * grows by LINE_KI per period while it stays on one side (curves), capped
+ * at LINE_SIDE_MAX, and restarts whenever the side changes. A 15 cm radius
+ * curve at 100 mm/s needs ~75 mm/s between the wheels, i.e. ~38 each way. */
+#define LINE_KP_MM_S         20
+#define LINE_KI_MM_S         2
+#define LINE_TRIM_MAX_MM_S   60      /* one side's steering cap */
+#define LINE_CORR_MAX_MM_S   120     /* the hard-right case (line under R) */
 #define LINE_SLEW_MM_S       15      /* max steering change per period */
-
-#define LINE_LOST_MM         30      /* centre and right both white this far: lost */
+#define LINE_JUNCTION_MM     30      /* drive straight this far over an arm */
+#define LINE_LOST_MM         40      /* centre white this far (steering left): lost */
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 #define SEARCH_FIRST_CDEG    6000    /* toward the last side, then ... */
 #define SEARCH_SECOND_CDEG   12000   /* ... back past centre to the other */
@@ -152,13 +151,15 @@ line_task_main(INT stacd, void *exinf)
 {
     UINT flgptn;
     uint32_t bits;
-    int32_t trim;
     int32_t corr;
     int32_t off;
+    int32_t prev_off;
+    int32_t run;
     int32_t last_side;
     int32_t d;
     int32_t base;
-    int32_t none_since;
+    int32_t white_since;
+    int32_t straight_until;
     int32_t target;
     bool c_on;
     bool r_on;
@@ -170,10 +171,12 @@ line_task_main(INT stacd, void *exinf)
     {
         (void)tk_wai_flg(g_line_flg, LINE_FLG_RUN, TWF_ORW | TWF_CLR, &flgptn, TMO_FEVR);
 
-        trim = 0;
         corr = 0;
+        prev_off = 0;
+        run = 0;
         last_side = 1;
-        none_since = -1;
+        white_since = -1;
+        straight_until = -1;
         base = g_base;
         g_end = LINE_END_NONE;
 
@@ -195,58 +198,61 @@ line_task_main(INT stacd, void *exinf)
             c_on = (0u != (bits & IR_BIT_CENTRE));
             r_on = (0u != (bits & IR_BIT_RIGHT));
 
-            /* Centre follows the line, right guards it (the two spots are
-             * too far apart to both sit on the 18 mm line):
+            /* Right-edge following (mat runs 2026-10-23: with the centre on
+             * the line and the right spot 20 mm away, "neither black" could
+             * mean the line was left of centre OR between the two spots, and
+             * the guess made the car weave). The centre rides the line's
+             * right edge, so each reading has one meaning:
              *   C R
-             *   1 0  on track
-             *   1 1  line moving right (car drifting left)  -> steer right
-             *   0 1  line well to the right                 -> steer harder
-             *   0 0  line to the left of centre (drifting right), or lost:
-             *        steer left for up to LINE_LOST_MM, then treat as lost */
-            if (c_on && (!r_on))
+             *   1 0  centre on the line   -> steer right, toward the edge
+             *   0 0  centre on the white  -> steer left, toward the edge
+             *   0 1  line under the right spot (car far left) -> right, hard
+             *   1 1  black under both: a junction arm (the right spot is
+             *        20 mm out over white on a plain line) -> straight on */
+            if (d < straight_until)
             {
                 off = 0;
-                none_since = -1;
+                white_since = -1;
             }
             else if (c_on && r_on)
             {
+                straight_until = d + LINE_JUNCTION_MM;
+                off = 0;
+                white_since = -1;
+            }
+            else if (c_on)
+            {
                 off = -1;
-                last_side = -1;
-                none_since = -1;
+                white_since = -1;
             }
             else if (r_on)
             {
                 off = -2;
                 last_side = -1;
-                none_since = -1;
+                white_since = -1;
             }
             else
             {
-                if (none_since < 0)
+                off = 1;
+                if (white_since < 0)
                 {
-                    none_since = d;
-                    /* Came off the left edge of the line unless the right
-                     * guard saw it last */
-                    if (last_side >= 0)
-                    {
-                        last_side = 1;
-                    }
+                    white_since = d;
                 }
-                off = (last_side > 0) ? 1 : -2;
-                if ((d - none_since) > LINE_LOST_MM)
+                if ((d - white_since) > LINE_LOST_MM)
                 {
                     /* Lost: stop, then look on the spot only (raised mats) */
                     motion_stop();
                     tk_dly_tsk(200u);
-                    trim = 0;
-                    trace(d, 0, trim, bits, true);
+                    trace(d, 0, 0, bits, true);
                     if (search_turn(last_side * SEARCH_FIRST_CDEG)
                         || search_turn(-last_side * SEARCH_SECOND_CDEG))
                     {
                         g_recoveries++;
-                        trim = 0;
                         corr = 0;
-                        none_since = -1;
+                        run = 0;
+                        prev_off = 0;
+                        white_since = -1;
+                        last_side = 1;
                         continue;
                     }
                     if (0u != g_stop_req)
@@ -261,29 +267,40 @@ line_task_main(INT stacd, void *exinf)
                     break;
                 }
             }
-            if ((0 == off) && (last_side < 0))
+            if (off >= 0)
             {
-                last_side = 1;           /* back on track: reset to default */
+                last_side = 1;           /* default: the line is to the left */
             }
 
-            /* Anti-windup: the line changed side, so the held trim now
-             * points the wrong way */
-            if (((off > 0) && (trim < 0)) || ((off < 0) && (trim > 0)))
+            /* Steering grows the longer it stays on one side (for curves)
+             * and restarts small whenever the side changes, so it can never
+             * keep pushing the wrong way */
+            if (off != prev_off)
             {
-                trim = 0;
+                run = 0;
             }
-            trim += off * LINE_KI_MM_S;
-            trim = (trim > LINE_TRIM_MAX_MM_S) ? LINE_TRIM_MAX_MM_S
-                 : ((trim < -LINE_TRIM_MAX_MM_S) ? -LINE_TRIM_MAX_MM_S : trim);
-            target = trim + (off * LINE_KP_MM_S);
-            target = (target > LINE_CORR_MAX_MM_S) ? LINE_CORR_MAX_MM_S
-                   : ((target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S : target);
+            prev_off = off;
+            if (0 == off)
+            {
+                target = 0;
+            }
+            else
+            {
+                run++;
+                target = LINE_KP_MM_S + (run * LINE_KI_MM_S);
+                if (target > LINE_TRIM_MAX_MM_S)
+                {
+                    target = LINE_TRIM_MAX_MM_S;
+                }
+                target = (off < 0) ? -(target * ((off < -1) ? 2 : 1)) : target;
+                target = (target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S : target;
+            }
             /* Slew-limit the steering so it never jerks */
             corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
                   : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S : (target - corr));
 
             (void)motion_set_velocity((int16_t)(base - corr), (int16_t)(base + corr));
-            trace(d, corr, trim, bits, false);
+            trace(d, corr, run, bits, false);
             tk_dly_tsk(LINE_PERIOD_MS);
         }
 
