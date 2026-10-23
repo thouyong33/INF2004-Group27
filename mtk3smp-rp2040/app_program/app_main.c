@@ -735,9 +735,11 @@ LOCAL T_CFLG cflg = {
 #define SCANAB_LONG_MS           90000u /* diagnostic: let a slow scan finish */
 #define SCANAB_A_RUNS            3
 
-/* Car footprint (user, 23 Oct): 20 x 15 cm incl. the left IR, axle 13 cm
-   behind the nose, so 7 cm of car behind it; sonar ~6 cm behind the nose */
-#define AVOID_HALF_W_MM          75
+/* Car footprint (user, 23 Oct): 20 cm long, axle 13 cm behind the nose
+   (7 cm of car behind it); sonar ~6 cm behind the nose. Not symmetric:
+   wheels 14 cm across, the left IR bracket pokes out 1-2 cm further */
+#define AVOID_HALF_R_MM          70    /* centre to the right wheel's outside */
+#define AVOID_HALF_L_MM          85    /* centre to the left IR bracket */
 #define AVOID_SENSOR_AHEAD_MM    70    /* sonar ahead of the axle */
 /* Gap beside the block: v2b (20 mm) rubbed a wheel on the straight. Each
    90 deg turn lands within ~1-2 deg (2 deg over the ~55 cm straight is
@@ -748,7 +750,7 @@ LOCAL T_CFLG cflg = {
 /* Axle past the block's back before turning in: after the 90 deg turn the
    car's trailing side is a half width behind the axle and must clear the
    block's back face on the sideways leg home */
-#define AVOID_PAST_MM            (AVOID_HALF_W_MM + AVOID_GAP_MM)
+#define AVOID_PAST_MM            (AVOID_HALF_L_MM + AVOID_GAP_MM)
 #define AVOID_TRIM_CDEG          60    /* re-turn if a turn misses by more */
 #define AVOID_AFTER_MM           400   /* carry on along the path afterwards */
 #define AVOID_LEG_MM_S           200
@@ -4053,7 +4055,8 @@ LOCAL void scan_test_abort(void)
         turn back 90 (original heading) -> carry on driving
 
    90 deg legs keep the car's side parallel to the block, so the gap can be
-   small: shift = block side + half the car width + AVOID_GAP_MM. Each turn
+   small: shift = block side + the car's half width on that side +
+   AVOID_GAP_MM. Each turn
    is checked on the encoders and trimmed if it missed. A 45 deg diagonal would
    swing the car's front corner across the block's near corner at these
    distances. The block's depth is not measured (the sonar only sees its
@@ -4179,8 +4182,10 @@ LOCAL void demo_avoid(void)
         }
 
         /* 3: pick the side needing the smaller shift (left positive) */
-        shift_l = prof.left_side_mm + AVOID_HALF_W_MM + AVOID_GAP_MM;
-        shift_r = AVOID_HALF_W_MM + AVOID_GAP_MM - prof.right_side_mm;
+        /* Passing left puts the block on the car's right side, and the
+           other way round */
+        shift_l = prof.left_side_mm + AVOID_HALF_R_MM + AVOID_GAP_MM;
+        shift_r = AVOID_HALF_L_MM + AVOID_GAP_MM - prof.right_side_mm;
         if(shift_l < 0) {
             shift_l = 0;
         }
