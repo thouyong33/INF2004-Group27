@@ -2,13 +2,16 @@
  * @file line.h
  * @brief Buddy 3: line following on the centre and right IR modules.
  *
- * The centre (GP4) and right (GP26) modules sit ~5 mm either side of the
- * car's centreline, so on the 18 mm line both read black when centred.
- * Two bits give four states:
- *   both black          centred
- *   only centre black   line has moved to the car's left  -> steer left
- *   only right black    line has moved to the car's right -> steer right
- *   both white          line lost
+ * The centre (GP4) and right (GP26) modules sit side by side on the front
+ * bracket, but their spots are too far apart to both lie on the 18 mm line
+ * (user, 2026-10-23). So the centre follows the line and the right one
+ * guards its right edge:
+ *   C R
+ *   1 0  on track
+ *   1 1  line moving right (car drifting left)  -> steer right
+ *   0 1  line well to the right                 -> steer right harder
+ *   0 0  line to the left (car drifting right), or lost: steer left for
+ *        up to 30 mm of travel, then treat it as lost
  *
  * Steering is a speed difference between the wheels on top of the base
  * speed (Buddy 2 PI): a proportional kick while off to one side, plus a

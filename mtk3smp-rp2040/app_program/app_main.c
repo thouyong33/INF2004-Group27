@@ -4300,8 +4300,9 @@ LOCAL void line_test_follow(void)
                       (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 1 : 0,
                       (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 1 : 0,
                       tr[i].corr, tr[i].trim, (0u != tr[i].searching) ? ",s" : "");
+            /* On track = centre on the line, right guard off it */
             if((0u == tr[i].searching)
-               && ((0u == (tr[i].bits & IR_BIT_CENTRE)) || (0u == (tr[i].bits & IR_BIT_RIGHT)))) {
+               && ((0u == (tr[i].bits & IR_BIT_CENTRE)) || (0u != (tr[i].bits & IR_BIT_RIGHT)))) {
                 offc++;
             }
         }

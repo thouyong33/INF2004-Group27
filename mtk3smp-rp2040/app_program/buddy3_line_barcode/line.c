@@ -24,6 +24,7 @@
 #define LINE_TRIM_MAX_MM_S   150
 #define LINE_CORR_MAX_MM_S   200
 
+#define LINE_LOST_MM         30      /* centre and right both white this far: lost */
 #define SEARCH_MM_S          50      /* on-spot search turn speed */
 #define SEARCH_FIRST_CDEG    9000    /* toward the last side, then ... */
 #define SEARCH_SECOND_CDEG   18000   /* ... back past centre to the other */
@@ -152,6 +153,9 @@ line_task_main(INT stacd, void *exinf)
     int32_t last_side;
     int32_t d;
     int32_t base;
+    int32_t none_since;
+    bool c_on;
+    bool r_on;
 
     (void)stacd;
     (void)exinf;
@@ -162,6 +166,7 @@ line_task_main(INT stacd, void *exinf)
 
         trim = 0;
         last_side = 1;
+        none_since = -1;
         base = g_base;
         g_end = LINE_END_NONE;
 
@@ -180,47 +185,76 @@ line_task_main(INT stacd, void *exinf)
             }
 
             bits = ir_read();
-            if (!on_line(bits))
-            {
-                /* Lost: stop, then look on the spot only (raised mats) */
-                motion_stop();
-                tk_dly_tsk(200u);
-                trace(d, 0, trim, bits, true);
-                if (search_turn(last_side * SEARCH_FIRST_CDEG)
-                    || search_turn(-last_side * SEARCH_SECOND_CDEG))
-                {
-                    g_recoveries++;
-                    trim = 0;
-                    continue;
-                }
-                if (0u != g_stop_req)
-                {
-                    g_end = LINE_END_STOPPED;
-                }
-                else
-                {
-                    fault_set(FAULT_LINE_LOST);
-                    g_end = LINE_END_LOST;
-                }
-                break;
-            }
+            c_on = (0u != (bits & IR_BIT_CENTRE));
+            r_on = (0u != (bits & IR_BIT_RIGHT));
 
-            /* Which side is the line on? +1 = car's left */
-            if ((0u != (bits & IR_BIT_CENTRE)) && (0u == (bits & IR_BIT_RIGHT)))
+            /* Centre follows the line, right guards it (the two spots are
+             * too far apart to both sit on the 18 mm line):
+             *   C R
+             *   1 0  on track
+             *   1 1  line moving right (car drifting left)  -> steer right
+             *   0 1  line well to the right                 -> steer harder
+             *   0 0  line to the left of centre (drifting right), or lost:
+             *        steer left for up to LINE_LOST_MM, then treat as lost */
+            if (c_on && (!r_on))
             {
-                off = 1;
+                off = 0;
+                none_since = -1;
             }
-            else if ((0u == (bits & IR_BIT_CENTRE)) && (0u != (bits & IR_BIT_RIGHT)))
+            else if (c_on && r_on)
             {
                 off = -1;
+                last_side = -1;
+                none_since = -1;
+            }
+            else if (r_on)
+            {
+                off = -2;
+                last_side = -1;
+                none_since = -1;
             }
             else
             {
-                off = 0;
+                if (none_since < 0)
+                {
+                    none_since = d;
+                    /* Came off the left edge of the line unless the right
+                     * guard saw it last */
+                    if (last_side >= 0)
+                    {
+                        last_side = 1;
+                    }
+                }
+                off = (last_side > 0) ? 1 : -2;
+                if ((d - none_since) > LINE_LOST_MM)
+                {
+                    /* Lost: stop, then look on the spot only (raised mats) */
+                    motion_stop();
+                    tk_dly_tsk(200u);
+                    trace(d, 0, trim, bits, true);
+                    if (search_turn(last_side * SEARCH_FIRST_CDEG)
+                        || search_turn(-last_side * SEARCH_SECOND_CDEG))
+                    {
+                        g_recoveries++;
+                        trim = 0;
+                        none_since = -1;
+                        continue;
+                    }
+                    if (0u != g_stop_req)
+                    {
+                        g_end = LINE_END_STOPPED;
+                    }
+                    else
+                    {
+                        fault_set(FAULT_LINE_LOST);
+                        g_end = LINE_END_LOST;
+                    }
+                    break;
+                }
             }
-            if (0 != off)
+            if ((0 == off) && (last_side < 0))
             {
-                last_side = off;
+                last_side = 1;           /* back on track: reset to default */
             }
 
             trim += off * LINE_KI_MM_S;
