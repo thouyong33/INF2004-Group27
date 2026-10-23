@@ -597,6 +597,9 @@ LOCAL T_CFLG cflg = {
  *                            scan, go round it, back onto the original path.
  *   LINE_TEST_FOLLOW       - Buddy 3: line following runs on the mats with
  *                            a 20 ms trace (stops on distance, raised mats).
+ *   LINE_TEST_RAMP         - course scenario 1: one-sided ramp under the
+ *                            right wheel while line following; hump mask
+ *                            fed live, IMU log + line trace.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -628,9 +631,10 @@ LOCAL T_CFLG cflg = {
 #define SCAN_TEST_ABORT          27
 #define DEMO_AVOID               28
 #define LINE_TEST_FOLLOW         29
+#define LINE_TEST_RAMP           30
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         LINE_TEST_FOLLOW
+#define MOTION_TEST_MODE         LINE_TEST_RAMP
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -4314,6 +4318,198 @@ LOCAL void line_test_follow(void)
         tm_printf((UB *)"[LINE]   Note where the car ended up relative to the line.\n");
     }
 }
+#elif MOTION_TEST_MODE == LINE_TEST_RAMP
+/* Course scenario 1: the one-sided ramp while line following. The line
+   task follows the line on the straight mat at LINE_TEST_MM_S with the
+   TALL ramp (2.4 cm) under the RIGHT wheel only. This task samples the
+   IMU every 20 ms, feeds the roll-based hump detector (terrain.c) and
+   sets the motion task's hump mask while the car is on the ramp, so the
+   stall/encoder checks do not trip on the climb. Run 1 is a flat control
+   (no ramp). Pass: the car keeps the line over and after the ramp, the
+   run ends on the distance limit with no faults, and the ramp is reported
+   once as a RIGHT one-sided hump of ~24 mm. */
+#define RL_LOG_LEN               ((INT)LINE_TRACE_LEN)
+#define RL_AFTER_MM              50    /* line check window past the hump */
+
+typedef struct {
+    int16_t d_mm;
+    int16_t roll;        /* raw, from rest, x0.01 deg */
+    uint8_t on_hump;
+} rl_pt_t;
+
+LOCAL void line_test_ramp(void)
+{
+    static line_trace_t tr[LINE_TRACE_LEN];
+    static rl_pt_t lg[RL_LOG_LEN];
+    static side_hump_event_t sides[TERR_MAX_EVENTS];
+    static const char *const end_txt[4] = {
+        "running", "distance limit reached", "LINE LOST (search failed)", "stopped"
+    };
+    imu_attitude_t att;
+    imu_raw_t s;
+    hump_event_t h;
+    collision_event_t c;
+    enc_diag_t l, r;
+    W p0, r0;
+    INT run, n, nt, i, d, ns, nh, nc, base_n, white0, white_max, srch, lo, hi;
+    UW ev;
+    ER er;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[RLINE] imu_init failed, check the IMU\n");
+        return;
+    }
+    er = line_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[RLINE] line_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[RLINE] One-sided ramp while line following: %d mm/s, stops after"
+              " %d mm.\n", LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+    tm_printf((UB *)"[RLINE] Run 1: flat (no ramp), as a control. Runs 2-6: TALL ramp under"
+              " the RIGHT wheel only, its start ~10 cm ahead of the wheel.\n");
+    tm_printf((UB *)"[RLINE] Start with the wheels at the mat edge, centre IR on the line's"
+              " right edge.\n");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[RLINE] Run %d (%s): set up, keep the car still, press a key"
+                  " (any key while running stops it).\n", run,
+                  (run == 1) ? "flat" : "TALL ramp, right wheel");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+
+        /* Rest attitude: the zero for roll and pitch */
+        p0 = 0;
+        r0 = 0;
+        base_n = 0;
+        for(i = 0; i < 25; i++) {
+            if(E_OK == imu_read_attitude(&att, NULL)) {
+                p0 += att.pitch_cdeg;
+                r0 += att.roll_cdeg;
+                base_n++;
+            }
+            tk_dly_tsk(20);
+        }
+        if(base_n == 0) {
+            tm_printf((UB *)"[RLINE] IMU read failed\n");
+            continue;
+        }
+        p0 /= base_n;
+        r0 /= base_n;
+        terrain_reset((int16_t)p0, (int16_t)r0);
+
+        n = 0;
+        ns = 0;
+        nh = 0;
+        nc = 0;
+        (void)line_follow_start(LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+        tk_dly_tsk(20);
+        while(LINE_END_NONE == line_follow_end()) {
+            if(console_try_getc() >= 0) {
+                line_follow_stop();
+            }
+            if(E_OK == imu_read_attitude(&att, &s)) {
+                (void)motion_get_encoder_diag(&l, &r);
+                d = (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+                ev = terrain_update(d, &att, &s, motion_is_steady(), &h, &c);
+                motion_set_hump_mask(terrain_on_hump());
+                if((0u != (ev & TERRAIN_EVT_SIDE_HUMP)) && (ns < TERR_MAX_EVENTS)) {
+                    terrain_last_side_hump(&sides[ns++]);
+                }
+                if(0u != (ev & TERRAIN_EVT_HUMP)) {
+                    nh++;
+                }
+                if(0u != (ev & TERRAIN_EVT_COLLISION)) {
+                    nc++;
+                }
+                if(n < RL_LOG_LEN) {
+                    lg[n].d_mm = (int16_t)d;
+                    lg[n].roll = (int16_t)(att.roll_cdeg - r0);
+                    lg[n].on_hump = terrain_on_hump() ? 1u : 0u;
+                    n++;
+                }
+            }
+            tk_dly_tsk(20);
+        }
+        motion_set_hump_mask(FALSE);
+        tk_dly_tsk(500);
+
+        /* IMU log: d_mm,roll[,H while on the hump] */
+        tm_printf((UB *)"[RLINE] run %d IMU (d_mm,roll x0.01 deg[,H = on hump]):", run);
+        for(i = 0; i < n; i++) {
+            if((i % 8) == 0) {
+                tm_printf((UB *)"\n[RLINE]  ");
+            }
+            tm_printf((UB *)" %d,%d%s", lg[i].d_mm, lg[i].roll,
+                      (0u != lg[i].on_hump) ? ",H" : "");
+        }
+        nt = (INT)line_trace_get(tr);
+        tm_printf((UB *)"\n[RLINE] run %d line trace (d_mm,LCR,corr,run[,s]):", run);
+        for(i = 0; i < nt; i++) {
+            if((i % 5) == 0) {
+                tm_printf((UB *)"\n[RLINE]  ");
+            }
+            tm_printf((UB *)" %d,%d%d%d,%d,%d%s", tr[i].d_mm,
+                      (0u != (tr[i].bits & IR_BIT_LEFT)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 1 : 0,
+                      tr[i].corr, tr[i].trim, (0u != tr[i].searching) ? ",s" : "");
+        }
+
+        tm_printf((UB *)"\n[RLINE] run %d summary: %s, faults 0x%x, recoveries so far %d\n",
+                  run, end_txt[line_follow_end() & 3u], (INT)fault_get(),
+                  (INT)line_recoveries());
+        tm_printf((UB *)"[RLINE]   %d one-sided hump(s):\n", ns);
+        for(i = 0; i < ns; i++) {
+            tm_printf((UB *)"[RLINE]     %s wheel, %d..%d mm, height ~%d mm\n",
+                      (0u != sides[i].right_side) ? "RIGHT" : "LEFT",
+                      (INT)sides[i].start_mm, (INT)sides[i].end_mm, sides[i].height_mm);
+        }
+        tm_printf((UB *)"[RLINE]   %d pitch hump(s), %d dropped as one-sided; largest roll"
+                  " %d x0.01 deg; largest jolt %d mg; %d collision event(s)\n",
+                  nh, (INT)terrain_pitch_humps_dropped(), terrain_max_roll_cdeg(),
+                  terrain_max_jolt_mg(), nc);
+
+        /* Line held over the ramp? Longest stretch with the centre on white
+           (normal edge following crosses white in short bits) and any
+           on-spot search, from the hump start to RL_AFTER_MM past its end */
+        for(i = 0; i < ns; i++) {
+            lo = (INT)sides[i].start_mm;
+            hi = (INT)sides[i].end_mm + RL_AFTER_MM;
+            white0 = -1;
+            white_max = 0;
+            srch = 0;
+            for(d = 0; d < nt; d++) {
+                if((tr[d].d_mm < lo) || (tr[d].d_mm > hi)) {
+                    continue;
+                }
+                if(0u != tr[d].searching) {
+                    srch++;
+                }
+                if(0u == (tr[d].bits & (IR_BIT_CENTRE | IR_BIT_RIGHT))) {
+                    if(white0 < 0) {
+                        white0 = tr[d].d_mm;
+                    }
+                    if((tr[d].d_mm - white0) > white_max) {
+                        white_max = tr[d].d_mm - white0;
+                    }
+                } else {
+                    white0 = -1;
+                }
+            }
+            tm_printf((UB *)"[RLINE]   over hump %d (%d..%d mm): longest centre-white %d mm"
+                      " (lost at > 40), %d search period(s)\n", i + 1, lo, hi, white_max, srch);
+        }
+        tm_printf((UB *)"[RLINE]   Note where the car ended up relative to the line, and"
+                  " whether the bracket touched the ramp.\n");
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -4534,6 +4730,8 @@ EXPORT INT usermain(void)
     demo_avoid();
 #elif MOTION_TEST_MODE == LINE_TEST_FOLLOW
     line_test_follow();
+#elif MOTION_TEST_MODE == LINE_TEST_RAMP
+    line_test_ramp();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
