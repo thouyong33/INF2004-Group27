@@ -1219,13 +1219,14 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
 /*
  * Turn on the spot by cdeg (left positive) under PI, measured by the
  * encoders: angle = (right - left) / 2 x um/edge / (pi x track). Brakes
- * TURN_BRAKE_CDEG early (the car coasts ~1.5 deg at 60 mm/s, as in the
- * scan and roam turns) and waits for the wheels to settle. Returns the
+ * early by the distance the car coasts after the stop command, which
+ * scales with speed: ~1.5 deg at 60 mm/s, ~1 deg at 40 mm/s (scan turns,
+ * 2026-10-22), so 2.5 cdeg per mm/s. Then waits for the wheels to settle. Returns the
  * angle actually turned, or 0 if a motion fault, STOP from another task
  * or the timeout ended it early (the angle so far is still returned).
  */
 #define TURN_TRACK_MM             114L
-#define TURN_BRAKE_CDEG           150L
+#define TURN_BRAKE_CDEG_PER_MM_S  5L    /* /2: 2.5 cdeg per mm/s */
 #define TURN_SETTLE_MS            300u
 #define TURN_TIMEOUT_MS           6000u
 
@@ -1255,6 +1256,7 @@ motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s)
     int32_t r0;
     int32_t a;
     int16_t v = (int16_t)speed_mm_s;
+    int32_t brake = ((int32_t)speed_mm_s * TURN_BRAKE_CDEG_PER_MM_S) / 2L;
     uint32_t waited = 0u;
 
     if ((cdeg > -50) && (cdeg < 50))
@@ -1279,8 +1281,8 @@ motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s)
     while (waited < TURN_TIMEOUT_MS)
     {
         a = turn_angle_cdeg(l0, r0);
-        if (((cdeg > 0) && (a >= (cdeg - TURN_BRAKE_CDEG)))
-            || ((cdeg < 0) && (a <= (cdeg + TURN_BRAKE_CDEG)))
+        if (((cdeg > 0) && (a >= (cdeg - brake)))
+            || ((cdeg < 0) && (a <= (cdeg + brake)))
             || (0u != (fault_get() & FAULT_MOTION_MASK)))
         {
             break;

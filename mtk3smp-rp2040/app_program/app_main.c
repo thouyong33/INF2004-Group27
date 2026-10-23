@@ -735,15 +735,26 @@ LOCAL T_CFLG cflg = {
 #define SCANAB_LONG_MS           90000u /* diagnostic: let a slow scan finish */
 #define SCANAB_A_RUNS            3
 
-#define AVOID_HALF_W_MM          75    /* car 14-15 cm wide incl. left IR (user) */
-#define AVOID_GAP_MM             20    /* gap left beside the block */
-#define AVOID_SENSOR_AHEAD_MM    80    /* sonar ~80 mm ahead of the axle */
+/* Car footprint (user, 23 Oct): 20 x 15 cm incl. the left IR, axle 13 cm
+   behind the nose, so 7 cm of car behind it; sonar ~6 cm behind the nose */
+#define AVOID_HALF_W_MM          75
+#define AVOID_SENSOR_AHEAD_MM    70    /* sonar ahead of the axle */
+/* Gap beside the block: v2b (20 mm) rubbed a wheel on the straight. Each
+   90 deg turn lands within ~1-2 deg (2 deg over the ~55 cm straight is
+   ~20 mm) and the scan places the block's edge within ~20-30 mm; turns
+   are now trimmed to ~0.6 deg, and 50 mm covers the rest */
+#define AVOID_GAP_MM             50
 #define AVOID_DEPTH_MM           200   /* block depth: not measurable, assumed */
-#define AVOID_PAST_MM            100   /* axle this far past the block's back */
+/* Axle past the block's back before turning in: after the 90 deg turn the
+   car's trailing side is a half width behind the axle and must clear the
+   block's back face on the sideways leg home */
+#define AVOID_PAST_MM            (AVOID_HALF_W_MM + AVOID_GAP_MM)
+#define AVOID_TRIM_CDEG          60    /* re-turn if a turn misses by more */
 #define AVOID_AFTER_MM           400   /* carry on along the path afterwards */
 #define AVOID_LEG_MM_S           200
 #define AVOID_LEG_BRAKE_MM       35    /* stop command this early (~v^2/2a) */
 #define AVOID_TURN_MM_S          60
+#define AVOID_TRIM_MM_S          30    /* slow for the small correcting turn */
 
 #define DIST_PAUSE_S             10
 
@@ -4042,13 +4053,13 @@ LOCAL void scan_test_abort(void)
         turn back 90 (original heading) -> carry on driving
 
    90 deg legs keep the car's side parallel to the block, so the gap can be
-   small: shift = block side + half the car width (75 mm, car measured
-   14-15 cm with the left IR) + AVOID_GAP_MM. A 45 deg diagonal would
+   small: shift = block side + half the car width + AVOID_GAP_MM. Each turn
+   is checked on the encoders and trimmed if it missed. A 45 deg diagonal would
    swing the car's front corner across the block's near corner at these
    distances. The block's depth is not measured (the sonar only sees its
    front), so AVOID_DEPTH_MM is assumed. The sideways legs watch in the
    direction of travel; the straight beside the block does not (the block
-   is ~20 mm off the car's side and would trip it). Until Buddy 3 can find
+   is ~50 mm off the car's side and would trip it). Until Buddy 3 can find
    the line, "back on the path" means the original line by encoders. */
 LOCAL INT avoid_dist_mm(void)
 {
@@ -4056,6 +4067,19 @@ LOCAL INT avoid_dist_mm(void)
 
     (void)motion_get_encoder_diag(&l, &r);
     return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+/* Turn by cdeg on the spot, then one small correcting turn if the
+   encoders say it missed by more than AVOID_TRIM_CDEG. Returns the angle
+   actually turned. */
+LOCAL INT avoid_turn(INT cdeg)
+{
+    INT got = (INT)motion_turn_cdeg(cdeg, AVOID_TURN_MM_S);
+
+    if(((cdeg - got) > AVOID_TRIM_CDEG) || ((got - cdeg) > AVOID_TRIM_CDEG)) {
+        got += (INT)motion_turn_cdeg(cdeg - got, AVOID_TRIM_MM_S);
+    }
+    return got;
 }
 
 /* Drive mm forward with the watch on. Returns TRUE if it got there,
@@ -4175,22 +4199,22 @@ LOCAL void demo_avoid(void)
                   (side > 0) ? "LEFT" : "RIGHT", shift, straight);
 
         /* 4: go round; prints only once the car has stopped */
-        t1 = (INT)motion_turn_cdeg(side * 9000, AVOID_TURN_MM_S);
+        t1 = avoid_turn(side * 9000);
         if(!avoid_leg(shift, TRUE)) {
             tm_printf((UB *)"[AVOID] stopped on the sideways leg\n");
             continue;
         }
-        t1 += (INT)motion_turn_cdeg(-side * 9000, AVOID_TURN_MM_S);
+        t1 += avoid_turn(-side * 9000);
         if(!avoid_leg(straight, FALSE)) {
             tm_printf((UB *)"[AVOID] stopped on the straight\n");
             continue;
         }
-        t1 += (INT)motion_turn_cdeg(-side * 9000, AVOID_TURN_MM_S);
+        t1 += avoid_turn(-side * 9000);
         if(!avoid_leg(shift, TRUE)) {
             tm_printf((UB *)"[AVOID] stopped on the way back to the path\n");
             continue;
         }
-        t1 += (INT)motion_turn_cdeg(side * 9000, AVOID_TURN_MM_S);
+        t1 += avoid_turn(side * 9000);
         tm_printf((UB *)"[AVOID] back on the original path; net heading error %s%d.%d deg"
                   " (encoders, left +)\n", (t1 < 0) ? "-" : "",
                   ((t1 < 0) ? -t1 : t1) / 100, ((t1 < 0) ? -t1 : t1) % 100 / 10);
