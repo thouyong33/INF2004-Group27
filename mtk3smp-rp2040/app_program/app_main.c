@@ -51,6 +51,7 @@
 // ADDED: Robot task includes
 #include "buddy3_line_barcode/barcode_task.h"
 #include "buddy3_line_barcode/ir_sensor.h"
+#include "buddy3_line_barcode/line.h"
 #include "common/pin_defs.h"
 #include "buddy2_motion/motion_task.h"
 #include "buddy4_imu/imu.h"
@@ -594,6 +595,8 @@ LOCAL T_CFLG cflg = {
  *                            scan, abort with STOP mid-scan, timeout fault.
  *   DEMO_AVOID             - obstacle demo v2 (course): stop at the block,
  *                            scan, go round it, back onto the original path.
+ *   LINE_TEST_FOLLOW       - Buddy 3: line following runs on the mats with
+ *                            a 20 ms trace (stops on distance, raised mats).
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -624,9 +627,10 @@ LOCAL T_CFLG cflg = {
 #define DEMO_STOP                26
 #define SCAN_TEST_ABORT          27
 #define DEMO_AVOID               28
+#define LINE_TEST_FOLLOW         29
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         DEMO_AVOID
+#define MOTION_TEST_MODE         LINE_TEST_FOLLOW
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -757,6 +761,11 @@ LOCAL T_CFLG cflg = {
 #define AVOID_LEG_BRAKE_MM       35    /* stop command this early (~v^2/2a) */
 #define AVOID_TURN_MM_S          60
 #define AVOID_TRIM_MM_S          30    /* slow for the small correcting turn */
+
+/* Raised mats: wheels start at the mat edge with the nose ~13 cm in; on
+   the straight + cross mats (61 cm) stop with the wheels <= ~45 cm along */
+#define LINE_TEST_MM_S           150
+#define LINE_TEST_MAX_MM         450
 
 #define DIST_PAUSE_S             10
 
@@ -4232,6 +4241,77 @@ LOCAL void demo_avoid(void)
         }
     }
 }
+#elif MOTION_TEST_MODE == LINE_TEST_FOLLOW
+/* Buddy 3 line following, step 1: key-paced runs on the joined straight +
+   cross mats. Each run follows the line at LINE_TEST_MM_S and stops after
+   LINE_TEST_MAX_MM of travel (wheels stay on the raised mats), or when the
+   line is lost and the on-spot search fails, or on a key. The 20 ms trace
+   is printed afterwards: d_mm, bits L C R, steering corr and held trim
+   (mm/s, + = left), s = searching. */
+LOCAL void line_test_follow(void)
+{
+    static line_trace_t tr[LINE_TRACE_LEN];
+    static const char *const end_txt[4] = {
+        "running", "distance limit reached", "LINE LOST (search failed)", "stopped"
+    };
+    INT run, n, i, offc = 0;
+    ER er;
+
+    er = line_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[LINE] line_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[LINE] Line following on the straight + cross mats: %d mm/s,"
+              " stops after %d mm.\n", LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+    tm_printf((UB *)"[LINE] Suggested runs: centred; ~5 mm off to the left; ~5 mm off to"
+              " the right; ~10 deg crooked each way; just off the line.\n");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[LINE] Run %d: place the car at the start of the straight mat,"
+                  " press a key (any key while running stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+
+        (void)line_follow_start(LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+        tk_dly_tsk(50);
+        while(LINE_END_NONE == line_follow_end()) {
+            if(console_try_getc() >= 0) {
+                line_follow_stop();
+            }
+            tk_dly_tsk(20);
+        }
+        tk_dly_tsk(500);
+
+        n = (INT)line_trace_get(tr);
+        offc = 0;
+        tm_printf((UB *)"[LINE] run %d trace (d_mm,LCR,corr,trim[,s]):", run);
+        for(i = 0; i < n; i++) {
+            if((i % 5) == 0) {
+                tm_printf((UB *)"\n[LINE]  ");
+            }
+            tm_printf((UB *)" %d,%d%d%d,%d,%d%s", tr[i].d_mm,
+                      (0u != (tr[i].bits & IR_BIT_LEFT)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 1 : 0,
+                      tr[i].corr, tr[i].trim, (0u != tr[i].searching) ? ",s" : "");
+            if((0u == tr[i].searching)
+               && ((0u == (tr[i].bits & IR_BIT_CENTRE)) || (0u == (tr[i].bits & IR_BIT_RIGHT)))) {
+                offc++;
+            }
+        }
+        tm_printf((UB *)"\n[LINE] run %d: %s after %d periods; off-centre in %d of them;"
+                  " recoveries so far %d; faults 0x%x\n", run,
+                  end_txt[line_follow_end() & 3u], n, offc, (INT)line_recoveries(),
+                  (INT)fault_get());
+        tm_printf((UB *)"[LINE]   Note where the car ended up relative to the line.\n");
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -4450,6 +4530,8 @@ EXPORT INT usermain(void)
     scan_test_abort();
 #elif MOTION_TEST_MODE == DEMO_AVOID
     demo_avoid();
+#elif MOTION_TEST_MODE == LINE_TEST_FOLLOW
+    line_test_follow();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

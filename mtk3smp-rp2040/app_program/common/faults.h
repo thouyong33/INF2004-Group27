@@ -21,6 +21,7 @@
 #define FAULT_NO_ECHO        (1u << 4)  /**< ultrasonic gave no echo */
 #define FAULT_WIFI_LOSS      (1u << 5)  /**< Buddy 1: link to the broker lost */
 #define FAULT_SCAN_TIMEOUT   (1u << 6)  /**< obstacle scan ran over its limit */
+#define FAULT_LINE_LOST      (1u << 7)  /**< Buddy 3: line lost, on-spot search failed */
 
 /** Faults that make the motion task stop and refuse to drive until cleared */
 #define FAULT_MOTION_MASK    (FAULT_MOTOR_STALL | FAULT_ENC_LEFT | FAULT_ENC_RIGHT)
