@@ -17,17 +17,22 @@
 #define LINE_FLG_RUN         (1u << 0)
 
 #define LINE_PERIOD_MS       20u     /* = the PI period */
-#define LINE_KP_MM_S         40      /* kick while off to one side */
-#define LINE_KI_MM_S         6       /* trim build-up per period off-side */
-/* A 15 cm radius arc (course curve mats, assumed) at 150 mm/s needs the
- * wheels ~110 mm/s apart over the 114 mm track */
-#define LINE_TRIM_MAX_MM_S   150
-#define LINE_CORR_MAX_MM_S   200
+/* Gains from the first mat runs (2026-10-23): 40 + 6/period with a 150
+ * cap wound the trim up to -150, so the car turned ~70 deg/s, swept past
+ * the line in one period and kept turning away from it. Now gentler, with
+ * the trim cleared whenever the line changes side and the steering slewed. */
+#define LINE_KP_MM_S         25      /* kick while off to one side (~25 deg/s) */
+#define LINE_KI_MM_S         1       /* trim build-up per period off-side */
+/* A 15 cm radius arc (course curve mats, assumed) at 100 mm/s needs the
+ * wheels ~75 mm/s apart over the 114 mm track */
+#define LINE_TRIM_MAX_MM_S   80
+#define LINE_CORR_MAX_MM_S   120
+#define LINE_SLEW_MM_S       15      /* max steering change per period */
 
 #define LINE_LOST_MM         30      /* centre and right both white this far: lost */
-#define SEARCH_MM_S          50      /* on-spot search turn speed */
-#define SEARCH_FIRST_CDEG    9000    /* toward the last side, then ... */
-#define SEARCH_SECOND_CDEG   18000   /* ... back past centre to the other */
+#define SEARCH_MM_S          30      /* on-spot search turn speed */
+#define SEARCH_FIRST_CDEG    6000    /* toward the last side, then ... */
+#define SEARCH_SECOND_CDEG   12000   /* ... back past centre to the other */
 #define SEARCH_TIMEOUT_MS    8000u
 
 #define UM_PER_EDGE          328L
@@ -154,6 +159,7 @@ line_task_main(INT stacd, void *exinf)
     int32_t d;
     int32_t base;
     int32_t none_since;
+    int32_t target;
     bool c_on;
     bool r_on;
 
@@ -165,6 +171,7 @@ line_task_main(INT stacd, void *exinf)
         (void)tk_wai_flg(g_line_flg, LINE_FLG_RUN, TWF_ORW | TWF_CLR, &flgptn, TMO_FEVR);
 
         trim = 0;
+        corr = 0;
         last_side = 1;
         none_since = -1;
         base = g_base;
@@ -231,12 +238,14 @@ line_task_main(INT stacd, void *exinf)
                     /* Lost: stop, then look on the spot only (raised mats) */
                     motion_stop();
                     tk_dly_tsk(200u);
+                    trim = 0;
                     trace(d, 0, trim, bits, true);
                     if (search_turn(last_side * SEARCH_FIRST_CDEG)
                         || search_turn(-last_side * SEARCH_SECOND_CDEG))
                     {
                         g_recoveries++;
                         trim = 0;
+                        corr = 0;
                         none_since = -1;
                         continue;
                     }
@@ -257,12 +266,21 @@ line_task_main(INT stacd, void *exinf)
                 last_side = 1;           /* back on track: reset to default */
             }
 
+            /* Anti-windup: the line changed side, so the held trim now
+             * points the wrong way */
+            if (((off > 0) && (trim < 0)) || ((off < 0) && (trim > 0)))
+            {
+                trim = 0;
+            }
             trim += off * LINE_KI_MM_S;
             trim = (trim > LINE_TRIM_MAX_MM_S) ? LINE_TRIM_MAX_MM_S
                  : ((trim < -LINE_TRIM_MAX_MM_S) ? -LINE_TRIM_MAX_MM_S : trim);
-            corr = trim + (off * LINE_KP_MM_S);
-            corr = (corr > LINE_CORR_MAX_MM_S) ? LINE_CORR_MAX_MM_S
-                 : ((corr < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S : corr);
+            target = trim + (off * LINE_KP_MM_S);
+            target = (target > LINE_CORR_MAX_MM_S) ? LINE_CORR_MAX_MM_S
+                   : ((target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S : target);
+            /* Slew-limit the steering so it never jerks */
+            corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
+                  : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S : (target - corr));
 
             (void)motion_set_velocity((int16_t)(base - corr), (int16_t)(base + corr));
             trace(d, corr, trim, bits, false);

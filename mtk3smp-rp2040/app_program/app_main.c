@@ -764,7 +764,7 @@ LOCAL T_CFLG cflg = {
 
 /* Raised mats: wheels start at the mat edge with the nose ~13 cm in; on
    the straight + cross mats (61 cm) stop with the wheels <= ~45 cm along */
-#define LINE_TEST_MM_S           150
+#define LINE_TEST_MM_S           100   /* tuning speed (first runs at 150 swung hard) */
 #define LINE_TEST_MAX_MM         450
 
 #define DIST_PAUSE_S             10
