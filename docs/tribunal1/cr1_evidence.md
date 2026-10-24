@@ -255,3 +255,22 @@ Test mode `LINE_TEST_RAMP` (30), 100 mm/s, 450 mm, straight + cross mats.
 Known hardware issue: the left IR bracket digs into the mat when the car
 rolls on the ramp and the left IR reads black around and after the ramp.
 A smooth skid / stiffer bracket is planned (materials after 28 Oct).
+
+## Vehicle controller task, 24 Oct (commit 1ccd72c, `CTRL_TEST_COURSE` 31)
+
+Controller task (pri 6) with `ctrl_evt_mbf` (16 × 4-byte events; obstacle,
+line end and every new fault bit are posted, never blocking) and a 12-byte
+`robot_status` snapshot read under a lock every 500 ms by the test (as
+Buddy 1's telemetry will). The controller samples the IMU every 20 ms and is
+the only caller of the hump mask and the line task's ramp hold.
+
+| Run | Option | Result |
+|---|---|---|
+| 1 | line, flat | DONE at 451 mm, faults 0x0, no ramp events |
+| 2 | line + ramp, bracket hits first | RAMP_ON 164 mm, RAMP_OFF 349 mm, 26 mm; bracket jolt 608 mg ignored (wheels kept 85 %); DONE 450 mm, faults 0x0 |
+| 3 | line + ramp, wheel only | RAMP_ON 156 mm, RAMP_OFF 351 mm, 24 mm; DONE 450 mm, faults 0x0 |
+| 4 | line + obstacle | OBSTACLE at sensor 290 mm, stopped |
+| 5 | line + obstacle | OBSTACLE at sensor 298 mm; nose gap 22.5 cm (≥ 5 cm) |
+
+No events dropped. Impacts are logged only for now (the one bracket jolt
+scored 85 % wheel speed, well above the 60 % impact threshold).
