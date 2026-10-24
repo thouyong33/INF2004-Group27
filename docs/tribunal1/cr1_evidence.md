@@ -238,3 +238,20 @@ block.
   5.9 cm from the nose; that was the bottle, not a code fault.
 - Result: 7/7 runs meet the ≥ 5 cm requirement (minimum 9.8 cm, bottle);
   flat-faced box 12.7–15.0 cm. The 300 mm threshold is kept.
+
+## Course scenario: one-sided ramp while line following, 24 Oct
+
+Pass condition (user, 24 Oct): ride up and down the 2.4 cm ramp under the
+right wheel while driving straight; the line need not be followed on the
+ramp; after the ramp the car must find the line and carry on following it.
+Test mode `LINE_TEST_RAMP` (30), 100 mm/s, 450 mm, straight + cross mats.
+
+| Version | Change | Result |
+|---|---|---|
+| v1 (12a26aa) | line following throughout, hump mask fed by the roll detector | 4/6 ramp runs completed but with on-spot searches; run 6 took a cross arm; run 7 stuck (bracket dug in, a wheel spinning, the mask hid the stall: faults 0x0) |
+| v2 (eecfde0) | line task holds straight on the encoders while on the hump (tilted, the right IR reads false black), resumes 50 mm after; hump mask held > 4 s while driving = `FAULT_MOTOR_STALL` | wheel-only ramp 2/2 pass; bracket-first 0/2 (the strike, before the ramp is detected, set the held heading; the pickup took a cross arm) |
+| v3 (bf8381a) | hold the line's direction (encoder heading averaged over 100 mm of following); after the hold search on the spot only within ±45° of it; normal searches within ±60° | **4/4 pass** (2 bracket-first, 2 wheel-only) + flat control: no searches, faults 0x0, ramp detected once RIGHT 23–26 mm (actual 24), centre off the line ≤ 10 mm after the ramp |
+
+Known hardware issue: the left IR bracket digs into the mat when the car
+rolls on the ramp and the left IR reads black around and after the ramp.
+A smooth skid / stiffer bracket is planned (materials after 28 Oct).
