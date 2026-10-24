@@ -25,6 +25,9 @@
 #define EVT_IMPACT           6u   /**< controller: val = jolt, mg */
 #define EVT_JOLT_IGNORED     7u   /**< controller: val = jolt, mg (wheels kept speed) */
 #define EVT_STOP_REQ         8u   /**< someone asked the controller to stop */
+#define EVT_BARCODE          9u   /**< arg = character (0 = no read), val = 1 if reversed */
+#define EVT_JUNCTION         10u  /**< line task: junction arm under C and R, val = mm */
+#define EVT_COMMAND          11u  /**< controller: command done, arg = CTRL_CMD_* */
 
 /** One event, 4 bytes */
 typedef struct {

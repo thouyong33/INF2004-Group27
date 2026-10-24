@@ -12,6 +12,7 @@
 #include "../common/ctrl_events.h"
 #include "../buddy2_motion/motion_task.h"
 #include "../buddy3_line_barcode/line.h"
+#include "../buddy3_line_barcode/barcode_scan.h"
 #include "../buddy4_imu/imu.h"
 #include "../buddy4_imu/terrain.h"
 #include "../buddy5_ultrasonic/obstacle.h"
@@ -36,6 +37,16 @@
 #define CTRL_JOLT_CONFIRM_MS 250u
 #define CTRL_JOLT_SLOW_PCT   60
 
+/* Junction turn: the IR spots are ~130 mm ahead of the axle and the arm
+ * is first seen at its near edge, 9 mm before its centre line */
+#define CTRL_JUNC_AHEAD_MM   139
+#define CTRL_JUNC_MM_S       60
+#define CTRL_JUNC_BRAKE_MM   5       /* stop command this early at 60 mm/s */
+#define CTRL_JUNC_FWD_MS     4000u
+#define CTRL_TURN_MM_S       60
+#define CTRL_TRIM_MM_S       30
+#define CTRL_TRIM_CDEG       60      /* re-turn if a turn misses by more */
+
 #define UM_PER_EDGE          328L
 #define TRACK_MM             114L
 
@@ -46,6 +57,7 @@ static volatile int16_t g_speed = 100;
 static volatile int16_t g_max_mm = 450;
 static volatile uint8_t g_opts = 0u;
 static volatile uint8_t g_running = 0u;
+static volatile int16_t g_after_mm = 0;
 static bool g_imu_ok = false;
 
 static robot_status_t g_status;
@@ -165,6 +177,96 @@ rest_attitude(int32_t *p_roll0)
     return true;
 }
 
+/* Barcode read -> command (user's mapping; see vehicle_ctrl.h) */
+static uint8_t
+cmd_for(uint8_t ch, bool reversed)
+{
+    if ('A' == ch)
+    {
+        return reversed ? CTRL_CMD_LEFT : CTRL_CMD_RIGHT;
+    }
+    if ('Z' == ch)
+    {
+        return reversed ? CTRL_CMD_STRAIGHT : CTRL_CMD_UTURN;
+    }
+    return CTRL_CMD_NONE;
+}
+
+/* Wind the line task down; its LINE_END(STOPPED) is ours, not news */
+static void
+line_wind_down(void)
+{
+    uint32_t j;
+
+    line_follow_stop();
+    for (j = 0u; (j < CTRL_END_WAIT_MS) && (LINE_END_NONE == line_follow_end());
+         j += CTRL_PERIOD_MS)
+    {
+        tk_dly_tsk(CTRL_PERIOD_MS);
+    }
+}
+
+/* Re-queue what arrived while the controller was busy, minus line ends */
+static void
+requeue_events(void)
+{
+    ctrl_evt_t evt[8];
+    uint32_t n = 0u;
+    uint32_t i;
+
+    while ((n < 8u) && (E_OK == ctrl_evt_wait(&evt[n], TMO_POL)))
+    {
+        if (EVT_LINE_END != evt[n].type)
+        {
+            n++;
+        }
+    }
+    for (i = 0u; i < n; i++)
+    {
+        ctrl_evt_post(evt[i].type, evt[i].arg, evt[i].val);
+    }
+}
+
+/* Junction command: stop, drive on until the axle is over the junction,
+ * turn on the spot. Returns the angle turned (x0.01 deg) or a large
+ * value if a motion fault stopped it. */
+static int32_t
+junction_turn(uint8_t cmd, int32_t d_seen)
+{
+    uint32_t waited = 0u;
+    int32_t target;
+    int32_t got;
+    int32_t cdeg;
+
+    line_wind_down();
+    target = d_seen + CTRL_JUNC_AHEAD_MM - CTRL_JUNC_BRAKE_MM;
+    if (dist_mm() < target)
+    {
+        (void)motion_set_velocity(CTRL_JUNC_MM_S, CTRL_JUNC_MM_S);
+        while ((dist_mm() < target) && (waited < CTRL_JUNC_FWD_MS)
+               && (0u == (fault_get() & FAULT_MOTION_MASK)))
+        {
+            tk_dly_tsk(CTRL_PERIOD_MS);
+            waited += CTRL_PERIOD_MS;
+        }
+    }
+    motion_stop();
+    tk_dly_tsk(300u);
+    if (0u != (fault_get() & FAULT_MOTION_MASK))
+    {
+        return 99999;
+    }
+
+    cdeg = (CTRL_CMD_LEFT == cmd) ? 9000 : ((CTRL_CMD_RIGHT == cmd) ? -9000 : 18000);
+    got = motion_turn_cdeg(cdeg, CTRL_TURN_MM_S);
+    if (((cdeg - got) > CTRL_TRIM_CDEG) || ((got - cdeg) > CTRL_TRIM_CDEG))
+    {
+        got += motion_turn_cdeg(cdeg - got, CTRL_TRIM_MM_S);
+    }
+    tk_dly_tsk(200u);
+    return got;
+}
+
 static void
 ctrl_task_main(INT stacd, void *exinf)
 {
@@ -198,6 +300,8 @@ ctrl_task_main(INT stacd, void *exinf)
     uint8_t flags;
     uint8_t opts;
     uint8_t stop_bits;
+    uint8_t cmd;
+    int32_t got;
     bool imu_ok;
     bool on_ramp;
     bool jolt_pending;
@@ -221,6 +325,7 @@ ctrl_task_main(INT stacd, void *exinf)
         flags = 0u;
         roll = 0;
         roll0 = 0;
+        g_status.last_evt = EVT_NONE;   /* not the previous run's */
         status_set(CTRL_ST_START, EVT_NONE, flags, 0, 0, 0);
         imu_ok = g_imu_ok && rest_attitude(&roll0);
         if (imu_ok)
@@ -240,6 +345,7 @@ ctrl_task_main(INT stacd, void *exinf)
         }
 
         state = CTRL_ST_FOLLOW;
+        cmd = CTRL_CMD_NONE;
         on_ramp = false;
         ramp_h = 0;
         jolt_pending = false;
@@ -247,6 +353,10 @@ ctrl_task_main(INT stacd, void *exinf)
         ring_i = 0u;
         ring_n = 0u;
         (void)line_follow_start(g_speed, g_max_mm);
+        if (0u != (opts & CTRL_OPT_BARCODE))
+        {
+            barcode_scan_enable(true);
+        }
         g_t0 = now_ms();
         t_sample = g_t0;
         status_set(state, EVT_NONE, flags, 0, 0, 0);
@@ -291,6 +401,53 @@ ctrl_task_main(INT stacd, void *exinf)
                     log_evt(evt.type, evt.arg, evt.val, d);
                     line_follow_stop();
                     state = CTRL_ST_DONE;
+                    break;
+                case EVT_BARCODE:
+                    log_evt(evt.type, evt.arg, evt.val, d);
+                    if ((0u != evt.arg) && (CTRL_CMD_NONE != cmd_for(evt.arg, 0 != evt.val)))
+                    {
+                        cmd = cmd_for(evt.arg, 0 != evt.val);
+                        flags = (uint8_t)((flags & 0x0Fu) | (cmd << CTRL_FLAG_CMD_SHIFT));
+                    }
+                    break;
+                case EVT_JUNCTION:
+                    log_evt(evt.type, evt.arg, evt.val, d);
+                    if (CTRL_CMD_STRAIGHT == cmd)
+                    {
+                        /* The line task already drives straight over it */
+                        log_evt(EVT_COMMAND, cmd, 0, d);
+                        cmd = CTRL_CMD_NONE;
+                        flags &= 0x0Fu;
+                    }
+                    else if (CTRL_CMD_NONE != cmd)
+                    {
+                        status_set(CTRL_ST_TURN, EVT_JUNCTION, flags, d, heading_cdeg(), roll);
+                        barcode_scan_enable(false);
+                        got = junction_turn(cmd, evt.val);
+                        log_evt(EVT_COMMAND, cmd, (int16_t)((got > 30000) ? 30000 : got), dist_mm());
+                        cmd = CTRL_CMD_NONE;
+                        flags &= 0x0Fu;
+                        requeue_events();
+                        if (0u != (fault_get() & FAULT_MOTION_MASK))
+                        {
+                            state = CTRL_ST_FAULT;
+                        }
+                        else if (g_after_mm <= 0)
+                        {
+                            state = CTRL_ST_DONE;
+                        }
+                        else
+                        {
+                            (void)line_follow_start(g_speed, g_after_mm);
+                            if (0u != (opts & CTRL_OPT_BARCODE))
+                            {
+                                barcode_scan_enable(true);
+                            }
+                            ring_n = 0u;
+                            t_sample = now_ms();
+                        }
+                        d = dist_mm();
+                    }
                     break;
                 default:
                     break;
@@ -421,6 +578,7 @@ ctrl_task_main(INT stacd, void *exinf)
         }
 
         /* Wind down: the line task stops the wheels and ends its loop */
+        barcode_scan_enable(false);
         motion_stop();
         for (j = 0u; (j < CTRL_END_WAIT_MS) && (LINE_END_NONE == line_follow_end());
              j += CTRL_PERIOD_MS)
@@ -461,6 +619,11 @@ ctrl_task_create(void)
         return er;
     }
     er = obstacle_task_create();
+    if ((E_OK != er) && (E_OBJ != er))
+    {
+        return er;
+    }
+    er = barcode_scan_create();
     if ((E_OK != er) && (E_OBJ != er))
     {
         return er;
@@ -527,6 +690,12 @@ ctrl_run(int16_t speed_mm_s, int16_t max_mm, uint8_t opts)
     g_opts = opts;
     g_running = 1u;
     return tk_set_flg(g_ctrl_flg, CTRL_FLG_RUN);
+}
+
+void
+ctrl_set_after_turn_mm(int16_t after_mm)
+{
+    g_after_mm = after_mm;
 }
 
 void

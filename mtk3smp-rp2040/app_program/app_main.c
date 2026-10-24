@@ -645,7 +645,7 @@ LOCAL T_CFLG cflg = {
 #define BARCODE_TEST_DRIVE       32
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         BARCODE_TEST_DRIVE
+#define MOTION_TEST_MODE         CTRL_TEST_COURSE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -4542,6 +4542,8 @@ LOCAL void line_test_ramp(void)
 /* Vehicle controller (controller/vehicle_ctrl.c), key-paced course runs:
      l  line following + one-sided ramp (no obstacle watch)
      o  line following + obstacle stop (block on the line, >= 5 cm gap)
+     b  line following + barcode on the straight, command at the cross
+        (turns stop the run: the test mats have nothing past the cross)
    The controller runs everything; this task only starts runs, samples
    robot_status every 500 ms like Buddy 1's telemetry will (kept, printed
    after the run: no printing while the wheels turn), and prints the
@@ -4554,20 +4556,26 @@ LOCAL void line_test_ramp(void)
 
 LOCAL const char *ctrlt_state(UB s)
 {
-    static const char *const txt[8] = {
+    static const char *const txt[9] = {
         "idle", "starting", "following", "on ramp", "DONE (distance or stop)",
-        "OBSTACLE: stopped", "IMPACT: stopped", "FAULT / line lost"
+        "OBSTACLE: stopped", "IMPACT: stopped", "FAULT / line lost", "turning"
     };
-    return txt[s & 7u];
+    return (s < 9u) ? txt[s] : "?";
 }
 
 LOCAL const char *ctrlt_evt(UB e)
 {
-    static const char *const txt[9] = {
+    static const char *const txt[12] = {
         "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
-        "jolt ignored", "STOP_REQ"
+        "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND"
     };
-    return (e < 9u) ? txt[e] : "?";
+    return (e < 12u) ? txt[e] : "?";
+}
+
+LOCAL const char *ctrlt_cmd(UB c)
+{
+    static const char *const txt[5] = {"none", "LEFT", "RIGHT", "STRAIGHT", "U-TURN"};
+    return (c < 5u) ? txt[c] : "?";
 }
 
 LOCAL void ctrl_test_course(void)
@@ -4584,6 +4592,7 @@ LOCAL void ctrl_test_course(void)
         tm_printf((UB *)"[CTRL] ctrl_task_create failed: %d\n", er);
         return;
     }
+    ctrl_set_after_turn_mm(0);
     tm_printf((UB *)"\n[CTRL] Vehicle controller: %d mm/s, stops after %d mm. IMU %s.\n",
               CTRLT_MM_S, CTRLT_MAX_MM,
               (0u != (fault_get() & FAULT_IMU)) ? "NOT answering (no ramp handling)" : "ok");
@@ -4591,13 +4600,14 @@ LOCAL void ctrl_test_course(void)
     for(run = 1; ; run++) {
         tm_printf((UB *)"\n[CTRL] Run %d: set the car at the mat edge (centre IR on the line's"
                   " right edge), keep it still, then press\n[CTRL]   l = line + ramp,"
-                  "  o = line + obstacle stop   (any key while running stops it)\n", run);
+                  "  o = line + obstacle stop,  b = line + barcode command at the cross"
+                  "\n[CTRL]   (any key while running stops it)\n", run);
         console_flush_input();
         do {
             c = console_try_getc();
             tk_dly_tsk(50);
-        } while((c != 'l') && (c != 'o'));
-        opts = (c == 'o') ? CTRL_OPT_OBSTACLE : 0u;
+        } while((c != 'l') && (c != 'o') && (c != 'b'));
+        opts = (c == 'o') ? CTRL_OPT_OBSTACLE : ((c == 'b') ? CTRL_OPT_BARCODE : 0u);
         tk_dly_tsk(500);
         console_flush_input();
 
@@ -4622,23 +4632,38 @@ LOCAL void ctrl_test_course(void)
 
         tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
                   " faults 0x%x, events dropped %d\n", run,
-                  (0u != opts) ? "line + obstacle" : "line + ramp", ctrlt_state(st.state),
+                  (0u != (opts & CTRL_OPT_OBSTACLE)) ? "line + obstacle"
+                  : ((0u != (opts & CTRL_OPT_BARCODE)) ? "line + barcode" : "line + ramp"),
+                  ctrlt_state(st.state),
                   st.dist_mm, st.heading_cdeg, (INT)st.faults, (INT)ctrl_evt_dropped());
         n = (INT)ctrl_log_get(lg);
         tm_printf((UB *)"[CTRL]   events (t_ms, d_mm, event, arg, val):\n");
         for(i = 0; i < n; i++) {
-            tm_printf((UB *)"[CTRL]     %d, %d, %s, %d, %d\n", (INT)lg[i].t_ms, lg[i].d_mm,
+            tm_printf((UB *)"[CTRL]     %d, %d, %s, %d, %d", (INT)lg[i].t_ms, lg[i].d_mm,
                       ctrlt_evt(lg[i].type), (INT)lg[i].arg, lg[i].val);
+            if(EVT_BARCODE == lg[i].type) {
+                if(0u != lg[i].arg) {
+                    tm_printf((UB *)"   (read '%c' %s)", (INT)lg[i].arg,
+                              (0 != lg[i].val) ? "REVERSED" : "forward");
+                } else {
+                    tm_printf((UB *)"   (no read, %d bars/spaces)", lg[i].val);
+                }
+            } else if(EVT_COMMAND == lg[i].type) {
+                tm_printf((UB *)"   (%s done, turned %d x0.01 deg)", ctrlt_cmd(lg[i].arg),
+                          lg[i].val);
+            }
+            tm_printf((UB *)"\n");
         }
         tm_printf((UB *)"[CTRL]   robot_status every %d ms (state, d_mm, heading, roll,"
-                  " sonar_mm, flags R/I/W, last event):\n", CTRLT_SNAP_MS);
+                  " sonar_mm, flags R/I/W, pending command, last event):\n", CTRLT_SNAP_MS);
         for(i = 0; i < ns; i++) {
-            tm_printf((UB *)"[CTRL]     %s, %d, %d, %d, %d, %c%c%c, %s\n",
+            tm_printf((UB *)"[CTRL]     %s, %d, %d, %d, %d, %c%c%c, %s, %s\n",
                       ctrlt_state(snaps[i].state), snaps[i].dist_mm, snaps[i].heading_cdeg,
                       snaps[i].roll_cdeg, snaps[i].obstacle_mm,
                       (0u != (snaps[i].flags & CTRL_FLAG_ON_RAMP)) ? 'R' : '-',
                       (0u != (snaps[i].flags & CTRL_FLAG_IMU_OK)) ? 'I' : '-',
                       (0u != (snaps[i].flags & CTRL_FLAG_WATCHING)) ? 'W' : '-',
+                      ctrlt_cmd((UB)((snaps[i].flags >> CTRL_FLAG_CMD_SHIFT) & 7u)),
                       ctrlt_evt(snaps[i].last_evt));
         }
         tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose gap for o).\n");

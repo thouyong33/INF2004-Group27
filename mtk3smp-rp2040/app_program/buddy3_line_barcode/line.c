@@ -338,6 +338,8 @@ line_task_main(INT stacd, void *exinf)
             }
             else if (c_on && r_on)
             {
+                /* First period on a junction arm: tell the controller */
+                ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)d);
                 straight_until = d + LINE_JUNCTION_MM;
                 off = 0;
                 white_since = -1;

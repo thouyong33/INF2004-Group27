@@ -13,8 +13,19 @@
  *
  * A run follows the line at a set speed until the distance limit, an
  * obstacle (stop with the >= 5 cm gap: course demo v1), a fault, a lost
- * line, or ctrl_stop(). Avoiding the obstacle and the barcode commands
- * come later.
+ * line, or ctrl_stop(). Avoiding the obstacle comes later.
+ *
+ * Barcodes (CTRL_OPT_BARCODE): the barcode task reads the left IR while
+ * following and posts EVT_BARCODE; the controller keeps the command and
+ * carries it out at the next junction (EVT_JUNCTION from the line task).
+ * User's mapping (24 Oct): "A" = left, "A reversed" = right, "Z" =
+ * straight, "Z reversed" = U-turn. The sample printed as "A" reads
+ * backwards in the car's direction of travel, so a code read REVERSED is
+ * the plain letter and one read forward is the "reversed" one (Z assumed
+ * to be printed the same way until it is tested). For a turn the car
+ * stops, drives on until the axle is over the junction, turns on the
+ * spot on the encoders, then follows the line again for after_mm (0 ends
+ * the run there: the test mats have nothing beyond the cross).
  *
  * Impacts (Tribunal 1): a jolt counts only if it comes while the motion
  * task is at a steady speed, not on the ramp, and the wheels then drop
@@ -42,15 +53,25 @@
 #define CTRL_ST_OBSTACLE     5u   /**< ended: stopped at an obstacle */
 #define CTRL_ST_IMPACT       6u   /**< ended: confirmed impact */
 #define CTRL_ST_FAULT        7u   /**< ended: fault or line lost */
+#define CTRL_ST_TURN         8u   /**< carrying out a barcode command */
+
+/** Barcode commands (3 bits, in robot_status.flags) */
+#define CTRL_CMD_NONE        0u
+#define CTRL_CMD_LEFT        1u
+#define CTRL_CMD_RIGHT       2u
+#define CTRL_CMD_STRAIGHT    3u
+#define CTRL_CMD_UTURN       4u
 
 /** robot_status.flags */
 #define CTRL_FLAG_ON_RAMP    (1u << 0)
 #define CTRL_FLAG_IMU_OK     (1u << 1)
 #define CTRL_FLAG_WATCHING   (1u << 2)
+#define CTRL_FLAG_CMD_SHIFT  4u          /**< bits 4-6: pending CTRL_CMD_* */
 
 /** Run options */
 #define CTRL_OPT_OBSTACLE     (1u << 0)  /**< watch for obstacles, stop at one */
 #define CTRL_OPT_IMPACT_STOP  (1u << 1)  /**< stop on a confirmed impact */
+#define CTRL_OPT_BARCODE      (1u << 2)  /**< read barcodes, act at the next junction */
 
 /** Snapshot for telemetry and tests, 12 bytes */
 typedef struct {
@@ -83,6 +104,9 @@ ER ctrl_task_create(void);
 
 /** @brief Start a run (motion faults and the line-lost fault are cleared). */
 ER ctrl_run(int16_t speed_mm_s, int16_t max_mm, uint8_t opts);
+
+/** @brief Distance to follow after a junction turn (0 = end the run there). */
+void ctrl_set_after_turn_mm(int16_t after_mm);
 
 /** @brief Ask the controller to end the run (from any task). */
 void ctrl_stop(void);
