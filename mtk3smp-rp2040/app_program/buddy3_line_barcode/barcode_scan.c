@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+
 #include <tk/tkernel.h>
 
 #include "../common/ctrl_events.h"
@@ -24,6 +25,17 @@
 #define BCS_LEN              640     /* steps: ~210 mm (code 141 mm + margins) */
 #define BCS_LEAD             32      /* steps of white kept before the first bar */
 #define BCS_QUIET_STEPS      ((BCS_QUIET_MM * 1000) / UM_PER_EDGE)
+#define BCS_RESET_STEPS      300     /* a drop this big = odometry was reset */
+
+/* Distance travelled AT THE LEFT IR, not at the car's centre. While line
+ * following the car yaws +/-0.5..2 rad/s, and the left IR sits ~80 mm left
+ * of the centreline, so its own speed along the barcode swings by tens of
+ * mm/s around the centre's 100 mm/s: bar widths measured with the centre
+ * distance came out distorted and no read decoded (line runs, 24 Oct).
+ * Along the heading, s_IR = s_centre - theta * 80, theta = (sR - sL) / 114:
+ * s_IR = sL * (0.5 + 80/114) + sR * (0.5 - 80/114), weights x4096. */
+#define BCS_W_LEFT           4923L   /* 1.2018 x 4096 */
+#define BCS_W_RIGHT          (-827L) /* -0.2018 x 4096 */
 
 static ID g_bcs_tsk = 0;
 static ID g_bcs_flg = 0;
@@ -33,6 +45,8 @@ static volatile uint32_t g_reads = 0u;
 static uint16_t g_buf[BCS_LEN];
 static uint16_t g_lead[BCS_LEAD];
 static bc_elem_t g_el[BC_MAX_ELEMS];
+static bc_elem_t g_last_el[BC_MAX_ELEMS];
+static volatile uint32_t g_last_n = 0u;
 
 static int32_t
 steps_now(void)
@@ -40,7 +54,7 @@ steps_now(void)
     enc_diag_t l, r;
 
     (void)motion_get_encoder_diag(&l, &r);
-    return (l.hw_count + r.hw_count) / 2;
+    return ((l.hw_count * BCS_W_LEFT) + (r.hw_count * BCS_W_RIGHT)) / 4096L;
 }
 
 static void
@@ -48,8 +62,18 @@ finish(uint32_t n)
 {
     bc_result_t res;
     uint32_t ne;
+    uint32_t i;
 
     ne = barcode_elements(g_buf, n, g_el, BC_MAX_ELEMS, NULL);
+    /* Keep the last read long enough to be a code (not a junction arm) */
+    if (ne >= 9u)
+    {
+        for (i = 0u; i < ne; i++)
+        {
+            g_last_el[i] = g_el[i];
+        }
+        g_last_n = ne;
+    }
     if (barcode_decode(g_el, ne, &res))
     {
         ctrl_evt_post(EVT_BARCODE, (uint8_t)res.text[0], (int16_t)res.reversed);
@@ -96,7 +120,7 @@ bcs_task_main(INT stacd, void *exinf)
         {
             tk_dly_tsk(BCS_POLL_MS);
             s = steps_now();
-            if (s < last)
+            if (s < (last - BCS_RESET_STEPS))
             {
                 /* Odometry was reset (line following restarted) */
                 last = s;
@@ -104,8 +128,9 @@ bcs_task_main(INT stacd, void *exinf)
                 lead_n = 0u;
                 continue;
             }
-            if (s == last)
+            if (s <= last)
             {
+                /* Not moved, or the IR swung back a little in a hard turn */
                 continue;
             }
             mv = (uint16_t)ir_ao_left_mv();
@@ -231,4 +256,22 @@ uint32_t
 barcode_scan_count(void)
 {
     return g_reads;
+}
+
+uint32_t
+barcode_scan_last(bc_elem_t *p_out, uint32_t max)
+{
+    uint32_t i;
+    uint32_t n = g_last_n;
+
+    if (NULL == p_out)
+    {
+        return 0u;
+    }
+    n = (n < max) ? n : max;
+    for (i = 0u; i < n; i++)
+    {
+        p_out[i] = g_last_el[i];
+    }
+    return n;
 }

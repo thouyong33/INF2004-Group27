@@ -53,6 +53,7 @@
 #include "buddy3_line_barcode/ir_sensor.h"
 #include "buddy3_line_barcode/line.h"
 #include "buddy3_line_barcode/barcode.h"
+#include "buddy3_line_barcode/barcode_scan.h"
 #include "common/pin_defs.h"
 #include "buddy2_motion/motion_task.h"
 #include "buddy4_imu/imu.h"
@@ -4582,8 +4583,9 @@ LOCAL void ctrl_test_course(void)
 {
     static robot_status_t snaps[CTRLT_SNAPS];
     static ctrl_log_t lg[CTRL_LOG_LEN];
+    static bc_elem_t bel[BC_MAX_ELEMS];
     robot_status_t st;
-    INT run, c, n, i, ns;
+    INT run, c, n, i, k, ns;
     UB opts;
     ER er;
 
@@ -4651,6 +4653,23 @@ LOCAL void ctrl_test_course(void)
             } else if(EVT_COMMAND == lg[i].type) {
                 tm_printf((UB *)"   (%s done, turned %d x0.01 deg)", ctrlt_cmd(lg[i].arg),
                           lg[i].val);
+            }
+            tm_printf((UB *)"\n");
+        }
+        if(0u != (opts & CTRL_OPT_BARCODE)) {
+            n = (INT)barcode_scan_last(bel, BC_MAX_ELEMS);
+            tm_printf((UB *)"[CTRL]   last barcode read, %d bars/spaces (B mm/peak mV,"
+                      " w mm):\n[CTRL]    ", n);
+            for(i = 0; i < n; i++) {
+                k = (INT)((bel[i].w * SWEEP_UM_PER_EDGE) / 100);
+                if(0u != bel[i].bar) {
+                    tm_printf((UB *)" B%d.%d/%d", k / 10, k % 10, bel[i].peak);
+                } else {
+                    tm_printf((UB *)" w%d.%d", k / 10, k % 10);
+                }
+                if((i % 10) == 9) {
+                    tm_printf((UB *)"\n[CTRL]    ");
+                }
             }
             tm_printf((UB *)"\n");
         }
