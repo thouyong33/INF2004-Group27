@@ -605,6 +605,9 @@ LOCAL T_CFLG cflg = {
  *   CTRL_TEST_COURSE       - vehicle controller task: course runs (line +
  *                            ramp, or line + obstacle stop), event log and
  *                            robot_status every 500 ms.
+ *   BARCODE_TEST_DRIVE     - Buddy 3 barcode: driven scan (50 mm/s) of the
+ *                            slit-taped left IR AO, bar widths, trial
+ *                            Code 39 decode both ways.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -638,9 +641,10 @@ LOCAL T_CFLG cflg = {
 #define LINE_TEST_FOLLOW         29
 #define LINE_TEST_RAMP           30
 #define CTRL_TEST_COURSE         31
+#define BARCODE_TEST_DRIVE       32
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         CTRL_TEST_COURSE
+#define MOTION_TEST_MODE         BARCODE_TEST_DRIVE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -4639,6 +4643,241 @@ LOCAL void ctrl_test_course(void)
         tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose gap for o).\n");
     }
 }
+#elif MOTION_TEST_MODE == BARCODE_TEST_DRIVE
+/* Buddy 3 barcode step 2: driven scan with the slit-taped left IR. The car
+   drives itself straight at BCD_MM_S for BCD_DIST_MM with the barcode
+   under the left IR, storing the left AO once per encoder step (0.33 mm):
+   constant speed and height, unlike the hand-pushed passes. Printed after
+   the car stops: white/black levels, every bar and space width (mid-level
+   threshold with hysteresis), narrow/wide by width, a trial Code 39
+   decode read both ways, and the profile every 1 mm. */
+#define BCD_MM_S                 50
+#define BCD_DIST_MM              250
+#define BCD_LEN                  800    /* steps: 262 mm */
+#define BCD_MAX_RUNS             64
+#define BCD_ROW                  20     /* profile values per line (1 mm each) */
+
+/* Code 39: 9 elements (bar, space, ... bar), bit 8 = first, 1 = wide */
+LOCAL const struct { char c; UH pat; } bcd_c39[] = {
+    {'0', 0x034}, {'1', 0x121}, {'2', 0x061}, {'3', 0x160}, {'4', 0x031},
+    {'5', 0x130}, {'6', 0x070}, {'7', 0x025}, {'8', 0x124}, {'9', 0x064},
+    {'A', 0x109}, {'B', 0x049}, {'C', 0x148}, {'D', 0x019}, {'E', 0x118},
+    {'F', 0x058}, {'G', 0x00D}, {'H', 0x10C}, {'I', 0x04C}, {'J', 0x01C},
+    {'K', 0x103}, {'L', 0x043}, {'M', 0x142}, {'N', 0x013}, {'O', 0x112},
+    {'P', 0x052}, {'Q', 0x007}, {'R', 0x106}, {'S', 0x046}, {'T', 0x016},
+    {'U', 0x181}, {'V', 0x0C1}, {'W', 0x1C0}, {'X', 0x091}, {'Y', 0x190},
+    {'Z', 0x0D0}, {'-', 0x085}, {'.', 0x184}, {' ', 0x0C4}, {'*', 0x094},
+    {'$', 0x0A8}, {'/', 0x0A2}, {'+', 0x08A}, {'%', 0x02A}
+};
+
+LOCAL INT bcd_steps(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((l.hw_count + r.hw_count) / 2);
+}
+
+LOCAL void bcd_print_mm(INT steps)
+{
+    INT mm10 = (steps * SWEEP_UM_PER_EDGE) / 100;
+
+    tm_printf((UB *)"%d.%d", mm10 / 10, mm10 % 10);
+}
+
+/* Decode elements w[0..n-1] (1 = wide) as Code 39, 9 per character with
+   one narrow gap between characters. Returns the characters found or 0. */
+LOCAL INT bcd_decode(const UB *w, INT n, char *out, INT max)
+{
+    INT i, k, c = 0;
+    UH pat;
+    BOOL ok;
+
+    if((n < 9) || (((n + 1) % 10) != 0)) {
+        return 0;
+    }
+    for(i = 0; i < n; i += 10) {
+        pat = 0;
+        for(k = 0; k < 9; k++) {
+            pat = (UH)((pat << 1) | w[i + k]);
+        }
+        ok = FALSE;
+        for(k = 0; k < (INT)(sizeof(bcd_c39) / sizeof(bcd_c39[0])); k++) {
+            if(bcd_c39[k].pat == pat) {
+                if(c < max) {
+                    out[c++] = bcd_c39[k].c;
+                }
+                ok = TRUE;
+                break;
+            }
+        }
+        if(!ok) {
+            return 0;
+        }
+    }
+    out[c] = '\0';
+    return c;
+}
+
+LOCAL void barcode_test_drive(void)
+{
+    static UH prof[BCD_LEN];
+    static INT rw[BCD_MAX_RUNS];
+    static UB rb[BCD_MAX_RUNS], wide[BCD_MAX_RUNS], rev[BCD_MAX_RUNS];
+    static char txt[16];
+    INT pass, n, i, k, s, last, lo, hi, thr, hys, start, nr, first, endr, ne;
+    INT wmin, wmax, wthr;
+    BOOL black;
+
+    ir_init();
+    ir_ao_init();
+    tm_printf((UB *)"\n[BCD] Driven barcode scan: left IR AO, %d mm/s for %d mm.\n",
+              BCD_MM_S, BCD_DIST_MM);
+    tm_printf((UB *)"[BCD] Live readout first: check white, line, wide bar, thin bar."
+              " Press a key to go on.\n");
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tm_printf((UB *)"[BCD]   AO=%d mV\n", (INT)ir_ao_left_mv());
+        tk_dly_tsk(400);
+    }
+
+    for(pass = 1; ; pass++) {
+        tm_printf((UB *)"\n[BCD] Pass %d: put the car so the left IR is ~3 cm before the"
+                  " barcode, square to it, press a key (any key while driving stops it).\n",
+                  pass);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+        motion_reset_odometry();
+        motion_set_velocity(BCD_MM_S, BCD_MM_S);
+
+        /* No printing while driving */
+        last = -1;
+        while(console_try_getc() < 0) {
+            s = bcd_steps();
+            if((s >= BCD_LEN) || (((s * SWEEP_UM_PER_EDGE) / 1000) >= BCD_DIST_MM)
+               || (0u != (fault_get() & FAULT_MOTION_MASK))) {
+                break;
+            }
+            if(s >= 0) {
+                UH mv = (UH)ir_ao_left_mv();
+
+                for(k = last + 1; k <= s; k++) {
+                    prof[k] = mv;
+                }
+                if(s > last) {
+                    last = s;
+                }
+            }
+            tk_dly_tsk(1);
+        }
+        motion_stop();
+        tk_dly_tsk(500);
+        n = last + 1;
+
+        tm_printf((UB *)"\n[BCD] Pass %d: ", pass);
+        bcd_print_mm(n);
+        tm_printf((UB *)" mm recorded, faults 0x%x\n", (INT)fault_get());
+        if(n < 30) {
+            continue;
+        }
+
+        /* Levels and threshold: white = lowest, black = highest */
+        lo = 3300;
+        hi = 0;
+        for(i = 0; i < n; i++) {
+            lo = (prof[i] < lo) ? prof[i] : lo;
+            hi = (prof[i] > hi) ? prof[i] : hi;
+        }
+        thr = (lo + hi) / 2;
+        hys = (hi - lo) / 10;
+        tm_printf((UB *)"[BCD]   white %d mV, black %d mV, threshold %d +/- %d mV\n",
+                  lo, hi, thr, hys);
+
+        /* Runs */
+        nr = 0;
+        black = (prof[0] > thr);
+        start = 0;
+        for(i = 1; i <= n; i++) {
+            if((i == n) || (black ? (prof[i] < (thr - hys)) : (prof[i] > (thr + hys)))) {
+                if(nr < BCD_MAX_RUNS) {
+                    rb[nr] = black ? 1u : 0u;
+                    rw[nr] = i - start;
+                    nr++;
+                }
+                black = !black;
+                start = i;
+            }
+        }
+        tm_printf((UB *)"[BCD]   %d runs (B/W mm, first and last are the lead-in/out):\n[BCD]  ",
+                  nr);
+        for(i = 0; i < nr; i++) {
+            tm_printf((UB *)" %s", (0u != rb[i]) ? "B" : "W");
+            bcd_print_mm(rw[i]);
+            if((i % 10) == 9) {
+                tm_printf((UB *)"\n[BCD]  ");
+            }
+        }
+        tm_printf((UB *)"\n");
+
+        /* Code elements: from the first to the last black run */
+        first = -1;
+        endr = -1;
+        for(i = 0; i < nr; i++) {
+            if(0u != rb[i]) {
+                if(first < 0) {
+                    first = i;
+                }
+                endr = i;
+            }
+        }
+        if(first < 0) {
+            tm_printf((UB *)"[BCD]   no bars found\n");
+            continue;
+        }
+        ne = endr - first + 1;
+        wmin = 100000;
+        wmax = 0;
+        for(i = first; i <= endr; i++) {
+            wmin = (rw[i] < wmin) ? rw[i] : wmin;
+            wmax = (rw[i] > wmax) ? rw[i] : wmax;
+        }
+        wthr = (wmin + wmax) / 2;
+        tm_printf((UB *)"[BCD]   %d elements, narrowest ", ne);
+        bcd_print_mm(wmin);
+        tm_printf((UB *)" mm, widest ");
+        bcd_print_mm(wmax);
+        tm_printf((UB *)" mm, wide above ");
+        bcd_print_mm(wthr);
+        tm_printf((UB *)" mm\n[BCD]   n/w:");
+        for(i = 0; i < ne; i++) {
+            wide[i] = (rw[first + i] > wthr) ? 1u : 0u;
+            rev[ne - 1 - i] = wide[i];
+            tm_printf((UB *)"%s%c", ((i % 10) == 0) ? " " : "", (0u != wide[i]) ? 'w' : 'n');
+        }
+        tm_printf((UB *)"\n");
+        if(bcd_decode(wide, ne, txt, 14) > 0) {
+            tm_printf((UB *)"[BCD]   DECODED (forward): %s\n", txt);
+        } else if(bcd_decode(rev, ne, txt, 14) > 0) {
+            tm_printf((UB *)"[BCD]   DECODED (reversed): %s\n", txt);
+        } else {
+            tm_printf((UB *)"[BCD]   no Code 39 match (expect 29 elements for 3 characters)\n");
+        }
+
+        tm_printf((UB *)"[BCD]   profile, mV every 1 mm:\n");
+        for(i = 0; i < n; i += 3 * BCD_ROW) {
+            tm_printf((UB *)"[BCD] %d mm:", (i * SWEEP_UM_PER_EDGE) / 1000);
+            for(k = i; (k < (i + (3 * BCD_ROW))) && (k < n); k += 3) {
+                tm_printf((UB *)" %d", prof[k]);
+            }
+            tm_printf((UB *)"\n");
+        }
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -4863,6 +5102,8 @@ EXPORT INT usermain(void)
     line_test_ramp();
 #elif MOTION_TEST_MODE == CTRL_TEST_COURSE
     ctrl_test_course();
+#elif MOTION_TEST_MODE == BARCODE_TEST_DRIVE
+    barcode_test_drive();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
