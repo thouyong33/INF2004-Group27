@@ -52,6 +52,7 @@
 #include "buddy3_line_barcode/barcode_task.h"
 #include "buddy3_line_barcode/ir_sensor.h"
 #include "buddy3_line_barcode/line.h"
+#include "buddy3_line_barcode/barcode.h"
 #include "common/pin_defs.h"
 #include "buddy2_motion/motion_task.h"
 #include "buddy4_imu/imu.h"
@@ -606,8 +607,8 @@ LOCAL T_CFLG cflg = {
  *                            ramp, or line + obstacle stop), event log and
  *                            robot_status every 500 ms.
  *   BARCODE_TEST_DRIVE     - Buddy 3 barcode: driven scan (50 mm/s) of the
- *                            slit-taped left IR AO, bar widths, trial
- *                            Code 39 decode both ways.
+ *                            slit-taped left IR AO, decoder v2 (barcode.c)
+ *                            reading Code 39 both ways.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -4647,28 +4648,15 @@ LOCAL void ctrl_test_course(void)
 /* Buddy 3 barcode step 2: driven scan with the slit-taped left IR. The car
    drives itself straight at BCD_MM_S for BCD_DIST_MM with the barcode
    under the left IR, storing the left AO once per encoder step (0.33 mm):
-   constant speed and height, unlike the hand-pushed passes. Printed after
-   the car stops: white/black levels, every bar and space width (mid-level
-   threshold with hysteresis), narrow/wide by width, a trial Code 39
-   decode read both ways, and the profile every 1 mm. */
+   constant speed and height, unlike the hand-pushed passes. Decoder v2
+   (barcode.c, 24 Oct): threshold just above white, bars and spaces split
+   into narrow/wide separately, "*...*" searched both ways. Printed after
+   the car stops: levels, every bar (width, peak) and space, the decode,
+   and the profile every 1 mm. */
 #define BCD_MM_S                 50
 #define BCD_DIST_MM              250
 #define BCD_LEN                  800    /* steps: 262 mm */
-#define BCD_MAX_RUNS             64
 #define BCD_ROW                  20     /* profile values per line (1 mm each) */
-
-/* Code 39: 9 elements (bar, space, ... bar), bit 8 = first, 1 = wide */
-LOCAL const struct { char c; UH pat; } bcd_c39[] = {
-    {'0', 0x034}, {'1', 0x121}, {'2', 0x061}, {'3', 0x160}, {'4', 0x031},
-    {'5', 0x130}, {'6', 0x070}, {'7', 0x025}, {'8', 0x124}, {'9', 0x064},
-    {'A', 0x109}, {'B', 0x049}, {'C', 0x148}, {'D', 0x019}, {'E', 0x118},
-    {'F', 0x058}, {'G', 0x00D}, {'H', 0x10C}, {'I', 0x04C}, {'J', 0x01C},
-    {'K', 0x103}, {'L', 0x043}, {'M', 0x142}, {'N', 0x013}, {'O', 0x112},
-    {'P', 0x052}, {'Q', 0x007}, {'R', 0x106}, {'S', 0x046}, {'T', 0x016},
-    {'U', 0x181}, {'V', 0x0C1}, {'W', 0x1C0}, {'X', 0x091}, {'Y', 0x190},
-    {'Z', 0x0D0}, {'-', 0x085}, {'.', 0x184}, {' ', 0x0C4}, {'*', 0x094},
-    {'$', 0x0A8}, {'/', 0x0A2}, {'+', 0x08A}, {'%', 0x02A}
-};
 
 LOCAL INT bcd_steps(void)
 {
@@ -4685,53 +4673,17 @@ LOCAL void bcd_print_mm(INT steps)
     tm_printf((UB *)"%d.%d", mm10 / 10, mm10 % 10);
 }
 
-/* Decode elements w[0..n-1] (1 = wide) as Code 39, 9 per character with
-   one narrow gap between characters. Returns the characters found or 0. */
-LOCAL INT bcd_decode(const UB *w, INT n, char *out, INT max)
-{
-    INT i, k, c = 0;
-    UH pat;
-    BOOL ok;
-
-    if((n < 9) || (((n + 1) % 10) != 0)) {
-        return 0;
-    }
-    for(i = 0; i < n; i += 10) {
-        pat = 0;
-        for(k = 0; k < 9; k++) {
-            pat = (UH)((pat << 1) | w[i + k]);
-        }
-        ok = FALSE;
-        for(k = 0; k < (INT)(sizeof(bcd_c39) / sizeof(bcd_c39[0])); k++) {
-            if(bcd_c39[k].pat == pat) {
-                if(c < max) {
-                    out[c++] = bcd_c39[k].c;
-                }
-                ok = TRUE;
-                break;
-            }
-        }
-        if(!ok) {
-            return 0;
-        }
-    }
-    out[c] = '\0';
-    return c;
-}
-
 LOCAL void barcode_test_drive(void)
 {
     static UH prof[BCD_LEN];
-    static INT rw[BCD_MAX_RUNS];
-    static UB rb[BCD_MAX_RUNS], wide[BCD_MAX_RUNS], rev[BCD_MAX_RUNS];
-    static char txt[16];
-    INT pass, n, i, k, s, last, lo, hi, thr, hys, start, nr, first, endr, ne;
-    INT wmin, wmax, wthr;
-    BOOL black;
+    static bc_elem_t el[BC_MAX_ELEMS];
+    bc_result_t res;
+    INT pass, n, i, k, s, last, ne, ok_n = 0, tries = 0;
+    UH white;
 
     ir_init();
     ir_ao_init();
-    tm_printf((UB *)"\n[BCD] Driven barcode scan: left IR AO, %d mm/s for %d mm.\n",
+    tm_printf((UB *)"\n[BCD] Driven barcode scan v2: left IR AO, %d mm/s for %d mm.\n",
               BCD_MM_S, BCD_DIST_MM);
     tm_printf((UB *)"[BCD] Live readout first: check white, line, wide bar, thin bar."
               " Press a key to go on.\n");
@@ -4786,87 +4738,34 @@ LOCAL void barcode_test_drive(void)
             continue;
         }
 
-        /* Levels and threshold: white = lowest, black = highest */
-        lo = 3300;
-        hi = 0;
-        for(i = 0; i < n; i++) {
-            lo = (prof[i] < lo) ? prof[i] : lo;
-            hi = (prof[i] > hi) ? prof[i] : hi;
-        }
-        thr = (lo + hi) / 2;
-        hys = (hi - lo) / 10;
-        tm_printf((UB *)"[BCD]   white %d mV, black %d mV, threshold %d +/- %d mV\n",
-                  lo, hi, thr, hys);
-
-        /* Runs */
-        nr = 0;
-        black = (prof[0] > thr);
-        start = 0;
-        for(i = 1; i <= n; i++) {
-            if((i == n) || (black ? (prof[i] < (thr - hys)) : (prof[i] > (thr + hys)))) {
-                if(nr < BCD_MAX_RUNS) {
-                    rb[nr] = black ? 1u : 0u;
-                    rw[nr] = i - start;
-                    nr++;
-                }
-                black = !black;
-                start = i;
+        ne = (INT)barcode_elements(prof, (uint32_t)n, el, BC_MAX_ELEMS, &white);
+        tm_printf((UB *)"[BCD]   white %d mV, bar above %d mV; %d elements"
+                  " (B width mm/peak mV, w width mm):\n[BCD]  ",
+                  white, white + BC_ON_MV, ne);
+        for(i = 0; i < ne; i++) {
+            if(0u != el[i].bar) {
+                tm_printf((UB *)" B");
+                bcd_print_mm(el[i].w);
+                tm_printf((UB *)"/%d", el[i].peak);
+            } else {
+                tm_printf((UB *)" w");
+                bcd_print_mm(el[i].w);
             }
-        }
-        tm_printf((UB *)"[BCD]   %d runs (B/W mm, first and last are the lead-in/out):\n[BCD]  ",
-                  nr);
-        for(i = 0; i < nr; i++) {
-            tm_printf((UB *)" %s", (0u != rb[i]) ? "B" : "W");
-            bcd_print_mm(rw[i]);
             if((i % 10) == 9) {
                 tm_printf((UB *)"\n[BCD]  ");
             }
         }
         tm_printf((UB *)"\n");
-
-        /* Code elements: from the first to the last black run */
-        first = -1;
-        endr = -1;
-        for(i = 0; i < nr; i++) {
-            if(0u != rb[i]) {
-                if(first < 0) {
-                    first = i;
-                }
-                endr = i;
-            }
-        }
-        if(first < 0) {
-            tm_printf((UB *)"[BCD]   no bars found\n");
-            continue;
-        }
-        ne = endr - first + 1;
-        wmin = 100000;
-        wmax = 0;
-        for(i = first; i <= endr; i++) {
-            wmin = (rw[i] < wmin) ? rw[i] : wmin;
-            wmax = (rw[i] > wmax) ? rw[i] : wmax;
-        }
-        wthr = (wmin + wmax) / 2;
-        tm_printf((UB *)"[BCD]   %d elements, narrowest ", ne);
-        bcd_print_mm(wmin);
-        tm_printf((UB *)" mm, widest ");
-        bcd_print_mm(wmax);
-        tm_printf((UB *)" mm, wide above ");
-        bcd_print_mm(wthr);
-        tm_printf((UB *)" mm\n[BCD]   n/w:");
-        for(i = 0; i < ne; i++) {
-            wide[i] = (rw[first + i] > wthr) ? 1u : 0u;
-            rev[ne - 1 - i] = wide[i];
-            tm_printf((UB *)"%s%c", ((i % 10) == 0) ? " " : "", (0u != wide[i]) ? 'w' : 'n');
-        }
-        tm_printf((UB *)"\n");
-        if(bcd_decode(wide, ne, txt, 14) > 0) {
-            tm_printf((UB *)"[BCD]   DECODED (forward): %s\n", txt);
-        } else if(bcd_decode(rev, ne, txt, 14) > 0) {
-            tm_printf((UB *)"[BCD]   DECODED (reversed): %s\n", txt);
+        tries++;
+        if(barcode_decode(el, (uint32_t)ne, &res)) {
+            ok_n++;
+            tm_printf((UB *)"[BCD]   DECODED \"%s\" %s, from element %d, %d star element(s)"
+                      " corrected\n", res.text, (0u != res.reversed) ? "REVERSED" : "forward",
+                      (INT)res.first, (INT)res.star_errs);
         } else {
-            tm_printf((UB *)"[BCD]   no Code 39 match (expect 29 elements for 3 characters)\n");
+            tm_printf((UB *)"[BCD]   no Code 39 match\n");
         }
+        tm_printf((UB *)"[BCD]   decoded %d of %d passes so far\n", ok_n, tries);
 
         tm_printf((UB *)"[BCD]   profile, mV every 1 mm:\n");
         for(i = 0; i < n; i += 3 * BCD_ROW) {
