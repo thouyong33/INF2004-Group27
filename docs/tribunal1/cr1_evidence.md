@@ -289,7 +289,9 @@ itself at 50 mm/s (`BARCODE_TEST_DRIVE` 32). Normal room light.
 | v3 (f7a8855) | white + 60 mV | **10/10** (5 × A, 5 × A-reversed) | 0 |
 
 The threshold for v3 was chosen by replaying all 18 earlier logged passes
-through the decoder on the PC (17/18 decoded, none wrong). The sample
-labelled "A" reads REVERSED in the car's direction of travel and
-"A reversed" reads forward; thin bars read ~1.5–2.5 mm and wide ~7–8.5 mm
+through the decoder on the PC (17/18 decoded, none wrong). Z samples with
+v3: 6/6 (3 × Z reversed read REVERSED, 3 × Z read forward). The A samples
+had been labelled the wrong way round (user read them backwards); the
+decoder's direction was right. Command mapping: forward read = letter
+(A left, Z straight), reversed read = "reversed" (A right, Z U-turn); thin bars read ~1.5–2.5 mm and wide ~7–8.5 mm
 (printed 3/9 mm), spaces ~3.5–4.5 / ~9.5–11 mm.

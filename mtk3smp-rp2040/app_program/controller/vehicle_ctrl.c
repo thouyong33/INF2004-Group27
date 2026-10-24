@@ -183,11 +183,11 @@ cmd_for(uint8_t ch, bool reversed)
 {
     if ('A' == ch)
     {
-        return reversed ? CTRL_CMD_LEFT : CTRL_CMD_RIGHT;
+        return reversed ? CTRL_CMD_RIGHT : CTRL_CMD_LEFT;
     }
     if ('Z' == ch)
     {
-        return reversed ? CTRL_CMD_STRAIGHT : CTRL_CMD_UTURN;
+        return reversed ? CTRL_CMD_UTURN : CTRL_CMD_STRAIGHT;
     }
     return CTRL_CMD_NONE;
 }

@@ -19,10 +19,9 @@
  * following and posts EVT_BARCODE; the controller keeps the command and
  * carries it out at the next junction (EVT_JUNCTION from the line task).
  * User's mapping (24 Oct): "A" = left, "A reversed" = right, "Z" =
- * straight, "Z reversed" = U-turn. The sample printed as "A" reads
- * backwards in the car's direction of travel, so a code read REVERSED is
- * the plain letter and one read forward is the "reversed" one (Z assumed
- * to be printed the same way until it is tested). For a turn the car
+ * straight, "Z reversed" = U-turn: a code read forward in the car's
+ * direction of travel is the plain letter, one read backwards the
+ * "reversed" one (confirmed with A and Z samples, 24 Oct). For a turn the car
  * stops, drives on until the axle is over the junction, turns on the
  * spot on the encoders, then follows the line again for after_mm (0 ends
  * the run there: the test mats have nothing beyond the cross).
