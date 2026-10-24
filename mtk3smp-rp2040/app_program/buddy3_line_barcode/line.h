@@ -16,7 +16,9 @@
  *
  * Course mats are raised (2026-10-23), so the task never drives to look
  * for the line: a lost line stops the car and searches by turning on the
- * spot only, first toward the side it was last seen, then the other way.
+ * spot only, first toward the side it was last seen, then the other way,
+ * within +/-60 deg of the line's direction (the encoder heading averaged
+ * over the last ~100 mm followed), so a junction arm is never taken.
  * If that fails it stops and raises FAULT_LINE_LOST. Following also stops
  * after max_mm of travel (test safety on short mats).
  */
@@ -64,8 +66,10 @@ void line_follow_stop(void);
 /**
  * @brief Ramp hold (Buddy 4 says the car is on the one-sided ramp). While
  * set, the line task ignores the IR (tilted, it reads false black) and
- * drives straight, holding the heading it had when the hold began on the
- * encoders; it follows the line again 50 mm after the hold is released.
+ * drives straight along the line's direction on the encoders. 50 mm after
+ * the hold is released it follows the line again; if neither the centre
+ * nor the right IR sees it then, it searches on the spot within +/-45 deg
+ * of that direction (FAULT_LINE_LOST if not found).
  * The line need not be followed on the ramp (course rule, user 2026-10-24).
  */
 void line_set_hold(bool hold);
