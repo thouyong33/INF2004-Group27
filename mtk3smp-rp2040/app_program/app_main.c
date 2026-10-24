@@ -62,6 +62,8 @@
 #include "buddy5_ultrasonic/obstacle.h"
 #include "common/console_in.h"
 #include "common/faults.h"
+#include "common/ctrl_events.h"
+#include "controller/vehicle_ctrl.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -600,6 +602,9 @@ LOCAL T_CFLG cflg = {
  *   LINE_TEST_RAMP         - course scenario 1: one-sided ramp under the
  *                            right wheel while line following; hump mask
  *                            fed live, IMU log + line trace.
+ *   CTRL_TEST_COURSE       - vehicle controller task: course runs (line +
+ *                            ramp, or line + obstacle stop), event log and
+ *                            robot_status every 500 ms.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -632,9 +637,10 @@ LOCAL T_CFLG cflg = {
 #define DEMO_AVOID               28
 #define LINE_TEST_FOLLOW         29
 #define LINE_TEST_RAMP           30
+#define CTRL_TEST_COURSE         31
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         LINE_TEST_RAMP
+#define MOTION_TEST_MODE         CTRL_TEST_COURSE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -4527,6 +4533,112 @@ LOCAL void line_test_ramp(void)
                   " whether the bracket touched the ramp.\n");
     }
 }
+#elif MOTION_TEST_MODE == CTRL_TEST_COURSE
+/* Vehicle controller (controller/vehicle_ctrl.c), key-paced course runs:
+     l  line following + one-sided ramp (no obstacle watch)
+     o  line following + obstacle stop (block on the line, >= 5 cm gap)
+   The controller runs everything; this task only starts runs, samples
+   robot_status every 500 ms like Buddy 1's telemetry will (kept, printed
+   after the run: no printing while the wheels turn), and prints the
+   controller's event log. Impacts are logged, not acted on, until the
+   bracket's ramp strike has been checked against the rule. */
+#define CTRLT_MM_S               100
+#define CTRLT_MAX_MM             450
+#define CTRLT_SNAP_MS            500
+#define CTRLT_SNAPS              24
+
+LOCAL const char *ctrlt_state(UB s)
+{
+    static const char *const txt[8] = {
+        "idle", "starting", "following", "on ramp", "DONE (distance or stop)",
+        "OBSTACLE: stopped", "IMPACT: stopped", "FAULT / line lost"
+    };
+    return txt[s & 7u];
+}
+
+LOCAL const char *ctrlt_evt(UB e)
+{
+    static const char *const txt[9] = {
+        "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
+        "jolt ignored", "STOP_REQ"
+    };
+    return (e < 9u) ? txt[e] : "?";
+}
+
+LOCAL void ctrl_test_course(void)
+{
+    static robot_status_t snaps[CTRLT_SNAPS];
+    static ctrl_log_t lg[CTRL_LOG_LEN];
+    robot_status_t st;
+    INT run, c, n, i, ns;
+    UB opts;
+    ER er;
+
+    er = ctrl_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[CTRL] ctrl_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[CTRL] Vehicle controller: %d mm/s, stops after %d mm. IMU %s.\n",
+              CTRLT_MM_S, CTRLT_MAX_MM,
+              (0u != (fault_get() & FAULT_IMU)) ? "NOT answering (no ramp handling)" : "ok");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[CTRL] Run %d: set the car at the mat edge (centre IR on the line's"
+                  " right edge), keep it still, then press\n[CTRL]   l = line + ramp,"
+                  "  o = line + obstacle stop   (any key while running stops it)\n", run);
+        console_flush_input();
+        do {
+            c = console_try_getc();
+            tk_dly_tsk(50);
+        } while((c != 'l') && (c != 'o'));
+        opts = (c == 'o') ? CTRL_OPT_OBSTACLE : 0u;
+        tk_dly_tsk(500);
+        console_flush_input();
+
+        er = ctrl_run(CTRLT_MM_S, CTRLT_MAX_MM, opts);
+        if(E_OK != er) {
+            tm_printf((UB *)"[CTRL] ctrl_run failed: %d\n", er);
+            continue;
+        }
+        ns = 0;
+        while(ctrl_running()) {
+            for(i = 0; (i < CTRLT_SNAP_MS / 20) && ctrl_running(); i++) {
+                if(console_try_getc() >= 0) {
+                    ctrl_stop();
+                }
+                tk_dly_tsk(20);
+            }
+            if(ns < CTRLT_SNAPS) {
+                ctrl_get_status(&snaps[ns++]);
+            }
+        }
+        ctrl_get_status(&st);
+
+        tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
+                  " faults 0x%x, events dropped %d\n", run,
+                  (0u != opts) ? "line + obstacle" : "line + ramp", ctrlt_state(st.state),
+                  st.dist_mm, st.heading_cdeg, (INT)st.faults, (INT)ctrl_evt_dropped());
+        n = (INT)ctrl_log_get(lg);
+        tm_printf((UB *)"[CTRL]   events (t_ms, d_mm, event, arg, val):\n");
+        for(i = 0; i < n; i++) {
+            tm_printf((UB *)"[CTRL]     %d, %d, %s, %d, %d\n", (INT)lg[i].t_ms, lg[i].d_mm,
+                      ctrlt_evt(lg[i].type), (INT)lg[i].arg, lg[i].val);
+        }
+        tm_printf((UB *)"[CTRL]   robot_status every %d ms (state, d_mm, heading, roll,"
+                  " sonar_mm, flags R/I/W, last event):\n", CTRLT_SNAP_MS);
+        for(i = 0; i < ns; i++) {
+            tm_printf((UB *)"[CTRL]     %s, %d, %d, %d, %d, %c%c%c, %s\n",
+                      ctrlt_state(snaps[i].state), snaps[i].dist_mm, snaps[i].heading_cdeg,
+                      snaps[i].roll_cdeg, snaps[i].obstacle_mm,
+                      (0u != (snaps[i].flags & CTRL_FLAG_ON_RAMP)) ? 'R' : '-',
+                      (0u != (snaps[i].flags & CTRL_FLAG_IMU_OK)) ? 'I' : '-',
+                      (0u != (snaps[i].flags & CTRL_FLAG_WATCHING)) ? 'W' : '-',
+                      ctrlt_evt(snaps[i].last_evt));
+        }
+        tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose gap for o).\n");
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -4749,6 +4861,8 @@ EXPORT INT usermain(void)
     line_test_follow();
 #elif MOTION_TEST_MODE == LINE_TEST_RAMP
     line_test_ramp();
+#elif MOTION_TEST_MODE == CTRL_TEST_COURSE
+    ctrl_test_course();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

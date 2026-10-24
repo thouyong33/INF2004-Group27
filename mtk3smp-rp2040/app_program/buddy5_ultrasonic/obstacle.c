@@ -9,6 +9,7 @@
 #include <tm/tmonitor.h>
 
 #include "../common/faults.h"
+#include "../common/ctrl_events.h"
 #include "../buddy2_motion/motion_task.h"
 #include "ultrasonic.h"
 #include "servo.h"
@@ -125,6 +126,11 @@ obstacle_task_main(INT stacd, void *exinf)
         }
 
         hist = (uint8_t)(((hist << 1) | (near ? 1u : 0u)) & OBS_HIST_MASK);
+        /* Tell the controller the moment the stop rule is first met */
+        if ((popcount3(hist) >= 2u) && (popcount3(g_near_hist) < 2u))
+        {
+            ctrl_evt_post(EVT_OBSTACLE, 0u, g_last_mm);
+        }
         g_near_hist = hist;
         g_pings++;
 

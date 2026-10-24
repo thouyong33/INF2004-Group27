@@ -8,6 +8,7 @@
 #include <tk/tkernel.h>
 
 #include "../common/faults.h"
+#include "../common/ctrl_events.h"
 #include "../buddy2_motion/motion_task.h"
 #include "ir_sensor.h"
 #include "line.h"
@@ -427,6 +428,7 @@ line_task_main(INT stacd, void *exinf)
 
         motion_stop();
         g_stop_req = 0u;
+        ctrl_evt_post(EVT_LINE_END, g_end, (int16_t)dist_mm());
     }
 }
 

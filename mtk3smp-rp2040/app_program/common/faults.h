@@ -27,7 +27,7 @@
 #define FAULT_MOTION_MASK    (FAULT_MOTOR_STALL | FAULT_ENC_LEFT | FAULT_ENC_RIGHT)
 
 /** @brief Raise the given fault bits (others are kept). */
-void fault_set(uint8_t bits);
+void fault_set(uint8_t bits);  /* also posts EVT_FAULT for new bits; tasks only */
 
 /** @brief Clear the given fault bits (others are kept). */
 void fault_clear(uint8_t bits);
