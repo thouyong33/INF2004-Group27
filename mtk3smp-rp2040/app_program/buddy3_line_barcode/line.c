@@ -33,6 +33,13 @@
 #define SEARCH_FIRST_CDEG    6000    /* toward the last side, then ... */
 #define SEARCH_SECOND_CDEG   12000   /* ... back past centre to the other */
 #define SEARCH_TIMEOUT_MS    8000u
+#define SEARCH_TRACE_MS      200u    /* trace a search this often (keeps the trace short) */
+/* Ramp hold (line_set_hold): tilted on the one-sided ramp the IR reads
+ * false black (ramp runs 2026-10-24), so the car drives straight on the
+ * encoders and only looks at the line again this far past the ramp */
+#define HOLD_AFTER_MM        50
+#define HOLD_GAIN_DIV        20      /* steering mm/s = heading x0.01 deg / 20 */
+#define HOLD_CORR_MAX_MM_S   30
 
 #define UM_PER_EDGE          328L
 #define TRACK_MM             114L
@@ -45,6 +52,7 @@ static volatile int16_t g_max_mm = 450;
 static volatile uint8_t g_end = LINE_END_NONE;
 static volatile uint8_t g_stop_req = 0u;
 static volatile uint32_t g_recoveries = 0u;
+static volatile uint8_t g_hold = 0u;
 
 static line_trace_t g_trace[LINE_TRACE_LEN];
 static volatile uint32_t g_trace_n = 0u;
@@ -72,7 +80,7 @@ turned_cdeg(int32_t l0, int32_t r0)
 }
 
 static void
-trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, bool searching)
+trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode)
 {
     line_trace_t *p_t;
 
@@ -85,7 +93,7 @@ trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, bool searching)
     p_t->corr = (int16_t)corr;
     p_t->trim = (int16_t)trim;
     p_t->bits = (uint8_t)bits;
-    p_t->searching = searching ? 1u : 0u;
+    p_t->searching = mode;
     g_trace_n++;
 }
 
@@ -136,9 +144,9 @@ search_turn(int32_t cdeg)
         }
         tk_dly_tsk(4u);
         waited += 4u;
-        if (0u == (waited % LINE_PERIOD_MS))
+        if (0u == (waited % SEARCH_TRACE_MS))
         {
-            trace(dist_mm(), 0, 0, bits, true);
+            trace(dist_mm(), 0, 0, bits, LINE_TR_SEARCH);
         }
     }
     motion_stop();
@@ -163,6 +171,11 @@ line_task_main(INT stacd, void *exinf)
     int32_t target;
     bool c_on;
     bool r_on;
+    bool holding;
+    int32_t hold_until;
+    int32_t hl0 = 0;
+    int32_t hr0 = 0;
+    enc_diag_t el, er;
 
     (void)stacd;
     (void)exinf;
@@ -177,6 +190,8 @@ line_task_main(INT stacd, void *exinf)
         last_side = 1;
         white_since = -1;
         straight_until = -1;
+        holding = false;
+        hold_until = -1;
         base = g_base;
         g_end = LINE_END_NONE;
 
@@ -197,6 +212,40 @@ line_task_main(INT stacd, void *exinf)
             bits = ir_read();
             c_on = (0u != (bits & IR_BIT_CENTRE));
             r_on = (0u != (bits & IR_BIT_RIGHT));
+
+            /* Ramp hold: drive straight on the encoders, ignore the IR */
+            if (0u != g_hold)
+            {
+                if (!holding)
+                {
+                    holding = true;
+                    (void)motion_get_encoder_diag(&el, &er);
+                    hl0 = el.hw_count;
+                    hr0 = er.hw_count;
+                }
+                hold_until = d + HOLD_AFTER_MM;
+            }
+            if (holding && (d >= hold_until))
+            {
+                /* Past the ramp: pick the line up again from scratch */
+                holding = false;
+                run = 0;
+                prev_off = 0;
+                white_since = -1;
+                last_side = 1;
+            }
+            if (holding)
+            {
+                target = -turned_cdeg(hl0, hr0) / HOLD_GAIN_DIV;
+                target = (target > HOLD_CORR_MAX_MM_S) ? HOLD_CORR_MAX_MM_S
+                       : ((target < -HOLD_CORR_MAX_MM_S) ? -HOLD_CORR_MAX_MM_S : target);
+                corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
+                      : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S : (target - corr));
+                (void)motion_set_velocity((int16_t)(base - corr), (int16_t)(base + corr));
+                trace(d, corr, 0, bits, LINE_TR_HOLD);
+                tk_dly_tsk(LINE_PERIOD_MS);
+                continue;
+            }
 
             /* Right-edge following (mat runs 2026-10-23: with the centre on
              * the line and the right spot 20 mm away, "neither black" could
@@ -243,7 +292,7 @@ line_task_main(INT stacd, void *exinf)
                     /* Lost: stop, then look on the spot only (raised mats) */
                     motion_stop();
                     tk_dly_tsk(200u);
-                    trace(d, 0, 0, bits, true);
+                    trace(d, 0, 0, bits, LINE_TR_SEARCH);
                     if (search_turn(last_side * SEARCH_FIRST_CDEG)
                         || search_turn(-last_side * SEARCH_SECOND_CDEG))
                     {
@@ -300,7 +349,7 @@ line_task_main(INT stacd, void *exinf)
                   : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S : (target - corr));
 
             (void)motion_set_velocity((int16_t)(base - corr), (int16_t)(base + corr));
-            trace(d, corr, run, bits, false);
+            trace(d, corr, run, bits, LINE_TR_FOLLOW);
             tk_dly_tsk(LINE_PERIOD_MS);
         }
 
@@ -366,6 +415,7 @@ line_follow_start(int16_t base_mm_s, int16_t max_mm)
     g_stop_req = 0u;
     g_trace_n = 0u;
     g_end = LINE_END_NONE;
+    g_hold = 0u;
     fault_clear(FAULT_LINE_LOST);
     motion_reset_odometry();
     return tk_set_flg(g_line_flg, LINE_FLG_RUN);
@@ -376,6 +426,12 @@ line_follow_stop(void)
 {
     g_stop_req = 1u;
     motion_stop();
+}
+
+void
+line_set_hold(bool hold)
+{
+    g_hold = hold ? 1u : 0u;
 }
 
 uint8_t

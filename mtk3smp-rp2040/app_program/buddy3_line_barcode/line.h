@@ -40,8 +40,12 @@ typedef struct {
     int16_t corr;            /**< wheel speed difference, mm/s, + = left */
     int16_t trim;            /**< periods steering to the same side */
     uint8_t bits;            /**< IR_BIT_LEFT/CENTRE/RIGHT at this period */
-    uint8_t searching;       /**< 1 while searching on the spot */
+    uint8_t searching;       /**< LINE_TR_FOLLOW / SEARCH / HOLD */
 } line_trace_t;
+
+#define LINE_TR_FOLLOW       0u      /**< following the line */
+#define LINE_TR_SEARCH       1u      /**< searching on the spot (every 200 ms) */
+#define LINE_TR_HOLD         2u      /**< ramp hold: straight on the encoders */
 
 #define LINE_TRACE_LEN       400u    /**< 8 s at 20 ms */
 
@@ -56,6 +60,15 @@ ER line_follow_start(int16_t base_mm_s, int16_t max_mm);
 
 /** @brief Stop following now (the wheels are stopped). */
 void line_follow_stop(void);
+
+/**
+ * @brief Ramp hold (Buddy 4 says the car is on the one-sided ramp). While
+ * set, the line task ignores the IR (tilted, it reads false black) and
+ * drives straight, holding the heading it had when the hold began on the
+ * encoders; it follows the line again 50 mm after the hold is released.
+ * The line need not be followed on the ramp (course rule, user 2026-10-24).
+ */
+void line_set_hold(bool hold);
 
 /** @brief LINE_END_* (LINE_END_NONE while following). */
 uint8_t line_follow_end(void);

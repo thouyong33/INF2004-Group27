@@ -93,6 +93,8 @@ void motion_stop(void);
 /**
  * @brief Tell the motion task the car is on a hump (Buddy 4). While set,
  * the stall and encoder checks are masked: wheels slow and slip there.
+ * Driving with the mask on for more than 4 s raises FAULT_MOTOR_STALL
+ * (a car stuck on the ramp with a wheel spinning).
  */
 void motion_set_hump_mask(bool on_hump);
 

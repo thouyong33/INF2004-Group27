@@ -140,6 +140,11 @@ static int16_t g_target_right_x10 = 0;
 #define ENC_FAULT_DUTY_X10        400   /* wheel driven at >= 40 % duty... */
 #define ENC_FAULT_OTHER_PCT       50L   /* ...other wheel >= 50 % of setpoint */
 #define ENC_FAULT_MS              200u  /* ...and no edges for this long */
+/* The hump mask may not hide a stuck car: line ramp run 7 (2026-10-24) sat
+ * tilted on the ramp with the IR bracket dug in and a wheel spinning, so
+ * the encoders kept counting and the mask stayed on. A real ramp takes
+ * ~2 s at 100 mm/s; a mask held this long while driving is a stall. */
+#define HUMP_MASK_MAX_MS          4000u
 
 /* motion_move_forward_cm() */
 #define MOVE_MIN_SPEED_MM_S       50
@@ -168,6 +173,7 @@ static uint32_t g_settled_ms = 0u;          /* settled for this long */
 static uint32_t g_stall_ms = 0u;
 static uint32_t g_enc_l_silent_ms = 0u;
 static uint32_t g_enc_r_silent_ms = 0u;
+static uint32_t g_hump_ms = 0u;            /* driven with the mask on */
 
 /* Loop rate: passes of the 1 ms loop counted over LOOP_RATE_WINDOW_MS */
 static volatile uint32_t g_loop_rate = 0u;
@@ -651,6 +657,22 @@ motion_checks(uint32_t dt_ms)
     else if (g_settled_ms < PULLAWAY_MASK_MS)
     {
         g_settled_ms += dt_ms;
+    }
+
+    if ((0u != g_hump_mask) && g_closed_loop
+        && ((0 != g_pi_left.target_eps) || (0 != g_pi_right.target_eps)))
+    {
+        g_hump_ms += dt_ms;
+        if (g_hump_ms >= HUMP_MASK_MAX_MS)
+        {
+            g_hump_ms = 0u;
+            motion_fault_stop(FAULT_MOTOR_STALL);
+            return;
+        }
+    }
+    else if (0u == g_hump_mask)
+    {
+        g_hump_ms = 0u;
     }
 
     if ((!settled) || (g_settled_ms < PULLAWAY_MASK_MS) || (0u != g_hump_mask))

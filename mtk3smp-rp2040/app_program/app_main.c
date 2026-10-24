@@ -4325,11 +4325,14 @@ LOCAL void line_test_follow(void)
    IMU every 20 ms, feeds the roll-based hump detector (terrain.c) and
    sets the motion task's hump mask while the car is on the ramp, so the
    stall/encoder checks do not trip on the climb. Run 1 is a flat control
-   (no ramp). Pass: the car keeps the line over and after the ramp, the
-   run ends on the distance limit with no faults, and the ramp is reported
-   once as a RIGHT one-sided hump of ~24 mm. */
+   (no ramp). While on the ramp the line task drives straight on the
+   encoders (line_set_hold) and picks the line up 50 mm after it; driving
+   with the hump mask on for > 4 s is a stall fault (stuck on the ramp).
+   Pass (user 2026-10-24): rides up and down the ramp straight, then finds
+   and follows the line; the run ends on the distance limit with no faults;
+   the ramp is reported once as a RIGHT one-sided hump of ~24 mm. */
 #define RL_LOG_LEN               ((INT)LINE_TRACE_LEN)
-#define RL_AFTER_MM              50    /* line check window past the hump */
+#define RL_AFTER_MM              100   /* line check window past the hump */
 
 typedef struct {
     int16_t d_mm;
@@ -4419,6 +4422,7 @@ LOCAL void line_test_ramp(void)
                 d = (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
                 ev = terrain_update(d, &att, &s, motion_is_steady(), &h, &c);
                 motion_set_hump_mask(terrain_on_hump());
+                line_set_hold(terrain_on_hump());
                 if((0u != (ev & TERRAIN_EVT_SIDE_HUMP)) && (ns < TERR_MAX_EVENTS)) {
                     terrain_last_side_hump(&sides[ns++]);
                 }
@@ -4428,7 +4432,11 @@ LOCAL void line_test_ramp(void)
                 if(0u != (ev & TERRAIN_EVT_COLLISION)) {
                     nc++;
                 }
-                if(n < RL_LOG_LEN) {
+                /* Log only when the car has moved (a search or a stop
+                   would otherwise fill the log) */
+                if((n < RL_LOG_LEN)
+                   && ((n == 0) || (d >= lg[n - 1].d_mm + 2) || (d <= lg[n - 1].d_mm - 2)
+                       || ((terrain_on_hump() ? 1u : 0u) != lg[n - 1].on_hump))) {
                     lg[n].d_mm = (int16_t)d;
                     lg[n].roll = (int16_t)(att.roll_cdeg - r0);
                     lg[n].on_hump = terrain_on_hump() ? 1u : 0u;
@@ -4438,6 +4446,7 @@ LOCAL void line_test_ramp(void)
             tk_dly_tsk(20);
         }
         motion_set_hump_mask(FALSE);
+        line_set_hold(FALSE);
         tk_dly_tsk(500);
 
         /* IMU log: d_mm,roll[,H while on the hump] */
@@ -4450,7 +4459,8 @@ LOCAL void line_test_ramp(void)
                       (0u != lg[i].on_hump) ? ",H" : "");
         }
         nt = (INT)line_trace_get(tr);
-        tm_printf((UB *)"\n[RLINE] run %d line trace (d_mm,LCR,corr,run[,s]):", run);
+        tm_printf((UB *)"\n[RLINE] run %d line trace (d_mm,LCR,corr,run[,s = search"
+                  " every 200 ms, h = ramp hold]):", run);
         for(i = 0; i < nt; i++) {
             if((i % 5) == 0) {
                 tm_printf((UB *)"\n[RLINE]  ");
@@ -4459,7 +4469,9 @@ LOCAL void line_test_ramp(void)
                       (0u != (tr[i].bits & IR_BIT_LEFT)) ? 1 : 0,
                       (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 1 : 0,
                       (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 1 : 0,
-                      tr[i].corr, tr[i].trim, (0u != tr[i].searching) ? ",s" : "");
+                      tr[i].corr, tr[i].trim,
+                      (LINE_TR_SEARCH == tr[i].searching) ? ",s"
+                      : ((LINE_TR_HOLD == tr[i].searching) ? ",h" : ""));
         }
 
         tm_printf((UB *)"\n[RLINE] run %d summary: %s, faults 0x%x, recoveries so far %d\n",
@@ -4489,8 +4501,12 @@ LOCAL void line_test_ramp(void)
                 if((tr[d].d_mm < lo) || (tr[d].d_mm > hi)) {
                     continue;
                 }
-                if(0u != tr[d].searching) {
+                if(LINE_TR_SEARCH == tr[d].searching) {
                     srch++;
+                }
+                if(LINE_TR_HOLD == tr[d].searching) {
+                    white0 = -1;
+                    continue;
                 }
                 if(0u == (tr[d].bits & (IR_BIT_CENTRE | IR_BIT_RIGHT))) {
                     if(white0 < 0) {
@@ -4503,8 +4519,9 @@ LOCAL void line_test_ramp(void)
                     white0 = -1;
                 }
             }
-            tm_printf((UB *)"[RLINE]   over hump %d (%d..%d mm): longest centre-white %d mm"
-                      " (lost at > 40), %d search period(s)\n", i + 1, lo, hi, white_max, srch);
+            tm_printf((UB *)"[RLINE]   hump %d (%d..%d mm, held straight on it): longest"
+                      " centre-white after it %d mm (lost at > 40), %d search sample(s)\n",
+                      i + 1, lo, hi, white_max, srch);
         }
         tm_printf((UB *)"[RLINE]   Note where the car ended up relative to the line, and"
                   " whether the bracket touched the ramp.\n");
