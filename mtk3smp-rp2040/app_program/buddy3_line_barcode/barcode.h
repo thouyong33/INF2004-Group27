@@ -19,8 +19,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define BC_ON_MV             100u    /**< bar starts this far above white */
-#define BC_OFF_MV            50u     /**< ...and ends below this */
+#ifndef BC_ON_MV
+/* 100/50 missed faint thin bars (6/10 driven passes, 24 Oct); replaying
+ * the 18 logged passes, 60/30 decodes 17, all correct, none wrong */
+#define BC_ON_MV             60u     /**< bar starts this far above white */
+#endif
+#ifndef BC_OFF_MV
+#define BC_OFF_MV            30u     /**< ...and ends below this */
+#endif
 #define BC_MAX_ELEMS         64u
 #define BC_MAX_TEXT          6u      /**< data characters between the stars */
 
