@@ -227,9 +227,26 @@ requeue_events(void)
     }
 }
 
+/* Encoder heading since following started, x0.01 deg, not wrapped (the
+ * same reference as line_direction_cdeg()) */
+static int32_t
+heading_raw_cdeg(void)
+{
+    enc_diag_t l, r;
+    float half_diff;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    half_diff = ((float)(r.hw_count - l.hw_count)) * 0.5f;
+    return (int32_t)((half_diff * (float)UM_PER_EDGE * 36000.0f)
+                     / (3.14159265f * (float)TRACK_MM * 1000.0f));
+}
+
 /* Junction command: stop, drive on until the axle is over the junction,
- * turn on the spot. Returns the angle turned (x0.01 deg) or a large
- * value if a motion fault stopped it. */
+ * turn on the spot to 90 deg (180 for a U-turn) from the LINE's direction:
+ * at the junction the car is mid-weave, up to ~15 deg off the line, and
+ * a plain 90 deg turn kept that error (runs 26 Oct ended 75-96 deg off).
+ * Returns the angle turned (x0.01 deg) or a large value if a motion fault
+ * stopped it. */
 static int32_t
 junction_turn(uint8_t cmd, int32_t d_seen)
 {
@@ -237,7 +254,9 @@ junction_turn(uint8_t cmd, int32_t d_seen)
     int32_t target;
     int32_t got;
     int32_t cdeg;
+    int32_t dir;
 
+    dir = line_direction_cdeg();
     line_wind_down();
     target = d_seen + CTRL_JUNC_AHEAD_MM - CTRL_JUNC_BRAKE_MM;
     if (dist_mm() < target)
@@ -258,6 +277,7 @@ junction_turn(uint8_t cmd, int32_t d_seen)
     }
 
     cdeg = (CTRL_CMD_LEFT == cmd) ? 9000 : ((CTRL_CMD_RIGHT == cmd) ? -9000 : 18000);
+    cdeg += dir - heading_raw_cdeg();
     got = motion_turn_cdeg(cdeg, CTRL_TURN_MM_S);
     if (((cdeg - got) > CTRL_TRIM_CDEG) || ((got - cdeg) > CTRL_TRIM_CDEG))
     {

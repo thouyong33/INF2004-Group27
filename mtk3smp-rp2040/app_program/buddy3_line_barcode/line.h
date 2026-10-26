@@ -74,6 +74,12 @@ void line_follow_stop(void);
  */
 void line_set_hold(bool hold);
 
+/**
+ * @brief The line's direction: the encoder heading averaged over the last
+ * ~100 mm followed, x0.01 deg, left positive, since following started.
+ */
+int32_t line_direction_cdeg(void);
+
 /** @brief LINE_END_* (LINE_END_NONE while following). */
 uint8_t line_follow_end(void);
 

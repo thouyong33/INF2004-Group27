@@ -61,6 +61,7 @@ static volatile uint8_t g_end = LINE_END_NONE;
 static volatile uint8_t g_stop_req = 0u;
 static volatile uint32_t g_recoveries = 0u;
 static volatile uint8_t g_hold = 0u;
+static volatile int32_t g_line_dir = 0;     /* published for the controller */
 
 static line_trace_t g_trace[LINE_TRACE_LEN];
 static volatile uint32_t g_trace_n = 0u;
@@ -225,6 +226,7 @@ line_task_main(INT stacd, void *exinf)
         after_hold = false;
         hold_until = -1;
         line_dir = 0;
+        g_line_dir = 0;
         prev_d = 0;
         base = g_base;
         g_end = LINE_END_NONE;
@@ -318,6 +320,7 @@ line_task_main(INT stacd, void *exinf)
             step = d - prev_d;
             step = (step < 0) ? 0 : ((step > LINE_DIR_MM) ? LINE_DIR_MM : step);
             line_dir += ((heading_cdeg() - line_dir) * step) / LINE_DIR_MM;
+            g_line_dir = line_dir;
             prev_d = d;
 
             /* Right-edge following (mat runs 2026-10-23: with the centre on
@@ -502,6 +505,12 @@ line_follow_stop(void)
 {
     g_stop_req = 1u;
     motion_stop();
+}
+
+int32_t
+line_direction_cdeg(void)
+{
+    return g_line_dir;
 }
 
 void
