@@ -64,7 +64,8 @@ finish(uint32_t n)
     uint32_t ne;
     uint32_t i;
 
-    ne = barcode_elements(g_buf, n, g_el, BC_MAX_ELEMS, NULL);
+    bool ok = barcode_read(g_buf, n, g_el, BC_MAX_ELEMS, &ne, NULL, &res);
+
     /* Keep the last read long enough to be a code (not a junction arm) */
     if (ne >= 9u)
     {
@@ -74,7 +75,7 @@ finish(uint32_t n)
         }
         g_last_n = ne;
     }
-    if (barcode_decode(g_el, ne, &res))
+    if (ok)
     {
         ctrl_evt_post(EVT_BARCODE, (uint8_t)res.text[0], (int16_t)res.reversed);
     }

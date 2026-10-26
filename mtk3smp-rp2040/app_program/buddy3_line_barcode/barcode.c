@@ -29,12 +29,14 @@ static const struct {
     {'$', 0x0A8u}, {'/', 0x0A2u}, {'+', 0x08Au}, {'%', 0x02Au}
 };
 
-static uint16_t
-white_level(const uint16_t *p_mv, uint32_t n)
+/* White = 10th percentile, dark = BC_DARK_PCTL percentile of the profile */
+static void
+levels(const uint16_t *p_mv, uint32_t n, uint16_t *p_white, uint16_t *p_dark)
 {
     uint16_t hist[BC_HIST_BINS];
     uint32_t i;
     uint32_t sum = 0u;
+    bool got_white = false;
 
     for (i = 0u; i < BC_HIST_BINS; i++)
     {
@@ -46,41 +48,56 @@ white_level(const uint16_t *p_mv, uint32_t n)
 
         hist[(b < BC_HIST_BINS) ? b : (BC_HIST_BINS - 1u)]++;
     }
+    *p_white = 8u;
+    *p_dark = 8u;
     for (i = 0u; i < BC_HIST_BINS; i++)
     {
         sum += hist[i];
-        if ((sum * 10u) >= n)
+        if ((!got_white) && ((sum * 10u) >= n))
         {
+            *p_white = (uint16_t)((i * 16u) + 8u);
+            got_white = true;
+        }
+        if ((sum * 100u) >= (n * BC_DARK_PCTL))
+        {
+            *p_dark = (uint16_t)((i * 16u) + 8u);
             break;
         }
     }
-    return (uint16_t)((i * 16u) + 8u);
 }
 
 uint32_t
 barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
-                 uint32_t max, uint16_t *p_white)
+                 uint32_t max, uint16_t *p_white, bool span_thr)
 {
     uint32_t i;
     uint32_t start = 0u;
     uint32_t ne = 0u;
     uint16_t white;
+    uint16_t dark;
     uint16_t on;
     uint16_t off;
     uint16_t peak;
+    uint32_t span;
     bool black;
 
     if ((NULL == p_mv) || (NULL == p_el) || (n < 2u) || (0u == max))
     {
         return 0u;
     }
-    white = white_level(p_mv, n);
+    levels(p_mv, n, &white, &dark);
     if (NULL != p_white)
     {
         *p_white = white;
     }
-    on = (uint16_t)(white + BC_ON_MV);
-    off = (uint16_t)(white + BC_OFF_MV);
+    /* Threshold: a fixed margin above white (faint thin bars, 24 Oct), or
+     * with span_thr a share of the white-to-dark span if that is higher
+     * (strong contrast leaves the narrow spaces well above white, 26 Oct) */
+    span = (span_thr && (dark > white)) ? (uint32_t)(dark - white) : 0u;
+    on = (uint16_t)(white + (((span * BC_ON_PCT) / 100u > BC_ON_MV)
+                             ? ((span * BC_ON_PCT) / 100u) : BC_ON_MV));
+    off = (uint16_t)(white + (((span * BC_OFF_PCT) / 100u > BC_OFF_MV)
+                              ? ((span * BC_OFF_PCT) / 100u) : BC_OFF_MV));
 
     black = (p_mv[0] > on);
     peak = p_mv[0];
@@ -222,6 +239,24 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool rev
     p_res->star_errs = (uint8_t)errs;
     p_res->first = (uint8_t)(rev ? (n - st - ln) : st);
     return true;
+}
+
+bool
+barcode_read(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el, uint32_t max,
+             uint32_t *p_ne, uint16_t *p_white, bc_result_t *p_res)
+{
+    uint32_t ne;
+
+    /* Span-based threshold first; the fixed margin rescues faint reads */
+    ne = barcode_elements(p_mv, n, p_el, max, p_white, true);
+    if (barcode_decode(p_el, ne, p_res))
+    {
+        *p_ne = ne;
+        return true;
+    }
+    ne = barcode_elements(p_mv, n, p_el, max, p_white, false);
+    *p_ne = ne;
+    return barcode_decode(p_el, ne, p_res);
 }
 
 bool

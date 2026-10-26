@@ -4723,6 +4723,8 @@ LOCAL void barcode_test_drive(void)
     static bc_elem_t el[BC_MAX_ELEMS];
     bc_result_t res;
     INT pass, n, i, k, s, last, ne, ok_n = 0, tries = 0;
+    uint32_t une;
+    BOOL dec_ok;
     UH white;
 
     ir_init();
@@ -4782,8 +4784,9 @@ LOCAL void barcode_test_drive(void)
             continue;
         }
 
-        ne = (INT)barcode_elements(prof, (uint32_t)n, el, BC_MAX_ELEMS, &white);
-        tm_printf((UB *)"[BCD]   white %d mV, bar above %d mV; %d elements"
+        dec_ok = barcode_read(prof, (uint32_t)n, el, BC_MAX_ELEMS, &une, &white, &res);
+        ne = (INT)une;
+        tm_printf((UB *)"[BCD]   white %d mV (fixed threshold %d mV); %d elements"
                   " (B width mm/peak mV, w width mm):\n[BCD]  ",
                   white, white + BC_ON_MV, ne);
         for(i = 0; i < ne; i++) {
@@ -4801,7 +4804,7 @@ LOCAL void barcode_test_drive(void)
         }
         tm_printf((UB *)"\n");
         tries++;
-        if(barcode_decode(el, (uint32_t)ne, &res)) {
+        if(dec_ok) {
             ok_n++;
             tm_printf((UB *)"[BCD]   DECODED \"%s\" %s, from element %d, %d star element(s)"
                       " corrected\n", res.text, (0u != res.reversed) ? "REVERSED" : "forward",
