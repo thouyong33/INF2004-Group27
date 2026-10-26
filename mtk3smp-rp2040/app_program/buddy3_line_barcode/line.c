@@ -29,6 +29,10 @@
 #define LINE_CORR_MAX_MM_S   120     /* the hard-right case (line under R) */
 #define LINE_SLEW_MM_S       15      /* max steering change per period */
 #define LINE_JUNCTION_MM     30      /* drive straight this far over an arm */
+/* C and R both black this far before it counts as a junction: a cross arm
+ * keeps both black ~18 mm; a diagonal glance across the line's edge only a
+ * few mm (false junctions on the plain straight, 26 Oct) */
+#define LINE_JUNC_CONFIRM_MM 6
 #define LINE_LOST_MM         40      /* centre white this far (steering left): lost */
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
@@ -198,6 +202,7 @@ line_task_main(INT stacd, void *exinf)
     int32_t base;
     int32_t white_since;
     int32_t straight_until;
+    int32_t both_since;
     int32_t target;
     bool c_on;
     bool r_on;
@@ -222,6 +227,7 @@ line_task_main(INT stacd, void *exinf)
         last_side = 1;
         white_since = -1;
         straight_until = -1;
+        both_since = -1;
         holding = false;
         after_hold = false;
         hold_until = -1;
@@ -341,9 +347,19 @@ line_task_main(INT stacd, void *exinf)
             }
             else if (c_on && r_on)
             {
-                /* First period on a junction arm: tell the controller */
-                ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)d);
-                straight_until = d + LINE_JUNCTION_MM;
+                /* Both black: hold straight; once it has lasted
+                 * LINE_JUNC_CONFIRM_MM it is a junction arm, reported from
+                 * where it began */
+                if (both_since < 0)
+                {
+                    both_since = d;
+                }
+                if ((d - both_since) >= LINE_JUNC_CONFIRM_MM)
+                {
+                    ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)both_since);
+                    straight_until = d + LINE_JUNCTION_MM;
+                    both_since = -1;
+                }
                 off = 0;
                 white_since = -1;
             }
@@ -393,6 +409,10 @@ line_task_main(INT stacd, void *exinf)
                     }
                     break;
                 }
+            }
+            if (!(c_on && r_on))
+            {
+                both_since = -1;
             }
             if (off >= 0)
             {
