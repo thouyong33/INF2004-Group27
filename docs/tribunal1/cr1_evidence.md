@@ -295,3 +295,23 @@ had been labelled the wrong way round (user read them backwards); the
 decoder's direction was right. Command mapping: forward read = letter
 (A left, Z straight), reversed read = "reversed" (A right, Z U-turn); thin bars read ~1.5–2.5 mm and wide ~7–8.5 mm
 (printed 3/9 mm), spaces ~3.5–4.5 / ~9.5–11 mm.
+
+## Barcode command at the junction (controller, line following), 26 Oct
+
+`CTRL_TEST_COURSE` 31, key `b`, `ctrl_course_v4` (fixed 60/30 mV threshold,
+distance measured at the left IR). Left IR raised to ~8 mm with a 1 mm slit.
+
+| Barcode | Runs | Read | Command at the cross | Turned (encoders) |
+|---|---|---|---|---|
+| A | 2 | 2/2 A forward | LEFT 2/2 | 89.8°, 89.9° |
+| A reversed | 3 | 2/3 A reversed | RIGHT 2/2 | −90.0°, −90.3° |
+| Z | 2 | 2/2 Z forward | STRAIGHT 2/2 | — |
+| Z reversed | 2 | 2/2 Z reversed | U-TURN 2/2 | 180.0°, 180.0° |
+
+8/9 read, every read and every command correct; the miss merged bars (the
+narrow spaces stay 200–330 mV with the 1 mm slit), fixed in v5 by a
+contrast-scaled threshold (replay 20/21). Driven scans at this setup with
+`barcode_drive_v4`: Z 3/3. Junction found at 276–298 mm in every run.
+Final heading after a turn varied 75–96° because the car turned 90° from
+its mid-weave heading (up to 14° off the line); v6 turns from the line's
+averaged direction instead.
