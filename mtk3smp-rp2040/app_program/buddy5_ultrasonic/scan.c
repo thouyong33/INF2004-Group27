@@ -31,15 +31,13 @@
 #define FINE_BRAKE_CDEG          100
 #define FINE_SETTLE_MS           150
 #define FINE_HALF_CDEG           800     /* fine window: edge +/-8 deg */
-#define LOG_MAX                  128
+#define LOG_MAX                  ((int32_t)SCAN_LOG_MAX)
 #define GAP_ALLOW                2       /* missed pings tolerated inside the obstacle */
 
-typedef struct {
-    int16_t cdeg;
-    int16_t mm;                  /* -1 = no echo */
-} scan_pt_t;
-
-static scan_pt_t g_log[LOG_MAX];
+static scan_pt_t g_log[SCAN_LOG_MAX];
+static volatile uint32_t g_log_n = 0u;
+static scan_pt_t g_fine[2][SCAN_FINE_MAX];  /* kept for width calibration */
+static volatile uint32_t g_fine_n[2] = {0u, 0u};
 static const volatile uint8_t *g_p_abort = NULL;
 static scan_timing_t g_tm;
 
@@ -220,6 +218,7 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
     to = edge_cdeg + (outward * FINE_HALF_CDEG);
     turn_to(from, TURN_MM_S);
     g_tm.fine_steps[idx] = 0u;
+    g_fine_n[idx] = 0u;
 
     for (guard = 0u; (guard < 30u) && (!aborted()); guard++)
     {
@@ -231,6 +230,12 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
         g_tm.fine_steps[idx] = (uint16_t)(guard + 1u);
         g_tm.fine_span_cdeg[idx] = (int16_t)(a - a_first);
         mm = ping_median3_mm();
+        if (g_fine_n[idx] < SCAN_FINE_MAX)
+        {
+            g_fine[idx][g_fine_n[idx]].cdeg = (int16_t)a;
+            g_fine[idx][g_fine_n[idx]].mm = mm;
+            g_fine_n[idx]++;
+        }
         if (print)
         {
             tm_printf((UB *)"[SCAN] fine %s %d,%d\n", (outward > 0) ? "L" : "R", (INT)a, (INT)mm);
@@ -285,6 +290,9 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     g_tm.fine_span_cdeg[1] = 0;
     g_tm.return_ms = 0u;
     g_tm.t0_ms = now_ms();
+    g_log_n = 0u;
+    g_fine_n[0] = 0u;
+    g_fine_n[1] = 0u;
 
     (void)motion_get_encoder_diag(&l, &r);
     g_l0 = l.hw_count;
@@ -310,6 +318,7 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     (void)motion_set_velocity(0, 0);
     g_tm.coarse_ms = now_ms() - g_tm.t0_ms - g_tm.start_ms;
     g_tm.coarse_samples = (uint16_t)n;
+    g_log_n = (uint32_t)n;
     if (aborted())
     {
         return E_RLWAI;
@@ -413,6 +422,43 @@ void
 scan_set_abort_flag(const volatile uint8_t *p_flag)
 {
     g_p_abort = p_flag;
+}
+
+uint32_t
+scan_get_coarse(scan_pt_t *p_out, uint32_t max)
+{
+    uint32_t i;
+    uint32_t n = g_log_n;
+
+    if (NULL == p_out)
+    {
+        return 0u;
+    }
+    n = (n < max) ? n : max;
+    for (i = 0u; i < n; i++)
+    {
+        p_out[i] = g_log[i];
+    }
+    return n;
+}
+
+uint32_t
+scan_get_fine(uint32_t edge, scan_pt_t *p_out, uint32_t max)
+{
+    uint32_t i;
+    uint32_t n;
+
+    if ((NULL == p_out) || (edge > 1u))
+    {
+        return 0u;
+    }
+    n = g_fine_n[edge];
+    n = (n < max) ? n : max;
+    for (i = 0u; i < n; i++)
+    {
+        p_out[i] = g_fine[edge][i];
+    }
+    return n;
 }
 
 void

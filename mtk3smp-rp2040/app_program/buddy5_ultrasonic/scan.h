@@ -26,6 +26,15 @@
 #include <stdbool.h>
 #include <tk/tkernel.h>
 
+/** One reading of a scan: car angle (left +) and range (-1 = no echo) */
+typedef struct {
+    int16_t cdeg;
+    int16_t mm;
+} scan_pt_t;
+
+#define SCAN_LOG_MAX         128u    /**< coarse readings kept */
+#define SCAN_FINE_MAX        32u     /**< fine readings kept per edge */
+
 typedef struct {
     bool    found;           /**< anything within detect_mm */
     int16_t nearest_mm;      /**< closest reading on the obstacle */
@@ -64,6 +73,12 @@ typedef struct {
 
 /** @brief Timing of the last scan_obstacle() call. */
 void scan_get_timing(scan_timing_t *p_t);
+
+/** @brief Copy the last scan's coarse sweep (right to left); returns the count. */
+uint32_t scan_get_coarse(scan_pt_t *p_out, uint32_t max);
+
+/** @brief Copy the last scan's fine readings at one edge (0 = right, 1 = left). */
+uint32_t scan_get_fine(uint32_t edge, scan_pt_t *p_out, uint32_t max);
 
 /**
  * @brief Byte the scan checks at every step; non-zero aborts it.

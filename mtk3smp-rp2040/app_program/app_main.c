@@ -610,6 +610,9 @@ LOCAL T_CFLG cflg = {
  *   BARCODE_TEST_DRIVE     - Buddy 3 barcode: driven scan (50 mm/s) of the
  *                            slit-taped left IR AO, decoder v2 (barcode.c)
  *                            reading Code 39 both ways.
+ *   OBST_TEST_WIDTH        - Buddy 5: drive, stop at an object, scan; width
+ *                            estimate plus every reading, for calibrating
+ *                            the width against objects of known size.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -644,9 +647,10 @@ LOCAL T_CFLG cflg = {
 #define LINE_TEST_RAMP           30
 #define CTRL_TEST_COURSE         31
 #define BARCODE_TEST_DRIVE       32
+#define OBST_TEST_WIDTH          33
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         CTRL_TEST_COURSE
+#define MOTION_TEST_MODE         OBST_TEST_WIDTH
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -4824,6 +4828,142 @@ LOCAL void barcode_test_drive(void)
         }
     }
 }
+#elif MOTION_TEST_MODE == OBST_TEST_WIDTH
+/* Buddy 5: obstacle width (course: a 10-20 cm block, detect it, measure or
+   estimate its width and report it). Calibration runs: the car drives at
+   WIDTH_MM_S toward a flat-faced object until the obstacle task's stop
+   rule triggers, stops, then scans +/-WIDTH_HALF_DEG in the obstacle task.
+   Printed afterwards: the stop, the present width estimate (seen span
+   minus the narrow-target beam width) and every coarse and fine reading,
+   so the estimator can be fitted to objects of known width. */
+#define WIDTH_MM_S               200
+#define WIDTH_MAX_MM             1200   /* stop anyway after this far */
+#define WIDTH_HALF_DEG           45
+#define WIDTH_DETECT_MM          600
+#define WIDTH_ROW                8
+
+LOCAL INT width_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+LOCAL void width_print_pts(const char *name, const scan_pt_t *p, INT n)
+{
+    INT i;
+
+    tm_printf((UB *)"[WIDTH]   %s (%d readings, cdeg,mm):", name, n);
+    for(i = 0; i < n; i++) {
+        if((i % WIDTH_ROW) == 0) {
+            tm_printf((UB *)"\n[WIDTH]    ");
+        }
+        tm_printf((UB *)" %d,%d", p[i].cdeg, p[i].mm);
+    }
+    tm_printf((UB *)"\n");
+}
+
+LOCAL void obst_test_width(void)
+{
+    static scan_pt_t pts[SCAN_LOG_MAX];
+    obstacle_profile_t prof;
+    INT run, i, n, d_trig, mm_trig, rest, nr;
+    W sum;
+    BOOL stopped;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[WIDTH] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[WIDTH] Obstacle width calibration: drive at %d mm/s, stop at the"
+              " object, scan +/-%d deg.\n", WIDTH_MM_S, WIDTH_HALF_DEG);
+    tm_printf((UB *)"[WIDTH] Use flat-faced objects ~10, ~15 and ~20 cm wide, face square"
+              " to the car, about 50 cm ahead. Keep ~25 cm clear on each side.\n");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[WIDTH] Run %d: aim the car at the object (centred, or offset if"
+                  " you like), press a key (any key while driving stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK | FAULT_SCAN_TIMEOUT);
+
+        obstacle_watch(TRUE);
+        tk_dly_tsk(300);
+        motion_reset_odometry();
+        motion_set_velocity(WIDTH_MM_S, WIDTH_MM_S);
+        stopped = FALSE;
+        d_trig = -1;
+        mm_trig = -1;
+        while(width_dist_mm() < WIDTH_MAX_MM) {
+            if(obstacle_blocked()) {
+                motion_stop();
+                d_trig = width_dist_mm();
+                mm_trig = obstacle_last_mm();
+                stopped = TRUE;
+                break;
+            }
+            if((console_try_getc() >= 0)
+               || (0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO)))) {
+                break;
+            }
+            tk_dly_tsk(5);
+        }
+        motion_stop();
+        tk_dly_tsk(800);
+
+        /* Range at rest: mean of up to 5 good pings */
+        sum = 0;
+        nr = 0;
+        for(i = 0; (i < 12) && (nr < 5); i++) {
+            tk_dly_tsk(70);
+            if(obstacle_last_mm() > 0) {
+                sum += obstacle_last_mm();
+                nr++;
+            }
+        }
+        rest = (nr > 0) ? (INT)(sum / nr) : -1;
+        obstacle_watch(FALSE);
+
+        if(!stopped) {
+            tm_printf((UB *)"[WIDTH] run %d: no obstacle stop (faults 0x%x), skipped\n",
+                      run, (INT)fault_get());
+            continue;
+        }
+
+        er = obstacle_scan_start(WIDTH_HALF_DEG, WIDTH_DETECT_MM);
+        if(E_OK == er) {
+            er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
+        }
+
+        tm_printf((UB *)"[WIDTH] run %d: stopped (triggered at %d mm travelled, sensor %d mm),"
+                  " at rest sensor %d mm; scan %s, faults 0x%x\n", run, d_trig, mm_trig, rest,
+                  (E_OK == er) ? "ok" : "FAILED", (INT)fault_get());
+        if((E_OK == er) && prof.found) {
+            tm_printf((UB *)"[WIDTH]   nearest %d mm at %d cdeg; seen from %d to %d cdeg"
+                      " (span %d), beam %d -> width estimate %d mm, sides %d / %d mm"
+                      " (left of centreline +)\n", prof.nearest_mm, prof.nearest_cdeg,
+                      prof.right_cdeg, prof.left_cdeg, prof.left_cdeg - prof.right_cdeg,
+                      prof.beam_cdeg, prof.width_mm, prof.left_side_mm, prof.right_side_mm);
+        } else if(E_OK == er) {
+            tm_printf((UB *)"[WIDTH]   nothing within %d mm\n", WIDTH_DETECT_MM);
+        }
+        n = (INT)scan_get_coarse(pts, SCAN_LOG_MAX);
+        width_print_pts("coarse sweep right to left", pts, n);
+        n = (INT)scan_get_fine(0u, pts, SCAN_FINE_MAX);
+        width_print_pts("fine, right edge", pts, n);
+        n = (INT)scan_get_fine(1u, pts, SCAN_FINE_MAX);
+        width_print_pts("fine, left edge", pts, n);
+        tm_printf((UB *)"[WIDTH]   Note the object's real width, which face, and the nose"
+                  " gap.\n");
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -5050,6 +5190,8 @@ EXPORT INT usermain(void)
     ctrl_test_course();
 #elif MOTION_TEST_MODE == BARCODE_TEST_DRIVE
     barcode_test_drive();
+#elif MOTION_TEST_MODE == OBST_TEST_WIDTH
+    obst_test_width();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else
