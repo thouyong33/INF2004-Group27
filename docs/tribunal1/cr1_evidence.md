@@ -315,3 +315,20 @@ contrast-scaled threshold (replay 20/21). Driven scans at this setup with
 Final heading after a turn varied 75–96° because the car turned 90° from
 its mid-weave heading (up to 14° off the line); v6 turns from the line's
 averaged direction instead.
+
+## Final checks, 26 Oct (`ctrl_course_v7`, junction confirm 6 mm, turn from line direction)
+
+- **Barcode → junction:** 4/5 read (the miss: paper not held flat), every
+  command correct; final headings −87.4°, −88.4°, +90.3°, +91.2° (within
+  ~3° of square; before the line-direction fix: 75–96°). No false junctions
+  (junctions only at the cross, 268–297 mm). The read depends on the slit:
+  ~1 mm works at ~8–9 mm height, ~2 mm does not.
+- **Tall ramp with the nylon screw-head skid** (~2 mm clear, left IR LEDs
+  ~9 mm): 4/4 DONE at 450 mm, faults 0x0, ramp detected once 25–26 mm;
+  heading held within ±4° on the ramp in 3 runs; run 6 yawed ~50° and found
+  the line again with an on-spot search (~5 s) before finishing. Bracket
+  strikes logged as "jolt ignored" (745–778 mg, wheels kept 85 %).
+- **Impacts stay log-only** (user decision, 26 Oct): the IR bracket strikes
+  the ramp edge, and the course has no scenario that needs an impact stop.
+- Buddy 3 and the ramp scenario are complete; barcode command mapping and
+  curves are to be confirmed on 28 Oct.
