@@ -33,6 +33,11 @@
  * keeps both black ~18 mm; a diagonal glance across the line's edge only a
  * few mm (false junctions on the plain straight, 26 Oct) */
 #define LINE_JUNC_CONFIRM_MM 6
+/* ...and the right IR's black stretch must end within this: an 18 mm arm
+ * keeps it black for ~6-35 mm, a black ramp under the right IR (the small
+ * test ramp, 27 Oct) for 100 mm or more. The junction is reported when the
+ * black ends, from where it began. */
+#define LINE_JUNC_MAX_MM     35
 #define LINE_LOST_MM         40      /* centre white this far (steering left): lost */
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
@@ -203,6 +208,8 @@ line_task_main(INT stacd, void *exinf)
     int32_t white_since;
     int32_t straight_until;
     int32_t both_since;
+    int32_t r_since;
+    bool junc_ok;
     int32_t target;
     bool c_on;
     bool r_on;
@@ -228,6 +235,8 @@ line_task_main(INT stacd, void *exinf)
         white_since = -1;
         straight_until = -1;
         both_since = -1;
+        r_since = -1;
+        junc_ok = false;
         holding = false;
         after_hold = false;
         hold_until = -1;
@@ -254,6 +263,27 @@ line_task_main(INT stacd, void *exinf)
             bits = ir_read();
             c_on = (0u != (bits & IR_BIT_CENTRE));
             r_on = (0u != (bits & IR_BIT_RIGHT));
+
+            /* Junction report: when the right IR's black stretch ends, if
+             * it was arm-sized and C and R were black together for
+             * LINE_JUNC_CONFIRM_MM within it */
+            if (r_on)
+            {
+                if (r_since < 0)
+                {
+                    r_since = d;
+                    junc_ok = false;
+                }
+            }
+            else if (r_since >= 0)
+            {
+                if (junc_ok && ((d - r_since) <= LINE_JUNC_MAX_MM))
+                {
+                    ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)r_since);
+                }
+                r_since = -1;
+                junc_ok = false;
+            }
 
             /* Ramp hold: drive along the line's direction on the encoders,
              * ignore the IR */
@@ -348,15 +378,15 @@ line_task_main(INT stacd, void *exinf)
             else if (c_on && r_on)
             {
                 /* Both black: hold straight; once it has lasted
-                 * LINE_JUNC_CONFIRM_MM it is a junction arm, reported from
-                 * where it began */
+                 * LINE_JUNC_CONFIRM_MM it may be a junction arm (reported
+                 * above once R's black ends, if it was arm-sized) */
                 if (both_since < 0)
                 {
                     both_since = d;
                 }
                 if ((d - both_since) >= LINE_JUNC_CONFIRM_MM)
                 {
-                    ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)both_since);
+                    junc_ok = true;      /* reported when R's black ends */
                     straight_until = d + LINE_JUNCTION_MM;
                     both_since = -1;
                 }
