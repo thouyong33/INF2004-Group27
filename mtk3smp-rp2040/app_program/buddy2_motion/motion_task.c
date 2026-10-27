@@ -84,7 +84,27 @@ static void *motion_task_stack = NULL;
 #define PWM_DIV_INT_1             (1u << 4)
 #define PWM_SLICE_REG(slice, off) (PWM_BASE + ((slice) * 0x14u) + (off))
 
-#if ((ENC_HW_LEFT_PIN & 1) == 0) || ((ENC_HW_RIGHT_PIN & 1) == 0)
+/* Right wheel B channel, counted on the otherwise unused PWM slice 0 as a
+ * cross-check of GP15. Twice (12 and 26 Oct) the right encoder counted
+ * 10-23 % too many edges at slow speed (a noisy or slow edge counted more
+ * than once) and the car arced right; noise only ever ADDS edges, so over
+ * each window of ENC_CHECK_EDGES B edges the right count takes the lower
+ * of the two channels. */
+#define ENC_HW_RIGHT_B_PIN        ENC_RIGHT_B   /* GP17 = PWM0 B */
+#define ENC_CHECK_EDGES           60u   /* ~20 mm of travel per window */
+#define ENC_CHECK_SLACK           2u    /* quadrature: A and B may differ by 1 */
+#define ENC_CHECK_PCT             2u    /* plus 2 % */
+
+/* Encoder pads: input on, Schmitt trigger on, pull-up (not the power-on
+ * pull-down), 4 mA drive (unused for an input) */
+#define PAD_IE                    (1u << 6)
+#define PAD_DRIVE_4MA             (1u << 4)
+#define PAD_PUE                   (1u << 3)
+#define PAD_SCHMITT               (1u << 1)
+#define ENC_PAD_CFG               (PAD_IE | PAD_DRIVE_4MA | PAD_PUE | PAD_SCHMITT)
+
+#if ((ENC_HW_LEFT_PIN & 1) == 0) || ((ENC_HW_RIGHT_PIN & 1) == 0) \
+    || ((ENC_HW_RIGHT_B_PIN & 1) == 0)
 #error "Hardware encoder pins must be PWM B pins (odd GPIO numbers)"
 #endif
 
@@ -96,6 +116,15 @@ static volatile int32_t g_hw_left_count = 0;
 static volatile int32_t g_hw_right_count = 0;
 static int8_t g_hw_left_dir = 1;
 static int8_t g_hw_right_dir = 1;
+
+/* Right A/B cross-check */
+static uint16_t g_hw_rb_last_ctr = 0u;
+static uint32_t g_win_a = 0u;               /* A edges in this window */
+static uint32_t g_win_b = 0u;               /* B edges in this window */
+static volatile uint32_t g_rb_edges = 0u;   /* B edges since the reset */
+static volatile uint32_t g_ra_raw_edges = 0u; /* A edges, uncorrected */
+static volatile uint32_t g_enc_fixed_edges = 0u; /* removed from A */
+static volatile uint32_t g_enc_bad_windows = 0u;
 
 /* Guards the counts and speeds that other tasks read */
 static crit_lock_t g_odom_lock;
@@ -506,6 +535,7 @@ encoder_hw_slice_init(uint8_t pin)
     out_w(PWM_SLICE_REG(slice, PWM_CHx_CSR),
           PWM_CSR_DIVMODE_B_RISE | PWM_CSR_EN);
 
+    out_w(GPIO(pin), ENC_PAD_CFG);
     out_w(GPIO_CTRL(pin), GPIO_CTRL_FUNCSEL_PWM);
 }
 
@@ -516,6 +546,9 @@ encoder_hw_init(void)
 
     encoder_hw_slice_init(ENC_HW_LEFT_PIN);
     encoder_hw_slice_init(ENC_HW_RIGHT_PIN);
+    encoder_hw_slice_init(ENC_HW_RIGHT_B_PIN);
+    g_hw_rb_last_ctr = (uint16_t)in_w(
+        PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_RIGHT_B_PIN), PWM_CHx_CTR));
 
     g_hw_left_last_ctr = (uint16_t)in_w(
         PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_LEFT_PIN), PWM_CHx_CTR));
@@ -551,10 +584,50 @@ encoder_hw_read(uint8_t pin, uint16_t *p_last_ctr, int8_t cmd, int8_t *p_dir,
     *p_count += (int32_t)(*p_dir) * (int32_t)delta;
 }
 
+/* Right wheel A/B cross-check, inside the odometry lock. dA is the A
+ * edges just added to the right totals. */
+static void
+encoder_right_check(uint32_t d_a)
+{
+    uint16_t ctr;
+    uint32_t d_b;
+    uint32_t extra;
+
+    ctr = (uint16_t)in_w(PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_RIGHT_B_PIN), PWM_CHx_CTR));
+    d_b = (uint32_t)(uint16_t)(ctr - g_hw_rb_last_ctr);
+    g_hw_rb_last_ctr = ctr;
+
+    g_rb_edges += d_b;
+    g_ra_raw_edges += d_a;
+    g_win_a += d_a;
+    g_win_b += d_b;
+    if (g_win_b < ENC_CHECK_EDGES)
+    {
+        return;
+    }
+
+    /* A ran ahead of B by more than quadrature slack + 2 %: A counted
+     * noise. Take the extra off the totals and move the PI and speed
+     * baselines with them, so the correction is not seen as a speed. */
+    if (g_win_a > (g_win_b + ENC_CHECK_SLACK + ((g_win_b * ENC_CHECK_PCT) / 100u)))
+    {
+        extra = g_win_a - g_win_b;
+        g_hw_right_edges -= extra;
+        g_hw_right_count -= (int32_t)g_hw_right_dir * (int32_t)extra;
+        g_last_right_count -= (int32_t)g_hw_right_dir * (int32_t)extra;
+        g_pi_right.last_count -= (int32_t)g_hw_right_dir * (int32_t)extra;
+        g_enc_fixed_edges += extra;
+        g_enc_bad_windows++;
+    }
+    g_win_a = 0u;
+    g_win_b = 0u;
+}
+
 static void
 encoder_hw_update(void)
 {
     UINT sts;
+    uint32_t a0;
 
     /* Sign edges by the duty actually applied, not the target, so a wheel
      * still ramping down after a reversal command keeps its old sign.
@@ -564,9 +637,11 @@ encoder_hw_update(void)
     encoder_hw_read(ENC_HW_LEFT_PIN, &g_hw_left_last_ctr,
                     sign_i16(g_applied_left_x10), &g_hw_left_dir,
                     &g_hw_left_edges, &g_hw_left_count);
+    a0 = g_hw_right_edges;
     encoder_hw_read(ENC_HW_RIGHT_PIN, &g_hw_right_last_ctr,
                     sign_i16(g_applied_right_x10), &g_hw_right_dir,
                     &g_hw_right_edges, &g_hw_right_count);
+    encoder_right_check(g_hw_right_edges - a0);
     CRIT_EXIT(&g_odom_lock, sts);
 }
 
@@ -1118,6 +1193,29 @@ motion_reset_odometry(void)
     g_hw_right_count = 0;
     g_pi_left.last_count = 0;
     g_pi_right.last_count = 0;
+    g_win_a = 0u;
+    g_win_b = 0u;
+    g_rb_edges = 0u;
+    g_ra_raw_edges = 0u;
+    g_enc_fixed_edges = 0u;
+    g_enc_bad_windows = 0u;
+    CRIT_EXIT(&g_odom_lock, sts);
+}
+
+void
+motion_get_enc_check(enc_check_t *p_chk)
+{
+    UINT sts;
+
+    if (NULL == p_chk)
+    {
+        return;
+    }
+    CRIT_ENTER(&g_odom_lock, sts);
+    p_chk->right_a_raw = g_ra_raw_edges;
+    p_chk->right_b = g_rb_edges;
+    p_chk->fixed_edges = g_enc_fixed_edges;
+    p_chk->bad_windows = g_enc_bad_windows;
     CRIT_EXIT(&g_odom_lock, sts);
 }
 

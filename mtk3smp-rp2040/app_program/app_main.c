@@ -650,7 +650,7 @@ LOCAL T_CFLG cflg = {
 #define OBST_TEST_WIDTH          33
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         OBST_TEST_WIDTH
+#define MOTION_TEST_MODE         CTRL_TEST_COURSE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -5029,14 +5029,22 @@ LOCAL void motion_test_pi_step(void)
 /* Motors are never commanded, so the only edges are from hand turning. */
 LOCAL void motion_test_hand(void)
 {
+    enc_check_t chk;
+
     tm_printf((UB *)"\n[TEST] Hand-turn test: motors OFF\n");
     tm_printf((UB *)"[TEST] Mark each wheel. Turn it 10 full turns FORWARD,"
               " note cnt, then 10 turns BACK. Reset to zero the counters.\n");
+    tm_printf((UB *)"[TEST] Right wheel: A = GP15 as counted, B = GP17, fixed = taken off"
+              " A where it ran >2%% ahead of B (expected ~6340 for 10 turns).\n");
 
     motion_reset_odometry();
     while(1) {
         tk_dly_tsk(HAND_PRINT_MS);
         motion_print_encoder_diag("HAND");
+        motion_get_enc_check(&chk);
+        tm_printf((UB *)"[HAND] right A raw=%d  B=%d  fixed=%d in %d windows\n",
+                  (INT)chk.right_a_raw, (INT)chk.right_b, (INT)chk.fixed_edges,
+                  (INT)chk.bad_windows);
     }
 }
 #else

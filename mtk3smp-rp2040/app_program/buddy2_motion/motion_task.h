@@ -55,6 +55,18 @@ typedef struct {
 } enc_diag_t;
 
 /**
+ * @brief Right wheel A/B cross-check since the last odometry reset. The
+ * right count is A (GP15) corrected down to B (GP17) wherever A ran
+ * more than 2 % ahead over a ~20 mm window (A counting noise).
+ */
+typedef struct {
+    uint32_t right_a_raw;   /**< A edges as counted */
+    uint32_t right_b;       /**< B edges */
+    uint32_t fixed_edges;   /**< taken off A */
+    uint32_t bad_windows;   /**< windows where A ran ahead */
+} enc_check_t;
+
+/**
  * @brief Initialize and start motion control task.
  */
 ER motion_task_create(void);
@@ -140,6 +152,9 @@ ER motion_get_odometry(odometry_t *p_odom);
  * @brief Reset odometry counters to zero.
  */
 void motion_reset_odometry(void);
+
+/** @brief Copy the right wheel A/B cross-check counters. */
+void motion_get_enc_check(enc_check_t *p_chk);
 
 /**
  * @brief Snapshot both wheels' hardware counters in one go.
