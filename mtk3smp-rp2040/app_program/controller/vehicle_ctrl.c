@@ -64,6 +64,8 @@ static bool g_imu_ok = false;
 
 static robot_status_t g_status;
 static int16_t g_obst_width = 0;
+static enc_check_t g_scan_enc[2];
+static obstacle_profile_t g_scan_prof;
 static uint8_t g_max_ramp = 0u;
 static crit_lock_t g_status_lock;
 
@@ -354,6 +356,7 @@ ctrl_task_main(INT stacd, void *exinf)
         g_status.last_evt = EVT_NONE;   /* not the previous run's */
         g_obst_width = 0;
         g_max_ramp = 0u;
+        g_scan_prof.found = false;
         status_set(CTRL_ST_START, EVT_NONE, flags, 0, 0, 0);
         imu_ok = g_imu_ok && rest_attitude(&roll0);
         if (imu_ok)
@@ -632,10 +635,17 @@ ctrl_task_main(INT stacd, void *exinf)
             ER er;
 
             tk_dly_tsk(300u);
+            prof.found = false;
+            motion_get_enc_check(&g_scan_enc[0]);
             er = obstacle_scan_start(CTRL_SCAN_HALF_DEG, CTRL_SCAN_DETECT_MM);
             if (E_OK == er)
             {
                 er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
+            }
+            motion_get_enc_check(&g_scan_enc[1]);
+            if (E_OK == er)
+            {
+                g_scan_prof = prof;
             }
             if ((E_OK == er) && prof.found)
             {
@@ -650,6 +660,23 @@ ctrl_task_main(INT stacd, void *exinf)
         flags &= (uint8_t)~(CTRL_FLAG_ON_RAMP | CTRL_FLAG_WATCHING);
         status_set(state, EVT_NONE, flags, dist_mm(), heading_cdeg(), roll);
         g_running = 0u;
+    }
+}
+
+void
+ctrl_get_scan_diag(enc_check_t *p_pre, enc_check_t *p_post, obstacle_profile_t *p_prof)
+{
+    if (NULL != p_pre)
+    {
+        *p_pre = g_scan_enc[0];
+    }
+    if (NULL != p_post)
+    {
+        *p_post = g_scan_enc[1];
+    }
+    if (NULL != p_prof)
+    {
+        *p_prof = g_scan_prof;
     }
 }
 

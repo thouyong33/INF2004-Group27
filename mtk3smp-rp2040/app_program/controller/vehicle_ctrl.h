@@ -44,6 +44,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <tk/tkernel.h>
+#include "../buddy2_motion/motion_task.h"
+#include "../buddy5_ultrasonic/scan.h"
 
 /** Controller states */
 #define CTRL_ST_IDLE         0u   /**< no run yet */
@@ -123,5 +125,13 @@ void ctrl_get_status(robot_status_t *p_st);
 
 /** @brief Copy this run's event log (oldest first); returns the count. */
 uint32_t ctrl_log_get(ctrl_log_t *p_out);
+
+/**
+ * @brief Diagnostics of the last obstacle scan: the right encoder check
+ * just before and just after it, and the scan's profile (found = false if
+ * no scan ran). The sweep itself is in scan_get_coarse()/scan_get_fine().
+ */
+void ctrl_get_scan_diag(enc_check_t *p_pre, enc_check_t *p_post,
+                        obstacle_profile_t *p_prof);
 
 #endif /* CONTROLLER_VEHICLE_CTRL_H */

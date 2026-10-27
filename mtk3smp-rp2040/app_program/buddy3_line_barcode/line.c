@@ -38,6 +38,12 @@
  * test ramp, 27 Oct) for 100 mm or more. The junction is reported when the
  * black ends, from where it began. */
 #define LINE_JUNC_MAX_MM     35
+/* Right IR black alone (centre white) longer than this is not the line:
+ * the line under R is pulled back under C within a few cm, while the black
+ * ramp beside the line keeps R black and the hard right turn swung the car
+ * 70 deg into it (ctrl_course_v11 runs 1-2, 27 Oct). Past this the reading
+ * counts as "centre on the white" (steer left, toward the line's edge). */
+#define LINE_R_ONLY_MAX_MM   35
 #define LINE_LOST_MM         40      /* centre white this far (steering left): lost */
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
@@ -398,7 +404,7 @@ line_task_main(INT stacd, void *exinf)
                 off = -1;
                 white_since = -1;
             }
-            else if (r_on)
+            else if (r_on && ((d - r_since) <= LINE_R_ONLY_MAX_MM))
             {
                 off = -2;
                 last_side = -1;

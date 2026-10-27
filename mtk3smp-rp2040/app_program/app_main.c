@@ -4559,6 +4559,52 @@ LOCAL void line_test_ramp(void)
 #define CTRLT_SNAP_MS            500
 #define CTRLT_SNAPS              24
 
+LOCAL void ctrlt_print_pts(const char *name, const scan_pt_t *p, INT n)
+{
+    INT i;
+
+    tm_printf((UB *)"[CTRL]   %s (%d readings, cdeg,mm):", name, n);
+    for(i = 0; i < n; i++) {
+        if((i % 10) == 0) {
+            tm_printf((UB *)"\n[CTRL]    ");
+        }
+        tm_printf((UB *)" %d,%d", p[i].cdeg, p[i].mm);
+    }
+    tm_printf((UB *)"\n");
+}
+
+/* The obstacle scan in detail, as the width test (mode 33) prints it, plus
+   the right encoder check across the scan */
+LOCAL void ctrlt_print_scan(void)
+{
+    static scan_pt_t pts[SCAN_LOG_MAX];
+    enc_check_t pre, post;
+    obstacle_profile_t prof;
+    INT n;
+
+    ctrl_get_scan_diag(&pre, &post, &prof);
+    tm_printf((UB *)"[CTRL]   right encoder before / after the scan: A raw %d / %d,"
+              " B %d / %d, fixed %d / %d (A-B over the scan %d)\n",
+              (INT)pre.right_a_raw, (INT)post.right_a_raw, (INT)pre.right_b,
+              (INT)post.right_b, (INT)pre.fixed_edges, (INT)post.fixed_edges,
+              (INT)((post.right_a_raw - pre.right_a_raw) - (post.right_b - pre.right_b)));
+    if(!prof.found) {
+        tm_printf((UB *)"[CTRL]   scan: nothing found\n");
+        return;
+    }
+    tm_printf((UB *)"[CTRL]   scan: nearest %d mm at %d cdeg; seen from %d to %d cdeg"
+              " (span %d), beam %d -> width %d mm (old rule %d mm)\n", prof.nearest_mm,
+              prof.nearest_cdeg, prof.right_cdeg, prof.left_cdeg,
+              prof.left_cdeg - prof.right_cdeg, prof.beam_cdeg, prof.width_mm,
+              prof.width_old_mm);
+    n = (INT)scan_get_coarse(pts, SCAN_LOG_MAX);
+    ctrlt_print_pts("coarse sweep right to left", pts, n);
+    n = (INT)scan_get_fine(0u, pts, SCAN_FINE_MAX);
+    ctrlt_print_pts("fine, right edge", pts, n);
+    n = (INT)scan_get_fine(1u, pts, SCAN_FINE_MAX);
+    ctrlt_print_pts("fine, left edge", pts, n);
+}
+
 LOCAL const char *ctrlt_state(UB s)
 {
     static const char *const txt[9] = {
@@ -4699,6 +4745,9 @@ LOCAL void ctrl_test_course(void)
                       (0u != (snaps[i].flags & CTRL_FLAG_WATCHING)) ? 'W' : '-',
                       ctrlt_cmd((UB)((snaps[i].flags >> CTRL_FLAG_CMD_SHIFT) & 7u)),
                       ctrlt_evt(snaps[i].last_evt));
+        }
+        if(0u != (opts & CTRL_OPT_OBSTACLE)) {
+            ctrlt_print_scan();
         }
         tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose gap for o).\n");
     }
