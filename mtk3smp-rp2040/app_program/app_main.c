@@ -650,7 +650,7 @@ LOCAL T_CFLG cflg = {
 #define OBST_TEST_WIDTH          33
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         OBST_TEST_WIDTH
+#define MOTION_TEST_MODE         CTRL_TEST_COURSE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -4570,11 +4570,11 @@ LOCAL const char *ctrlt_state(UB s)
 
 LOCAL const char *ctrlt_evt(UB e)
 {
-    static const char *const txt[12] = {
+    static const char *const txt[13] = {
         "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
-        "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND"
+        "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND", "OBST_WIDTH"
     };
-    return (e < 12u) ? txt[e] : "?";
+    return (e < 13u) ? txt[e] : "?";
 }
 
 LOCAL const char *ctrlt_cmd(UB c)
@@ -4642,6 +4642,11 @@ LOCAL void ctrl_test_course(void)
                   : ((0u != (opts & CTRL_OPT_BARCODE)) ? "line + barcode" : "line + ramp"),
                   ctrlt_state(st.state),
                   st.dist_mm, st.heading_cdeg, (INT)st.faults, (INT)ctrl_evt_dropped());
+        tm_printf((UB *)"[CTRL]   REPORT: highest ramp %d mm", (INT)st.max_ramp_mm);
+        if(0u != (opts & CTRL_OPT_OBSTACLE)) {
+            tm_printf((UB *)", obstacle width %d mm (about +/-4 cm)", st.obstacle_width_mm);
+        }
+        tm_printf((UB *)"\n");
         n = (INT)ctrl_log_get(lg);
         tm_printf((UB *)"[CTRL]   events (t_ms, d_mm, event, arg, val):\n");
         for(i = 0; i < n; i++) {
@@ -4653,6 +4658,12 @@ LOCAL void ctrl_test_course(void)
                               (0 != lg[i].val) ? "REVERSED" : "forward");
                 } else {
                     tm_printf((UB *)"   (no read, %d bars/spaces)", lg[i].val);
+                }
+            } else if(EVT_OBST_WIDTH == lg[i].type) {
+                if(0u != lg[i].arg) {
+                    tm_printf((UB *)"   (width estimate %d mm)", lg[i].val);
+                } else {
+                    tm_printf((UB *)"   (scan failed or nothing found: %d)", lg[i].val);
                 }
             } else if(EVT_COMMAND == lg[i].type) {
                 tm_printf((UB *)"   (%s done, turned %d x0.01 deg)", ctrlt_cmd(lg[i].arg),

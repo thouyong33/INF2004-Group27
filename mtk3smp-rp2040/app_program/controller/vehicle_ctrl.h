@@ -12,8 +12,10 @@
  * caller of those two, and of line_follow_start/stop during a run.
  *
  * A run follows the line at a set speed until the distance limit, an
- * obstacle (stop with the >= 5 cm gap: course demo v1), a fault, a lost
- * line, or ctrl_stop(). Avoiding the obstacle comes later.
+ * obstacle (stop with the >= 5 cm gap, then a scan to estimate its width:
+ * EVT_OBST_WIDTH and robot_status.obstacle_width_mm), a fault, a lost
+ * line, or ctrl_stop(). Avoiding the obstacle comes later. The highest
+ * ramp of the run is kept in robot_status.max_ramp_mm.
  *
  * Barcodes (CTRL_OPT_BARCODE): the barcode task reads the left IR while
  * following and posts EVT_BARCODE; the controller keeps the command and
@@ -72,7 +74,7 @@
 #define CTRL_OPT_IMPACT_STOP  (1u << 1)  /**< stop on a confirmed impact */
 #define CTRL_OPT_BARCODE      (1u << 2)  /**< read barcodes, act at the next junction */
 
-/** Snapshot for telemetry and tests, 12 bytes */
+/** Snapshot for telemetry and tests, 16 bytes */
 typedef struct {
     uint8_t state;           /**< CTRL_ST_* */
     uint8_t faults;          /**< FAULT_* bits */
@@ -82,6 +84,9 @@ typedef struct {
     int16_t heading_cdeg;    /**< encoders, since the run started, left + */
     int16_t roll_cdeg;       /**< from rest, x0.01 deg */
     int16_t obstacle_mm;     /**< last sonar reading, -1 = none */
+    int16_t obstacle_width_mm; /**< width from the scan after a stop, 0 = none */
+    uint8_t max_ramp_mm;     /**< highest ramp (hump) this run, mm */
+    uint8_t spare;
 } robot_status_t;
 
 /** One logged event (tests) */

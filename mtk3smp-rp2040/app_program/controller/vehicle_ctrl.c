@@ -29,6 +29,8 @@
 #define CTRL_WATCH_SETTLE_MS 300u    /* a few pings before driving */
 #define CTRL_IMU_FAIL_MAX    10u     /* reads failed in a row = FAULT_IMU */
 #define CTRL_END_WAIT_MS     3000u   /* line task to wind down (a search) */
+#define CTRL_SCAN_HALF_DEG   45      /* obstacle width scan */
+#define CTRL_SCAN_DETECT_MM  600
 
 /* Impact confirmation (as in the roam demo, 21 Oct) */
 #define CTRL_SPD_WIN_MS      100u    /* forward speed window */
@@ -61,6 +63,8 @@ static volatile int16_t g_after_mm = 0;
 static bool g_imu_ok = false;
 
 static robot_status_t g_status;
+static int16_t g_obst_width = 0;
+static uint8_t g_max_ramp = 0u;
 static crit_lock_t g_status_lock;
 
 static ctrl_log_t g_log[CTRL_LOG_LEN];
@@ -145,6 +149,8 @@ status_set(uint8_t state, uint8_t last_evt, uint8_t flags, int32_t d,
     g_status.heading_cdeg = (int16_t)hdg;
     g_status.roll_cdeg = (int16_t)roll;
     g_status.obstacle_mm = obstacle_last_mm();
+    g_status.obstacle_width_mm = g_obst_width;
+    g_status.max_ramp_mm = g_max_ramp;
     CRIT_EXIT(&g_status_lock, sts);
 }
 
@@ -346,6 +352,8 @@ ctrl_task_main(INT stacd, void *exinf)
         roll = 0;
         roll0 = 0;
         g_status.last_evt = EVT_NONE;   /* not the previous run's */
+        g_obst_width = 0;
+        g_max_ramp = 0u;
         status_set(CTRL_ST_START, EVT_NONE, flags, 0, 0, 0);
         imu_ok = g_imu_ok && rest_attitude(&roll0);
         if (imu_ok)
@@ -541,6 +549,10 @@ ctrl_task_main(INT stacd, void *exinf)
                             flags &= (uint8_t)~CTRL_FLAG_ON_RAMP;
                             state = CTRL_ST_FOLLOW;
                             log_evt(EVT_RAMP_OFF, 0u, (int16_t)ramp_h, d);
+                            if ((ramp_h > (int32_t)g_max_ramp) && (ramp_h < 256))
+                            {
+                                g_max_ramp = (uint8_t)ramp_h;
+                            }
                             status_set(state, EVT_RAMP_OFF, flags, d, hdg, roll);
                         }
                     }
@@ -610,6 +622,30 @@ ctrl_task_main(INT stacd, void *exinf)
         if (0u != (opts & CTRL_OPT_OBSTACLE))
         {
             obstacle_watch(false);
+        }
+
+        /* Stopped at an obstacle: scan it (the car turns on the spot and
+         * comes back to its heading) and report its width */
+        if (CTRL_ST_OBSTACLE == state)
+        {
+            obstacle_profile_t prof;
+            ER er;
+
+            tk_dly_tsk(300u);
+            er = obstacle_scan_start(CTRL_SCAN_HALF_DEG, CTRL_SCAN_DETECT_MM);
+            if (E_OK == er)
+            {
+                er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
+            }
+            if ((E_OK == er) && prof.found)
+            {
+                g_obst_width = prof.width_mm;
+                log_evt(EVT_OBST_WIDTH, 1u, prof.width_mm, dist_mm());
+            }
+            else
+            {
+                log_evt(EVT_OBST_WIDTH, 0u, (int16_t)er, dist_mm());
+            }
         }
         flags &= (uint8_t)~(CTRL_FLAG_ON_RAMP | CTRL_FLAG_WATCHING);
         status_set(state, EVT_NONE, flags, dist_mm(), heading_cdeg(), roll);

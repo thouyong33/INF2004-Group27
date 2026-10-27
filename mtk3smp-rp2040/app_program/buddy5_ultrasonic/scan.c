@@ -40,6 +40,17 @@
  * tolerated). Replaying those two scans: ~6-8 cm against 9 cm. */
 #define SCAN_GATE_MM             45
 #define GAP_ALLOW_GATE           1
+/* Reported width (27 Oct, fitted on 10 scans of a 9 and a 15.5 cm face):
+ * from the coarse sweep only, the face being the readings within
+ * WIDTH_GATE_MM of the face range (median of the nearest third of the
+ * readings, so one short echo cannot set it), up to WIDTH_GAP_ALLOW
+ * readings off the face tolerated (stray ~300 mm echoes interleave with
+ * it), then scaled by WIDTH_CAL_X100. A flat face is a mirror to the
+ * sonar, so the seen span is mostly beam: estimates spread about +/-4 cm
+ * (9 cm face 70-102 mm, 15.5 cm face 118-193 mm after scaling). */
+#define WIDTH_GATE_MM            30
+#define WIDTH_GAP_ALLOW          3
+#define WIDTH_CAL_X100           120
 
 static scan_pt_t g_log[SCAN_LOG_MAX];
 static volatile uint32_t g_log_n = 0u;
@@ -278,6 +289,83 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
     return best;
 }
 
+/* Width from the coarse sweep (see WIDTH_*); 0 if below resolution */
+static int16_t
+coarse_width_mm(int32_t n, int32_t near_i)
+{
+    int16_t v[LOG_MAX];
+    int16_t t;
+    int32_t m = 0;
+    int32_t i;
+    int32_t j;
+    int32_t face;
+    int32_t gate;
+    int32_t lo;
+    int32_t hi;
+    int32_t gap;
+    int32_t excess;
+
+    for (i = 0; i < n; i++)
+    {
+        if (g_log[i].mm > 0)
+        {
+            v[m++] = g_log[i].mm;
+        }
+    }
+    if (0 == m)
+    {
+        return 0;
+    }
+    for (i = 1; i < m; i++)               /* insertion sort, <= 128 values */
+    {
+        t = v[i];
+        for (j = i - 1; (j >= 0) && (v[j] > t); j--)
+        {
+            v[j + 1] = v[j];
+        }
+        v[j + 1] = t;
+    }
+    j = (m / 3 > 3) ? (m / 3) : ((m < 3) ? m : 3);
+    face = v[j / 2];
+    gate = face + WIDTH_GATE_MM;
+
+    lo = near_i;
+    gap = 0;
+    for (j = near_i - 1; j >= 0; j--)
+    {
+        if (is_obstacle(g_log[j].mm, (int16_t)gate))
+        {
+            lo = j;
+            gap = 0;
+        }
+        else if (++gap > WIDTH_GAP_ALLOW)
+        {
+            break;
+        }
+    }
+    hi = near_i;
+    gap = 0;
+    for (j = near_i + 1; j < n; j++)
+    {
+        if (is_obstacle(g_log[j].mm, (int16_t)gate))
+        {
+            hi = j;
+            gap = 0;
+        }
+        else if (++gap > WIDTH_GAP_ALLOW)
+        {
+            break;
+        }
+    }
+    excess = (int32_t)g_log[hi].cdeg - (int32_t)g_log[lo].cdeg - beam_cdeg_at(face);
+    if (excess <= 0)
+    {
+        return 0;
+    }
+    return (int16_t)((2.0f * (float)face * tan_cdeg(excess / 2) * (float)WIDTH_CAL_X100)
+                     / 100.0f);
+}
+
 /*----------------------------------------------------------------------------
  * Scan
  *---------------------------------------------------------------------------*/
@@ -464,7 +552,7 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     p_prof->beam_cdeg = (int16_t)beam;
 
     half_w = (excess > 0) ? (d * tan_cdeg(excess / 2)) : 0.0f;
-    p_prof->width_mm = (int16_t)(2.0f * half_w);
+    p_prof->width_mm = coarse_width_mm(n, near_i);
 
     /* Old rule's estimate from the coarse sweep alone (comparison) */
     excess = (int32_t)g_log[old_hi].cdeg - (int32_t)g_log[old_lo].cdeg - beam;

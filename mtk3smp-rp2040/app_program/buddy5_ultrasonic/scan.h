@@ -44,7 +44,7 @@ typedef struct {
     int16_t right_cdeg;      /**< right-most angle it was still seen */
     int16_t left_cdeg;       /**< left-most angle it was still seen */
     int16_t beam_cdeg;       /**< beam width used for the correction */
-    int16_t width_mm;        /**< estimated width (0 = below resolution) */
+    int16_t width_mm;        /**< estimated width, about +/-4 cm (0 = below resolution) */
     int16_t width_old_mm;    /**< same, by the old "anything in range" edges */
     int16_t left_side_mm;    /**< obstacle's left side, mm left of centreline */
     int16_t right_side_mm;   /**< obstacle's right side, mm left of centreline
