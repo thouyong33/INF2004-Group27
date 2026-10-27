@@ -5035,14 +5035,14 @@ LOCAL void motion_test_hand(void)
     tm_printf((UB *)"[TEST] Mark each wheel. Turn it 10 full turns FORWARD,"
               " note cnt, then 10 turns BACK. Reset to zero the counters.\n");
     tm_printf((UB *)"[TEST] Right wheel: A = GP15 as counted, B = GP17, fixed = taken off"
-              " A where it ran >2%% ahead of B (expected ~6340 for 10 turns).\n");
+              " A beyond B + 1 (expected ~6340 for 10 turns).\n");
 
     motion_reset_odometry();
     while(1) {
         tk_dly_tsk(HAND_PRINT_MS);
         motion_print_encoder_diag("HAND");
         motion_get_enc_check(&chk);
-        tm_printf((UB *)"[HAND] right A raw=%d  B=%d  fixed=%d in %d windows\n",
+        tm_printf((UB *)"[HAND] right A raw=%d  B=%d  fixed=%d in %d passes\n",
                   (INT)chk.right_a_raw, (INT)chk.right_b, (INT)chk.fixed_edges,
                   (INT)chk.bad_windows);
     }

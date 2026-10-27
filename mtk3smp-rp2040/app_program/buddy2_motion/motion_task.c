@@ -85,15 +85,16 @@ static void *motion_task_stack = NULL;
 #define PWM_SLICE_REG(slice, off) (PWM_BASE + ((slice) * 0x14u) + (off))
 
 /* Right wheel B channel, counted on the otherwise unused PWM slice 0 as a
- * cross-check of GP15. Twice (12 and 26 Oct) the right encoder counted
- * 10-23 % too many edges at slow speed (a noisy or slow edge counted more
- * than once) and the car arced right; noise only ever ADDS edges, so over
- * each window of ENC_CHECK_EDGES B edges the right count takes the lower
- * of the two channels. */
+ * cross-check of GP15. Three times (12, 26 and 27 Oct) the right encoder's
+ * A channel counted 9-23 % too many edges (a noisy or slow edge counted
+ * more than once) and the car arced right; noise only ever ADDS edges, so
+ * every pass the right totals follow the lower channel: A, but never more
+ * than B + 1 (A and B are a quarter cycle apart, so A may lead by one).
+ * 27 Oct hand test: A 6921, B 6337. The first version allowed 2 % per
+ * 20 mm window and left +1.5 %, and hid the correction from the PI, which
+ * then held the noisy A speed (right wheel -5 % at 500 mm/s). */
 #define ENC_HW_RIGHT_B_PIN        ENC_RIGHT_B   /* GP17 = PWM0 B */
-#define ENC_CHECK_EDGES           60u   /* ~20 mm of travel per window */
-#define ENC_CHECK_SLACK           2u    /* quadrature: A and B may differ by 1 */
-#define ENC_CHECK_PCT             2u    /* plus 2 % */
+#define ENC_CHECK_LEAD            1u    /* edges A may lead B */
 
 /* Encoder pads: input on, Schmitt trigger on, pull-up (not the power-on
  * pull-down), 4 mA drive (unused for an input) */
@@ -119,8 +120,6 @@ static int8_t g_hw_right_dir = 1;
 
 /* Right A/B cross-check */
 static uint16_t g_hw_rb_last_ctr = 0u;
-static uint32_t g_win_a = 0u;               /* A edges in this window */
-static uint32_t g_win_b = 0u;               /* B edges in this window */
 static volatile uint32_t g_rb_edges = 0u;   /* B edges since the reset */
 static volatile uint32_t g_ra_raw_edges = 0u; /* A edges, uncorrected */
 static volatile uint32_t g_enc_fixed_edges = 0u; /* removed from A */
@@ -584,43 +583,35 @@ encoder_hw_read(uint8_t pin, uint16_t *p_last_ctr, int8_t cmd, int8_t *p_dir,
     *p_count += (int32_t)(*p_dir) * (int32_t)delta;
 }
 
-/* Right wheel A/B cross-check, inside the odometry lock. dA is the A
- * edges just added to the right totals. */
+/* Right wheel A/B cross-check, every pass, inside the odometry lock. d_a
+ * is the A edges just added to the right totals. The correction goes into
+ * the counts the PI reads, so the PI regulates the true wheel speed. */
 static void
 encoder_right_check(uint32_t d_a)
 {
     uint16_t ctr;
-    uint32_t d_b;
-    uint32_t extra;
+    uint32_t want;
+    int32_t delta;
 
     ctr = (uint16_t)in_w(PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_RIGHT_B_PIN), PWM_CHx_CTR));
-    d_b = (uint32_t)(uint16_t)(ctr - g_hw_rb_last_ctr);
+    g_rb_edges += (uint32_t)(uint16_t)(ctr - g_hw_rb_last_ctr);
     g_hw_rb_last_ctr = ctr;
-
-    g_rb_edges += d_b;
     g_ra_raw_edges += d_a;
-    g_win_a += d_a;
-    g_win_b += d_b;
-    if (g_win_b < ENC_CHECK_EDGES)
-    {
-        return;
-    }
 
-    /* A ran ahead of B by more than quadrature slack + 2 %: A counted
-     * noise. Take the extra off the totals and move the PI and speed
-     * baselines with them, so the correction is not seen as a speed. */
-    if (g_win_a > (g_win_b + ENC_CHECK_SLACK + ((g_win_b * ENC_CHECK_PCT) / 100u)))
+    /* Edges to take off A so that it never exceeds B + ENC_CHECK_LEAD */
+    want = (g_ra_raw_edges > (g_rb_edges + ENC_CHECK_LEAD))
+         ? (g_ra_raw_edges - g_rb_edges - ENC_CHECK_LEAD) : 0u;
+    delta = (int32_t)want - (int32_t)g_enc_fixed_edges;
+    if (0 != delta)
     {
-        extra = g_win_a - g_win_b;
-        g_hw_right_edges -= extra;
-        g_hw_right_count -= (int32_t)g_hw_right_dir * (int32_t)extra;
-        g_last_right_count -= (int32_t)g_hw_right_dir * (int32_t)extra;
-        g_pi_right.last_count -= (int32_t)g_hw_right_dir * (int32_t)extra;
-        g_enc_fixed_edges += extra;
-        g_enc_bad_windows++;
+        g_hw_right_edges = (uint32_t)((int32_t)g_hw_right_edges - delta);
+        g_hw_right_count -= (int32_t)g_hw_right_dir * delta;
+        g_enc_fixed_edges = want;
+        if (delta > 0)
+        {
+            g_enc_bad_windows++;
+        }
     }
-    g_win_a = 0u;
-    g_win_b = 0u;
 }
 
 static void
@@ -1193,8 +1184,6 @@ motion_reset_odometry(void)
     g_hw_right_count = 0;
     g_pi_left.last_count = 0;
     g_pi_right.last_count = 0;
-    g_win_a = 0u;
-    g_win_b = 0u;
     g_rb_edges = 0u;
     g_ra_raw_edges = 0u;
     g_enc_fixed_edges = 0u;

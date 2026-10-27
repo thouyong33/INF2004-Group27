@@ -56,14 +56,14 @@ typedef struct {
 
 /**
  * @brief Right wheel A/B cross-check since the last odometry reset. The
- * right count is A (GP15) corrected down to B (GP17) wherever A ran
- * more than 2 % ahead over a ~20 mm window (A counting noise).
+ * right count follows A (GP15) but never more than B (GP17) + 1 edge:
+ * extra A edges are noise.
  */
 typedef struct {
     uint32_t right_a_raw;   /**< A edges as counted */
     uint32_t right_b;       /**< B edges */
     uint32_t fixed_edges;   /**< taken off A */
-    uint32_t bad_windows;   /**< windows where A ran ahead */
+    uint32_t bad_windows;   /**< motion passes that took edges off A */
 } enc_check_t;
 
 /**
