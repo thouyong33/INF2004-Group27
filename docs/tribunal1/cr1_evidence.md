@@ -332,3 +332,21 @@ averaged direction instead.
   the ramp edge, and the course has no scenario that needs an impact stop.
 - Buddy 3 and the ramp scenario are complete; barcode command mapping and
   curves are to be confirmed on 28 Oct.
+
+## Right encoder over-count fix, 27 Oct (commits 172b736, 0a313c3, 2f05d8a)
+
+The right encoder's A channel (GP15) again counted extra edges after the
+car had been off for 1–2 h (hand test A 6921 against 6340 expected). Fix:
+encoder pads set explicitly (Schmitt trigger, pull-up), and the right B
+channel (GP17, already wired) counted on the spare PWM slice 0; every 2 ms
+pass the right count follows A but never exceeds B + 1 edge, and the PI
+uses the corrected count.
+
+| Test | Result |
+|---|---|
+| Hand turn, 10 turns (fault active: A raw 6587) | B 6365, corrected right count 6366 |
+| Lifted safety test | PI 150/300/500 mm/s within 2 % (500: L 498, R 498); STOP 350 ms; MOTOR_STALL and ENC_LEFT trip; no false trip in 10 s |
+| Controller, small (black) ramp ×2, tall ramp ×1 | all DONE at 450 mm, faults 0x0, ramp 11/11/25 mm; no false junctions over the black ramp (junction now needs the right IR black for 6–35 mm) |
+
+The hardware cause is still present; the software now hides it, and the
+hand test's "fixed" figure shows when it is active.
