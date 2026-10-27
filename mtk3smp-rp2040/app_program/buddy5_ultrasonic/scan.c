@@ -19,25 +19,66 @@
 
 #define TURN_MM_S                60      /* repositioning turns (~60 deg/s) */
 #define TURN_BRAKE_CDEG          150
+#define TURN_SETTLE_MS           200
 #define COARSE_MM_S              25      /* ~25 deg/s: a ping every ~2 deg */
 #define FINE_STEP_MM_S           40
 #define FINE_STEP_CDEG           200     /* stop and look every ~2 deg */
+/* Fine steps: the car coasts ~1 deg after the stop command at 40 mm/s
+ * (scan timing log 2026-10-22: 2 deg steps braked 1.5 deg early moved
+ * 1.45 deg), so brake 1 deg early. Braking from 40 mm/s takes ~60 ms, so
+ * 150 ms is enough to be still before the pings. That log's full scan
+ * took 29.2 s, 22 s of it in 22 fine steps of ~1 s. */
+#define FINE_BRAKE_CDEG          100
+#define FINE_SETTLE_MS           150
 #define FINE_HALF_CDEG           800     /* fine window: edge +/-8 deg */
-#define LOG_MAX                  128
+#define LOG_MAX                  ((int32_t)SCAN_LOG_MAX)
 #define GAP_ALLOW                2       /* missed pings tolerated inside the obstacle */
+/* Edges by range gate (27 Oct): a 9 cm toolbox read 33 cm wide because
+ * every echo within detect_mm counted, including things 5-20 cm behind and
+ * beside it. Now only readings within SCAN_GATE_MM of the nearest one are
+ * the obstacle, and an edge is where they stop (one stray reading
+ * tolerated). Replaying those two scans: ~6-8 cm against 9 cm. */
+#define SCAN_GATE_MM             45
+#define GAP_ALLOW_GATE           1
+/* Reported width (27 Oct, fitted on 10 scans of a 9 and a 15.5 cm face):
+ * from the coarse sweep only, the face being the readings within
+ * WIDTH_GATE_MM of the face range (median of the nearest third of the
+ * readings, so one short echo cannot set it), up to WIDTH_GAP_ALLOW
+ * readings off the face tolerated (stray ~300 mm echoes interleave with
+ * it), then scaled by WIDTH_CAL_X100. A flat face is a mirror to the
+ * sonar, so the seen span is mostly beam: estimates spread about +/-4 cm
+ * (9 cm face 70-102 mm, 15.5 cm face 118-193 mm after scaling). */
+#define WIDTH_GATE_MM            30
+#define WIDTH_GAP_ALLOW          3
+#define WIDTH_CAL_X100           120
 
-typedef struct {
-    int16_t cdeg;
-    int16_t mm;                  /* -1 = no echo */
-} scan_pt_t;
+static scan_pt_t g_log[SCAN_LOG_MAX];
+static volatile uint32_t g_log_n = 0u;
+static scan_pt_t g_fine[2][SCAN_FINE_MAX];  /* kept for width calibration */
+static volatile uint32_t g_fine_n[2] = {0u, 0u};
+static const volatile uint8_t *g_p_abort = NULL;
+static scan_timing_t g_tm;
 
-static scan_pt_t g_log[LOG_MAX];
+static uint32_t
+now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
 static int32_t g_l0;
 static int32_t g_r0;
 
 /*----------------------------------------------------------------------------
  * Helpers
  *---------------------------------------------------------------------------*/
+/* True once the owner has asked the scan to stop (Tribunal 1, R2) */
+static bool
+aborted(void)
+{
+    return (NULL != g_p_abort) && (0u != *g_p_abort);
+}
 /* Car angle since the scan started, left positive, x0.01 deg */
 static int32_t
 angle_cdeg(void)
@@ -83,7 +124,7 @@ ping_median3_mm(void)
 
 /* Turn on the spot to an absolute scan angle and stop */
 static void
-turn_to(int32_t target_cdeg, int16_t speed)
+turn_to_ex(int32_t target_cdeg, int16_t speed, int32_t brake_cdeg, uint32_t settle_ms)
 {
     int32_t a;
     uint32_t i;
@@ -104,18 +145,28 @@ turn_to(int32_t target_cdeg, int16_t speed)
     {
         (void)motion_set_velocity(speed, (int16_t)-speed);
     }
-    for (i = 0u; i < 3000u; i++)
+    for (i = 0u; (i < 3000u) && (!aborted()); i++)
     {
         a = angle_cdeg();
-        if ((left && (a >= target_cdeg - TURN_BRAKE_CDEG))
-            || ((!left) && (a <= target_cdeg + TURN_BRAKE_CDEG)))
+        if ((left && (a >= target_cdeg - brake_cdeg))
+            || ((!left) && (a <= target_cdeg + brake_cdeg)))
         {
             break;
         }
         tk_dly_tsk(5);
     }
     (void)motion_set_velocity(0, 0);
-    tk_dly_tsk(500);
+    if (!aborted())
+    {
+        tk_dly_tsk(settle_ms);
+    }
+}
+
+/* Repositioning turn */
+static void
+turn_to(int32_t target_cdeg, int16_t speed)
+{
+    turn_to_ex(target_cdeg, speed, TURN_BRAKE_CDEG, TURN_SETTLE_MS);
 }
 
 static bool
@@ -176,31 +227,143 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
     int32_t best = edge_cdeg;
     int16_t mm;
     uint32_t guard;
+    uint32_t misses = 0u;
+    bool past = false;
+
+    uint32_t t0 = now_ms();
+    uint32_t idx = (outward < 0) ? 0u : 1u;
+    int32_t a_first = 0;
 
     from = edge_cdeg - (outward * FINE_HALF_CDEG);
     to = edge_cdeg + (outward * FINE_HALF_CDEG);
     turn_to(from, TURN_MM_S);
+    g_tm.fine_steps[idx] = 0u;
+    g_fine_n[idx] = 0u;
 
-    for (guard = 0u; guard < 30u; guard++)
+    for (guard = 0u; (guard < 30u) && (!aborted()); guard++)
     {
         a = angle_cdeg();
+        if (0u == guard)
+        {
+            a_first = a;
+        }
+        g_tm.fine_steps[idx] = (uint16_t)(guard + 1u);
+        g_tm.fine_span_cdeg[idx] = (int16_t)(a - a_first);
         mm = ping_median3_mm();
+        if (g_fine_n[idx] < SCAN_FINE_MAX)
+        {
+            g_fine[idx][g_fine_n[idx]].cdeg = (int16_t)a;
+            g_fine[idx][g_fine_n[idx]].mm = mm;
+            g_fine_n[idx]++;
+        }
         if (print)
         {
             tm_printf((UB *)"[SCAN] fine %s %d,%d\n", (outward > 0) ? "L" : "R", (INT)a, (INT)mm);
         }
-        if (is_obstacle(mm, detect_mm)
-            && (((outward > 0) && (a > best)) || ((outward < 0) && (a < best))))
+        /* The edge is the outermost reading still in the gate before the
+         * readings leave it for good (more than GAP_ALLOW_GATE in a row) */
+        if (is_obstacle(mm, detect_mm))
         {
-            best = a;
+            misses = 0u;
+            if ((!past)
+                && (((outward > 0) && (a > best)) || ((outward < 0) && (a < best))))
+            {
+                best = a;
+            }
+        }
+        else if (((outward > 0) && (a > best)) || ((outward < 0) && (a < best)))
+        {
+            if (++misses > GAP_ALLOW_GATE)
+            {
+                past = true;
+            }
         }
         if (((outward > 0) && (a >= to)) || ((outward < 0) && (a <= to)))
         {
             break;
         }
-        turn_to(a + (outward * FINE_STEP_CDEG), FINE_STEP_MM_S);
+        turn_to_ex(a + (outward * FINE_STEP_CDEG), FINE_STEP_MM_S,
+                   FINE_BRAKE_CDEG, FINE_SETTLE_MS);
     }
+    g_tm.fine_ms[idx] = now_ms() - t0;
     return best;
+}
+
+/* Width from the coarse sweep (see WIDTH_*); 0 if below resolution */
+static int16_t
+coarse_width_mm(int32_t n, int32_t near_i)
+{
+    int16_t v[LOG_MAX];
+    int16_t t;
+    int32_t m = 0;
+    int32_t i;
+    int32_t j;
+    int32_t face;
+    int32_t gate;
+    int32_t lo;
+    int32_t hi;
+    int32_t gap;
+    int32_t excess;
+
+    for (i = 0; i < n; i++)
+    {
+        if (g_log[i].mm > 0)
+        {
+            v[m++] = g_log[i].mm;
+        }
+    }
+    if (0 == m)
+    {
+        return 0;
+    }
+    for (i = 1; i < m; i++)               /* insertion sort, <= 128 values */
+    {
+        t = v[i];
+        for (j = i - 1; (j >= 0) && (v[j] > t); j--)
+        {
+            v[j + 1] = v[j];
+        }
+        v[j + 1] = t;
+    }
+    j = (m / 3 > 3) ? (m / 3) : ((m < 3) ? m : 3);
+    face = v[j / 2];
+    gate = face + WIDTH_GATE_MM;
+
+    lo = near_i;
+    gap = 0;
+    for (j = near_i - 1; j >= 0; j--)
+    {
+        if (is_obstacle(g_log[j].mm, (int16_t)gate))
+        {
+            lo = j;
+            gap = 0;
+        }
+        else if (++gap > WIDTH_GAP_ALLOW)
+        {
+            break;
+        }
+    }
+    hi = near_i;
+    gap = 0;
+    for (j = near_i + 1; j < n; j++)
+    {
+        if (is_obstacle(g_log[j].mm, (int16_t)gate))
+        {
+            hi = j;
+            gap = 0;
+        }
+        else if (++gap > WIDTH_GAP_ALLOW)
+        {
+            break;
+        }
+    }
+    excess = (int32_t)g_log[hi].cdeg - (int32_t)g_log[lo].cdeg - beam_cdeg_at(face);
+    if (excess <= 0)
+    {
+        return 0;
+    }
+    return (int16_t)((2.0f * (float)face * tan_cdeg(excess / 2) * (float)WIDTH_CAL_X100)
+                     / 100.0f);
 }
 
 /*----------------------------------------------------------------------------
@@ -215,6 +378,8 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     int32_t i, j;
     int32_t near_i = -1;
     int32_t lo, hi, gap;
+    int32_t old_lo, old_hi;
+    int32_t gate;
     int32_t a;
     int32_t span, beam, excess, centre;
     float d;
@@ -226,6 +391,20 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
         return E_PAR;
     }
     p_prof->found = false;
+    g_tm.start_ms = 0u;
+    g_tm.coarse_ms = 0u;
+    g_tm.coarse_samples = 0u;
+    g_tm.fine_ms[0] = 0u;
+    g_tm.fine_ms[1] = 0u;
+    g_tm.fine_steps[0] = 0u;
+    g_tm.fine_steps[1] = 0u;
+    g_tm.fine_span_cdeg[0] = 0;
+    g_tm.fine_span_cdeg[1] = 0;
+    g_tm.return_ms = 0u;
+    g_tm.t0_ms = now_ms();
+    g_log_n = 0u;
+    g_fine_n[0] = 0u;
+    g_fine_n[1] = 0u;
 
     (void)motion_get_encoder_diag(&l, &r);
     g_l0 = l.hw_count;
@@ -234,8 +413,9 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
 
     /* ---- Coarse: continuous sweep right to left ---- */
     turn_to(-(int32_t)half_deg * 100, TURN_MM_S);
+    g_tm.start_ms = now_ms() - g_tm.t0_ms;
     (void)motion_set_velocity((int16_t)-COARSE_MM_S, (int16_t)COARSE_MM_S);
-    while (n < LOG_MAX)
+    while ((n < LOG_MAX) && (!aborted()))
     {
         a = angle_cdeg();
         g_log[n].cdeg = (int16_t)a;
@@ -248,7 +428,14 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
         tk_dly_tsk(PING_GAP_MS);
     }
     (void)motion_set_velocity(0, 0);
-    tk_dly_tsk(500);
+    g_tm.coarse_ms = now_ms() - g_tm.t0_ms - g_tm.start_ms;
+    g_tm.coarse_samples = (uint16_t)n;
+    g_log_n = (uint32_t)n;
+    if (aborted())
+    {
+        return E_RLWAI;
+    }
+    tk_dly_tsk(TURN_SETTLE_MS);
 
     if (print)
     {
@@ -275,16 +462,49 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
         return E_OK;                         /* nothing in range */
     }
 
-    lo = near_i;
+    /* Old rule (anything within detect_mm), kept for comparison only */
+    old_lo = near_i;
     gap = 0;
     for (j = near_i - 1; j >= 0; j--)
     {
         if (is_obstacle(g_log[j].mm, detect_mm))
         {
-            lo = j;
+            old_lo = j;
             gap = 0;
         }
         else if (++gap > GAP_ALLOW)
+        {
+            break;
+        }
+    }
+    old_hi = near_i;
+    gap = 0;
+    for (j = near_i + 1; j < n; j++)
+    {
+        if (is_obstacle(g_log[j].mm, detect_mm))
+        {
+            old_hi = j;
+            gap = 0;
+        }
+        else if (++gap > GAP_ALLOW)
+        {
+            break;
+        }
+    }
+
+    /* Range gate: the obstacle is what lies within SCAN_GATE_MM of the
+     * nearest reading */
+    gate = (int32_t)g_log[near_i].mm + SCAN_GATE_MM;
+    lo = near_i;
+    gap = 0;
+    for (j = near_i - 1; j >= 0; j--)
+    {
+        if (is_obstacle(g_log[j].mm, (int16_t)gate))
+        {
+            lo = j;
+            gap = 0;
+        }
+        else if (++gap > GAP_ALLOW_GATE)
         {
             break;
         }
@@ -293,12 +513,12 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     gap = 0;
     for (j = near_i + 1; j < n; j++)
     {
-        if (is_obstacle(g_log[j].mm, detect_mm))
+        if (is_obstacle(g_log[j].mm, (int16_t)gate))
         {
             hi = j;
             gap = 0;
         }
-        else if (++gap > GAP_ALLOW)
+        else if (++gap > GAP_ALLOW_GATE)
         {
             break;
         }
@@ -309,10 +529,20 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     p_prof->nearest_cdeg = g_log[near_i].cdeg;
 
     /* ---- Fine: stop-and-look around each coarse edge ---- */
-    p_prof->right_cdeg = (int16_t)fine_edge(g_log[lo].cdeg, -1, detect_mm, print);
-    p_prof->left_cdeg = (int16_t)fine_edge(g_log[hi].cdeg, +1, detect_mm, print);
+    p_prof->right_cdeg = (int16_t)fine_edge(g_log[lo].cdeg, -1, (int16_t)gate, print);
+    p_prof->left_cdeg = (int16_t)fine_edge(g_log[hi].cdeg, +1, (int16_t)gate, print);
+    if (aborted())
+    {
+        p_prof->found = false;
+        return E_RLWAI;
+    }
 
-    turn_to(0, TURN_MM_S);
+    {
+        uint32_t t_ret = now_ms();
+
+        turn_to(0, TURN_MM_S);
+        g_tm.return_ms = now_ms() - t_ret;
+    }
 
     /* ---- Profile ---- */
     span = (int32_t)p_prof->left_cdeg - (int32_t)p_prof->right_cdeg;
@@ -322,7 +552,11 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     p_prof->beam_cdeg = (int16_t)beam;
 
     half_w = (excess > 0) ? (d * tan_cdeg(excess / 2)) : 0.0f;
-    p_prof->width_mm = (int16_t)(2.0f * half_w);
+    p_prof->width_mm = coarse_width_mm(n, near_i);
+
+    /* Old rule's estimate from the coarse sweep alone (comparison) */
+    excess = (int32_t)g_log[old_hi].cdeg - (int32_t)g_log[old_lo].cdeg - beam;
+    p_prof->width_old_mm = (int16_t)((excess > 0) ? (2.0f * d * tan_cdeg(excess / 2)) : 0.0f);
 
     /* Centre bearing, then the sides relative to the car's centreline */
     centre = ((int32_t)p_prof->left_cdeg + (int32_t)p_prof->right_cdeg) / 2;
@@ -331,4 +565,56 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     p_prof->right_side_mm = (int16_t)(centre_off - half_w);
 
     return E_OK;
+}
+
+void
+scan_set_abort_flag(const volatile uint8_t *p_flag)
+{
+    g_p_abort = p_flag;
+}
+
+uint32_t
+scan_get_coarse(scan_pt_t *p_out, uint32_t max)
+{
+    uint32_t i;
+    uint32_t n = g_log_n;
+
+    if (NULL == p_out)
+    {
+        return 0u;
+    }
+    n = (n < max) ? n : max;
+    for (i = 0u; i < n; i++)
+    {
+        p_out[i] = g_log[i];
+    }
+    return n;
+}
+
+uint32_t
+scan_get_fine(uint32_t edge, scan_pt_t *p_out, uint32_t max)
+{
+    uint32_t i;
+    uint32_t n;
+
+    if ((NULL == p_out) || (edge > 1u))
+    {
+        return 0u;
+    }
+    n = g_fine_n[edge];
+    n = (n < max) ? n : max;
+    for (i = 0u; i < n; i++)
+    {
+        p_out[i] = g_fine[edge][i];
+    }
+    return n;
+}
+
+void
+scan_get_timing(scan_timing_t *p_t)
+{
+    if (NULL != p_t)
+    {
+        *p_t = g_tm;
+    }
 }

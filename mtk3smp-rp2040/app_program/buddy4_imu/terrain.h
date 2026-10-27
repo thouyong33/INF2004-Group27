@@ -25,6 +25,7 @@
 
 #define TERRAIN_EVT_HUMP        (1u << 0)
 #define TERRAIN_EVT_COLLISION   (1u << 1)
+#define TERRAIN_EVT_SIDE_HUMP   (1u << 2)
 
 typedef struct {
     int32_t start_mm;        /**< where the nose-down stretch began */
@@ -34,6 +35,16 @@ typedef struct {
     int16_t height_mm;       /**< estimated hump height */
 } hump_event_t;
 
+/** One-sided hump: one wheel went over it and the car rolled. */
+typedef struct {
+    int32_t start_mm;        /**< where the roll stretch began */
+    int32_t end_mm;          /**< where it ended */
+    int32_t plateau_mm;      /**< start of the most-tilted 30 mm */
+    int16_t plateau_cdeg;    /**< that window's mean roll, right side down + */
+    int16_t height_mm;       /**< 114 mm track x sin(|plateau roll|) */
+    uint8_t right_side;      /**< 1 = right wheel went over it */
+} side_hump_event_t;
+
 typedef struct {
     int32_t dist_mm;         /**< where the jolt happened */
     int16_t jolt_mg;         /**< horizontal accel jump that triggered it */
@@ -42,8 +53,9 @@ typedef struct {
 /**
  * @brief Start detection; call with the car at rest and level.
  * @param rest_pitch_cdeg pitch measured at rest (the zero reference)
+ * @param rest_roll_cdeg  roll measured at rest (the zero reference)
  */
-void terrain_reset(int16_t rest_pitch_cdeg);
+void terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg);
 
 /**
  * @brief Process one sample.
@@ -55,10 +67,24 @@ void terrain_reset(int16_t rest_pitch_cdeg);
  * @param p_hump    filled when TERRAIN_EVT_HUMP is returned
  * @param p_coll    filled when TERRAIN_EVT_COLLISION is returned
  * @return TERRAIN_EVT_* flags for events completed by this sample
+ *         (for TERRAIN_EVT_SIDE_HUMP read it with terrain_last_side_hump)
  */
 uint32_t terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
                         const imu_raw_t *p_cal, bool steady,
                         hump_event_t *p_hump, collision_event_t *p_coll);
+
+/** @brief True while inside a hump: nose-down stretch or one-sided roll. */
+bool terrain_on_hump(void);
+
+/** @brief The side hump completed by the last TERRAIN_EVT_SIDE_HUMP. */
+void terrain_last_side_hump(side_hump_event_t *p_ev);
+
+/** @brief Largest |filtered roll| since terrain_reset, x0.01 deg. */
+int16_t terrain_max_roll_cdeg(void);
+
+/** @brief Pitch humps not reported because the car rolled during them
+ *  (one-sided ramp, reported by the roll detector instead). */
+uint32_t terrain_pitch_humps_dropped(void);
 
 /** @brief Largest horizontal jolt seen since terrain_reset (for tuning). */
 int16_t terrain_max_jolt_mg(void);

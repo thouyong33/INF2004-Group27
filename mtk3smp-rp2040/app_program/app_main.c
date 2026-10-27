@@ -51,6 +51,9 @@
 // ADDED: Robot task includes
 #include "buddy3_line_barcode/barcode_task.h"
 #include "buddy3_line_barcode/ir_sensor.h"
+#include "buddy3_line_barcode/line.h"
+#include "buddy3_line_barcode/barcode.h"
+#include "buddy3_line_barcode/barcode_scan.h"
 #include "common/pin_defs.h"
 #include "buddy2_motion/motion_task.h"
 #include "buddy4_imu/imu.h"
@@ -58,7 +61,11 @@
 #include "buddy5_ultrasonic/ultrasonic.h"
 #include "buddy5_ultrasonic/servo.h"
 #include "buddy5_ultrasonic/scan.h"
+#include "buddy5_ultrasonic/obstacle.h"
 #include "common/console_in.h"
+#include "common/faults.h"
+#include "common/ctrl_events.h"
+#include "controller/vehicle_ctrl.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -570,6 +577,42 @@ LOCAL T_CFLG cflg = {
  *   IR_TEST_AO             - Buddy 3 step 1b: left IR analog out (GP27)
  *                            against distance, hand-pushed over a barcode:
  *                            levels, bar widths and the raw profile.
+ *   MOTION_TEST_SAFETY     - Tribunal 1 phase 1, car lifted: loop rate and
+ *                            PI error, STOP over queued commands, stall
+ *                            (both wheels held), encoder check (one held).
+ *   MOTION_TEST_CPU        - motion task CPU (busy us/s, longest pass) idle
+ *                            and at 150/300/500 mm/s, and stack high-water.
+ *   IMU_TEST_RAMP_ROLL     - phase 2 step 1: 50 cm at 150 mm/s with only the
+ *                            right wheel over a ramp (flat/small/tall); logs
+ *                            roll, pitch, heading, wheel distances, jolt.
+ *   MOTION_TEST_STRAIGHT   - key-paced 50 cm straight runs at 150 mm/s to
+ *                            measure sideways drift (per-wheel trim).
+ *   IMU_TEST_SIDE_HUMP     - phase 2: roll-based one-sided hump detector
+ *                            live (hump mask on), 5 tall-ramp runs, with
+ *                            the bracket-strike IMPACT check replayed.
+ *   OBST_TEST_STOP         - phase 3 step 1: obstacle watch task; runs at
+ *                            300 mm/s to a box (5) and a bottle (2), stop
+ *                            gap and a per-ping trace.
+ *   DEMO_STOP              - obstacle demo v1 (course): drive, stop at the
+ *                            block (>= 5 cm nose gap), stay stopped.
+ *   SCAN_TEST_ABORT        - phase 3 step 2: scan in the obstacle task; full
+ *                            scan, abort with STOP mid-scan, timeout fault.
+ *   DEMO_AVOID             - obstacle demo v2 (course): stop at the block,
+ *                            scan, go round it, back onto the original path.
+ *   LINE_TEST_FOLLOW       - Buddy 3: line following runs on the mats with
+ *                            a 20 ms trace (stops on distance, raised mats).
+ *   LINE_TEST_RAMP         - course scenario 1: one-sided ramp under the
+ *                            right wheel while line following; hump mask
+ *                            fed live, IMU log + line trace.
+ *   CTRL_TEST_COURSE       - vehicle controller task: course runs (line +
+ *                            ramp, or line + obstacle stop), event log and
+ *                            robot_status every 500 ms.
+ *   BARCODE_TEST_DRIVE     - Buddy 3 barcode: driven scan (50 mm/s) of the
+ *                            slit-taped left IR AO, decoder v2 (barcode.c)
+ *                            reading Code 39 both ways.
+ *   OBST_TEST_WIDTH        - Buddy 5: drive, stop at an object, scan; width
+ *                            estimate plus every reading, for calibrating
+ *                            the width against objects of known size.
  * To switch, change the MOTION_TEST_MODE default below and rebuild.
  * ------------------------------------------------------------------ */
 #define MOTION_TEST_FIXED_TIME   1
@@ -591,9 +634,23 @@ LOCAL T_CFLG cflg = {
 #define DEMO_ROAM                17
 #define IR_TEST_LOG              18
 #define IR_TEST_AO               19
+#define MOTION_TEST_SAFETY       20
+#define MOTION_TEST_CPU          21
+#define IMU_TEST_RAMP_ROLL       22
+#define MOTION_TEST_STRAIGHT     23
+#define IMU_TEST_SIDE_HUMP       24
+#define OBST_TEST_STOP           25
+#define DEMO_STOP                26
+#define SCAN_TEST_ABORT          27
+#define DEMO_AVOID               28
+#define LINE_TEST_FOLLOW         29
+#define LINE_TEST_RAMP           30
+#define CTRL_TEST_COURSE         31
+#define BARCODE_TEST_DRIVE       32
+#define OBST_TEST_WIDTH          33
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         IR_TEST_AO
+#define MOTION_TEST_MODE         CTRL_TEST_COURSE
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -677,14 +734,58 @@ LOCAL T_CFLG cflg = {
 #define ROAM_SPD_SETTLE_MS       400   /* skip speed checks while starting */
 #define ROAM_JOLT_CONFIRM_MS     250   /* a jolt must slow the wheels within this */
 #define ROAM_JOLT_SLOW_PCT       60    /* ...to below this % of the command */
-#define ROAM_STALL_PCT           30    /* below this %, for ROAM_STALL_N loops: stuck */
-#define ROAM_STALL_N             3
 #define ROAM_IGNORED_MAX         4
 
 #define IR_LOG_LEN               400   /* sensor changes per pass */
 #define IR_SHORT_MM10            10    /* runs under 1 mm count as chatter */
 #define IR_AO_LEN                900   /* steps per pass: ~295 mm */
 #define IR_AO_ROW                20    /* profile values per line (1 mm each) */
+
+#define RAMP_SPEED_MM_S          150
+#define RAMP_DIST_MM             500
+#define RAMP_LOG_LEN             300   /* 20 ms samples: 6 s */
+#define SIDE_RUNS                5
+
+#define STRAIGHT_RUNS            5
+#define STRAIGHT_DIST_CM         50
+#define STRAIGHT_SPEED_MM_S      150
+
+#define OBST_RUNS                7
+#define OBST_BOX_RUNS            5
+#define OBST_MAX_DIST_MM         1500  /* drive limit if nothing stops it */
+
+#define DEMOSTOP_MM_S            300   /* = OBS_WATCH_MAX_MM_S, validated */
+#define DEMOSTOP_MAX_MM          3000  /* stop anyway after 3 m */
+#define SCANAB_LONG_MS           90000u /* diagnostic: let a slow scan finish */
+#define SCANAB_A_RUNS            3
+
+/* Car footprint (user, 23 Oct): 20 cm long, axle 13 cm behind the nose
+   (7 cm of car behind it); sonar ~6 cm behind the nose. Not symmetric:
+   wheels 14 cm across, the left IR bracket pokes out 1-2 cm further */
+#define AVOID_HALF_R_MM          70    /* centre to the right wheel's outside */
+#define AVOID_HALF_L_MM          85    /* centre to the left IR bracket */
+#define AVOID_SENSOR_AHEAD_MM    70    /* sonar ahead of the axle */
+/* Gap beside the block: v2b (20 mm) rubbed a wheel on the straight. Each
+   90 deg turn lands within ~1-2 deg (2 deg over the ~55 cm straight is
+   ~20 mm) and the scan places the block's edge within ~20-30 mm; turns
+   are now trimmed to ~0.6 deg, and 50 mm covers the rest */
+#define AVOID_GAP_MM             50
+#define AVOID_DEPTH_MM           200   /* block depth: not measurable, assumed */
+/* Axle past the block's back before turning in: after the 90 deg turn the
+   car's trailing side is a half width behind the axle and must clear the
+   block's back face on the sideways leg home */
+#define AVOID_PAST_MM            (AVOID_HALF_L_MM + AVOID_GAP_MM)
+#define AVOID_TRIM_CDEG          60    /* re-turn if a turn misses by more */
+#define AVOID_AFTER_MM           400   /* carry on along the path afterwards */
+#define AVOID_LEG_MM_S           200
+#define AVOID_LEG_BRAKE_MM       35    /* stop command this early (~v^2/2a) */
+#define AVOID_TURN_MM_S          60
+#define AVOID_TRIM_MM_S          30    /* slow for the small correcting turn */
+
+/* Raised mats: wheels start at the mat edge with the nose ~13 cm in; on
+   the straight + cross mats (61 cm) stop with the wheels <= ~45 cm along */
+#define LINE_TEST_MM_S           100   /* tuning speed (first runs at 150 swung hard) */
+#define LINE_TEST_MAX_MM         450
 
 #define DIST_PAUSE_S             10
 
@@ -1679,6 +1780,7 @@ LOCAL void terrain_pass(const char *name)
     hump_event_t h;
     collision_event_t c;
     W p0 = 0;
+    W r0 = 0;
     INT base_n = 0;
     INT nh = 0;
     INT nc = 0;
@@ -1691,11 +1793,13 @@ LOCAL void terrain_pass(const char *name)
     for(i = 0; i < 25; i++) {
         if(E_OK == imu_read_attitude(&att, NULL)) {
             p0 += att.pitch_cdeg;
+            r0 += att.roll_cdeg;
             base_n++;
         }
         tk_dly_tsk(20);
     }
-    terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0));
+    terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0),
+                  (int16_t)((base_n > 0) ? (r0 / base_n) : 0));
 
     motion_reset_odometry();
     motion_set_velocity(TERR_SPEED_MM_S, TERR_SPEED_MM_S);
@@ -2570,10 +2674,11 @@ LOCAL void demo_roam(void)
     static INT ring_d[ROAM_SPD_RING];
     static INT ign_mg[ROAM_IGNORED_MAX];
     static INT ign_pct[ROAM_IGNORED_MAX];
-    INT ring_n, ring_i, k, j, v_pct, min_pct, stall_n, n_ign, dist;
+    INT ring_n, ring_i, k, j, v_pct, min_pct, n_ign, dist;
     UW t, leg_t0, jolt_t;
     BOOL jolt_pending, stalled;
     W p0 = 0;
+    W r0 = 0;
     INT base_n = 0;
     UW ev;
 
@@ -2600,11 +2705,13 @@ LOCAL void demo_roam(void)
         for(s = 0; s < 25; s++) {
             if(E_OK == imu_read_attitude(&att, NULL)) {
                 p0 += att.pitch_cdeg;
+                r0 += att.roll_cdeg;
                 base_n++;
             }
             tk_dly_tsk(20);
         }
-        terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0));
+        terrain_reset((int16_t)((base_n > 0) ? (p0 / base_n) : 0),
+                      (int16_t)((base_n > 0) ? (r0 / base_n) : 0));
     }
     (void)motion_get_encoder_diag(&l, &r);
     roam_d0 = (l.hw_count + r.hw_count) / 2;
@@ -2655,7 +2762,6 @@ LOCAL void demo_roam(void)
         min_pct = 100;
         v_pct = 100;
         n_ign = 0;
-        stall_n = 0;
         ring_n = 0;
         ring_i = 0;
         near_n = 0;
@@ -2691,7 +2797,7 @@ LOCAL void demo_roam(void)
             if(imu_ok && (E_OK == imu_read_attitude(&att, &cal))) {
                 ev = terrain_update(dist, &att, &cal, motion_is_steady(),
                                     &hump, &coll);
-                if(0u != (ev & TERRAIN_EVT_HUMP)) {
+                if(0u != (ev & (TERRAIN_EVT_HUMP | TERRAIN_EVT_SIDE_HUMP))) {
                     humps++;
                 }
                 if((0u != (ev & TERRAIN_EVT_COLLISION)) && (!jolt_pending)) {
@@ -2717,14 +2823,13 @@ LOCAL void demo_roam(void)
                     jolt_pending = FALSE;
                 }
             }
-            /* Pushing against something the sonar missed, jolt or not */
-            if(v_pct < ROAM_STALL_PCT) {
-                if(++stall_n >= ROAM_STALL_N) {
-                    stalled = TRUE;
-                    break;
-                }
-            } else {
-                stall_n = 0;
+            /* Pushing against something the sonar missed, jolt or not:
+               the motion task's stall/encoder checks raise a fault and
+               stop the wheels. They are masked while on a hump. */
+            motion_set_hump_mask(terrain_on_hump());
+            if(0u != (fault_get() & FAULT_MOTION_MASK)) {
+                stalled = TRUE;
+                break;
             }
 
             if(++tick >= ROAM_PING_EVERY) {
@@ -2744,9 +2849,12 @@ LOCAL void demo_roam(void)
             }
             tk_dly_tsk(20);
         }
-        motion_set_velocity(0, 0);
+        motion_stop();
+        motion_set_hump_mask(FALSE);
         tk_dly_tsk(500);
 
+        tm_printf((UB *)"[ROAM]   motion loop %d passes/s, faults 0x%x\n",
+                  (INT)motion_loop_rate(), (INT)fault_get());
         for(j = 0; j < n_ign; j++) {
             tm_printf((UB *)"[ROAM]   ignored jolt %d mg: wheels kept %d%% speed\n",
                       ign_mg[j], ign_pct[j]);
@@ -2757,7 +2865,11 @@ LOCAL void demo_roam(void)
                 tm_printf((UB *)": BUMP (jolt %d mg, wheels down to %d%%), backing off\n",
                           coll.jolt_mg, min_pct);
             } else {
-                tm_printf((UB *)": STALLED (wheels at %d%%), backing off\n", v_pct);
+                tm_printf((UB *)": %s (wheels at %d%%), backing off\n",
+                          (0u != (fault_get() & FAULT_MOTOR_STALL)) ? "STALLED"
+                          : "ENCODER FAULT", v_pct);
+                /* Cleared by the controller once it has handled it */
+                fault_clear(FAULT_MOTION_MASK);
             }
             motion_set_velocity(-ROAM_BACK_MM_S, -ROAM_BACK_MM_S);
             tk_dly_tsk(ROAM_BACK_MS);
@@ -3059,6 +3171,1860 @@ LOCAL void ir_test_ao(void)
         }
     }
 }
+#elif MOTION_TEST_MODE == MOTION_TEST_SAFETY
+/* Phase 1 check (Tribunal 1): car LIFTED, wheels free. Key-paced parts:
+   A timing and PI error, B STOP with commands queued, C stall (hold both
+   wheels), D encoder plausibility (hold one wheel). Nothing is printed
+   while the wheels turn. */
+LOCAL UW safe_now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
+LOCAL void safe_wait_key(const char *what)
+{
+    tm_printf((UB *)"[SAFE] %s Press a key.\n", what);
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tk_dly_tsk(50);
+    }
+}
+
+/* Wait until neither wheel has moved for 100 ms (or 3 s); returns ms */
+LOCAL UW safe_wait_still(UW t0)
+{
+    enc_diag_t l, r;
+    W last = -1, now;
+    UW still = 0;
+
+    while((still < 100u) && ((safe_now_ms() - t0) < 3000u)) {
+        (void)motion_get_encoder_diag(&l, &r);
+        now = (W)(l.hw_edges + r.hw_edges);
+        still = (now == last) ? (still + 5u) : 0u;
+        last = now;
+        tk_dly_tsk(5);
+    }
+    return safe_now_ms() - t0 - still;
+}
+
+/* Drive at v until a motion fault or limit_ms; returns ms to the fault */
+LOCAL UW safe_drive_until_fault(INT v, UW limit_ms)
+{
+    UW t0 = safe_now_ms();
+
+    motion_set_velocity((int16_t)v, (int16_t)v);
+    while(((safe_now_ms() - t0) < limit_ms) && (0u == (fault_get() & FAULT_MOTION_MASK))) {
+        tk_dly_tsk(5);
+    }
+    return safe_now_ms() - t0;
+}
+
+LOCAL void safe_report_fault(UW ms)
+{
+    UB f = fault_get();
+
+    tm_printf((UB *)"[SAFE]   faults 0x%x after %d ms:%s%s%s%s\n", (INT)f, (INT)ms,
+              (0u != (f & FAULT_MOTOR_STALL)) ? " MOTOR_STALL" : "",
+              (0u != (f & FAULT_ENC_LEFT)) ? " ENC_LEFT" : "",
+              (0u != (f & FAULT_ENC_RIGHT)) ? " ENC_RIGHT" : "",
+              (0u == (f & FAULT_MOTION_MASK)) ? " none (no trip)" : "");
+}
+
+LOCAL void motion_test_safety(void)
+{
+    static const INT speeds[3] = { 150, 300, 500 };
+    enc_diag_t l0, r0, l1, r1;
+    INT i, l_mm_s, r_mm_s;
+    UW t0, ms;
+
+    tm_printf((UB *)"\n[SAFE] Motion safety and timing test. Car LIFTED, wheels free.\n");
+
+    /* A: loop rate and speed error at three speeds */
+    safe_wait_key("Part A: timing and PI error at 150/300/500 mm/s.");
+    for(i = 0; i < 3; i++) {
+        motion_set_velocity((int16_t)speeds[i], (int16_t)speeds[i]);
+        tk_dly_tsk(1500);
+        (void)motion_get_encoder_diag(&l0, &r0);
+        tk_dly_tsk(1000);
+        (void)motion_get_encoder_diag(&l1, &r1);
+        motion_set_velocity(0, 0);
+        tk_dly_tsk(800);
+        l_mm_s = (INT)(((l1.hw_count - l0.hw_count) * SWEEP_UM_PER_EDGE) / 1000);
+        r_mm_s = (INT)(((r1.hw_count - r0.hw_count) * SWEEP_UM_PER_EDGE) / 1000);
+        tm_printf((UB *)"[SAFE]   %d mm/s: L %d R %d mm/s (error L %d R %d %%), loop %d passes/s\n",
+                  speeds[i], l_mm_s, r_mm_s,
+                  ((l_mm_s - speeds[i]) * 100) / speeds[i],
+                  ((r_mm_s - speeds[i]) * 100) / speeds[i],
+                  (INT)motion_loop_rate());
+    }
+
+    /* B: STOP overtakes queued commands */
+    safe_wait_key("Part B: STOP at 300 mm/s with 3 commands queued behind it.");
+    motion_set_velocity(300, 300);
+    tk_dly_tsk(1500);
+    motion_set_velocity(300, 300);
+    motion_set_velocity(300, 300);
+    motion_set_velocity(300, 300);
+    t0 = safe_now_ms();
+    motion_stop();
+    ms = safe_wait_still(t0);
+    tk_dly_tsk(500);
+    (void)motion_get_encoder_diag(&l0, &r0);
+    tk_dly_tsk(500);
+    (void)motion_get_encoder_diag(&l1, &r1);
+    tm_printf((UB *)"[SAFE]   wheels still %d ms after STOP; %s\n", (INT)ms,
+              ((l1.hw_edges == l0.hw_edges) && (r1.hw_edges == r0.hw_edges))
+              ? "stayed stopped (queued commands discarded)" : "MOVED AGAIN");
+
+    /* C: stall, both wheels held */
+    safe_wait_key("Part C: wheels spin at 200 mm/s; after ~1 s grip BOTH wheels"
+                  " firmly until they stop.");
+    ms = safe_drive_until_fault(200, 10000u);
+    motion_set_velocity(0, 0);
+    safe_report_fault(ms);
+    tk_dly_tsk(800);
+    fault_clear(FAULT_MOTION_MASK);
+
+    /* D: one wheel held */
+    safe_wait_key("Part D: wheels spin at 200 mm/s; after ~1 s grip only the"
+                  " LEFT wheel until it stops.");
+    ms = safe_drive_until_fault(200, 10000u);
+    motion_set_velocity(0, 0);
+    safe_report_fault(ms);
+    tk_dly_tsk(800);
+    fault_clear(FAULT_MOTION_MASK);
+
+    /* E: no false trips while running free */
+    safe_wait_key("Part E: 10 s free running at 300 mm/s, hands off (expect no trip).");
+    ms = safe_drive_until_fault(300, 10000u);
+    motion_set_velocity(0, 0);
+    safe_report_fault(ms);
+    fault_clear(FAULT_MOTION_MASK);
+
+    tm_printf((UB *)"\n=== Motion safety test complete ===\n");
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_CPU
+/* CPU and RAM use of the motion task, car LIFTED. Each step holds a state
+   for 3 s, then reads the last full second: loop passes, busy time and the
+   longest pass, plus the stack high-water mark. Prints only between steps. */
+LOCAL void cpu_report(const char *name)
+{
+    uint32_t busy, max_pass;
+
+    motion_get_cpu(&busy, &max_pass);
+    tm_printf((UB *)"[CPU] %s: %d passes/s, busy %d us/s = %d.%d%d %% CPU, "
+              "longest pass %d us, %d us per pass on average\n", name,
+              (INT)motion_loop_rate(), (INT)busy, (INT)(busy / 10000u),
+              (INT)((busy / 1000u) % 10u), (INT)((busy / 100u) % 10u), (INT)max_pass,
+              (motion_loop_rate() > 0u) ? (INT)(busy / motion_loop_rate()) : 0);
+}
+
+LOCAL void motion_test_cpu(void)
+{
+    static const INT speeds[3] = { 150, 300, 500 };
+    INT i;
+
+    ultrasonic_init();              /* starts the 1 MHz timer the counters use */
+    tm_printf((UB *)"\n[CPU] Motion task CPU and stack. Car LIFTED. Starting in 3 s.\n");
+    tk_dly_tsk(3000);
+
+    cpu_report("idle (stopped)");
+    for(i = 0; i < 3; i++) {
+        motion_set_velocity((int16_t)speeds[i], (int16_t)speeds[i]);
+        tk_dly_tsk(3000);
+        tm_printf((UB *)"[CPU] ");
+        tm_printf((UB *)"%d mm/s:\n", speeds[i]);
+        cpu_report("  driving");
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(1500);
+    tm_printf((UB *)"[CPU] stack: %d of %d bytes used (deepest so far)\n",
+              (INT)motion_stack_used(), (INT)motion_stack_size());
+    tm_printf((UB *)"\n=== CPU test complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_RAMP_ROLL
+/* Phase 2 step 1: one-sided hump log. The car drives RAMP_DIST_MM straight
+   at RAMP_SPEED_MM_S under the normal PI (no heading hold) with only the
+   RIGHT wheel going over the ramp. Every 20 ms it stores roll, pitch,
+   heading, both wheels' distance and the horizontal jolt in RAM; the log
+   is printed once the car has stopped. The stall/encoder checks stay on
+   (no hump mask), to see whether the ramp or the IR bracket trips them. */
+typedef struct {
+    int16_t d_mm;        /* mean forward distance */
+    int16_t l_mm;        /* left wheel distance */
+    int16_t r_mm;        /* right wheel distance */
+    int16_t roll;        /* x0.01 deg, right side down + */
+    int16_t pitch;       /* x0.01 deg, nose up + */
+    uint16_t hdg;        /* x0.01 deg clockwise from magnetic north */
+    int16_t jolt_mg;     /* larger of |d ax|, |d ay| since last sample */
+} ramp_pt_t;
+
+LOCAL INT ramp_wrap_cdeg(INT d)
+{
+    while(d > 18000) {
+        d -= 36000;
+    }
+    while(d < -18000) {
+        d += 36000;
+    }
+    return d;
+}
+
+LOCAL INT ramp_sin_cdeg_x1000(INT cdeg)
+{
+    /* sin by Taylor to x^7 (no libm), x1000 */
+    float x = (float)cdeg * (3.14159265f / 18000.0f);
+    float x2 = x * x;
+
+    return (INT)(1000.0f * x * (1.0f - (x2 / 6.0f) * (1.0f - (x2 / 20.0f)
+                 * (1.0f - (x2 / 42.0f)))));
+}
+
+LOCAL void ramp_pass(const char *name)
+{
+    static ramp_pt_t log[RAMP_LOG_LEN];
+    imu_attitude_t att;
+    imu_raw_t s;
+    enc_diag_t l, r;
+    INT n = 0, i, k, base_n = 0;
+    W roll0 = 0, pitch0 = 0, hdg_unwrap = 0;
+    INT hdg_first = -1, d, j;
+    INT prev_ax = 0, prev_ay = 0;
+    BOOL have_prev = FALSE, stopping = FALSE;
+    UW t_stop = 0;
+    SYSTIM tim;
+    INT roll_min = 0, roll_max = 0, i_min = 0, i_max = 0, jolt_max = 0, i_jolt = 0;
+    INT h0, h1, enc_yaw;
+
+    /* Rest reference: 0.5 s still */
+    for(i = 0; i < 25; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            roll0 += att.roll_cdeg;
+            pitch0 += att.pitch_cdeg;
+            if(hdg_first < 0) {
+                hdg_first = att.heading_cdeg;
+            }
+            hdg_unwrap += ramp_wrap_cdeg((INT)att.heading_cdeg - hdg_first);
+            base_n++;
+        }
+        tk_dly_tsk(20);
+    }
+    if(base_n == 0) {
+        tm_printf((UB *)"[RAMP] IMU read failed\n");
+        return;
+    }
+    roll0 /= base_n;
+    pitch0 /= base_n;
+    h0 = hdg_first + (INT)(hdg_unwrap / base_n);
+
+    fault_clear(FAULT_MOTION_MASK);
+    motion_reset_odometry();
+    motion_set_velocity(RAMP_SPEED_MM_S, RAMP_SPEED_MM_S);
+
+    while(n < RAMP_LOG_LEN) {
+        if(E_OK == imu_read_attitude(&att, &s)) {
+            (void)motion_get_encoder_diag(&l, &r);
+            log[n].l_mm = (int16_t)((l.hw_count * SWEEP_UM_PER_EDGE) / 1000);
+            log[n].r_mm = (int16_t)((r.hw_count * SWEEP_UM_PER_EDGE) / 1000);
+            log[n].d_mm = (int16_t)((log[n].l_mm + log[n].r_mm) / 2);
+            log[n].roll = (int16_t)(att.roll_cdeg - roll0);
+            log[n].pitch = (int16_t)(att.pitch_cdeg - pitch0);
+            log[n].hdg = att.heading_cdeg;
+            j = 0;
+            if(have_prev) {
+                j = (s.ax > prev_ax) ? (s.ax - prev_ax) : (prev_ax - s.ax);
+                k = (s.ay > prev_ay) ? (s.ay - prev_ay) : (prev_ay - s.ay);
+                if(k > j) {
+                    j = k;
+                }
+            }
+            prev_ax = s.ax;
+            prev_ay = s.ay;
+            have_prev = TRUE;
+            log[n].jolt_mg = (int16_t)j;
+            n++;
+
+            tk_get_tim(&tim);
+            if((!stopping) && ((log[n - 1].d_mm >= RAMP_DIST_MM)
+                               || (0u != (fault_get() & FAULT_MOTION_MASK)))) {
+                motion_set_velocity(0, 0);
+                stopping = TRUE;
+                t_stop = tim.lo;
+            }
+            if(stopping && ((tim.lo - t_stop) > 800u)) {
+                break;
+            }
+        }
+        tk_dly_tsk(20);
+    }
+    motion_set_velocity(0, 0);
+    tk_dly_tsk(300);
+
+    /* Heading after, averaged like the rest reference */
+    hdg_first = -1;
+    hdg_unwrap = 0;
+    base_n = 0;
+    for(i = 0; i < 25; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            if(hdg_first < 0) {
+                hdg_first = att.heading_cdeg;
+            }
+            hdg_unwrap += ramp_wrap_cdeg((INT)att.heading_cdeg - hdg_first);
+            base_n++;
+        }
+        tk_dly_tsk(20);
+    }
+    h1 = (base_n > 0) ? (hdg_first + (INT)(hdg_unwrap / base_n)) : h0;
+
+    tm_printf((UB *)"\n[RAMP] %s: %d samples, rest roll %d pitch %d (x0.01 deg), faults 0x%x\n",
+              name, n, (INT)roll0, (INT)pitch0, (INT)fault_get());
+    tm_printf((UB *)"[RAMP] i,d_mm,l_mm,r_mm,roll,pitch,hdg,jolt_mg  (roll/pitch from rest)\n");
+    for(i = 0; i < n; i++) {
+        tm_printf((UB *)"[RAMP] %d,%d,%d,%d,%d,%d,%d,%d\n", i, log[i].d_mm, log[i].l_mm,
+                  log[i].r_mm, log[i].roll, log[i].pitch, (INT)log[i].hdg, log[i].jolt_mg);
+        if(log[i].roll < roll_min) {
+            roll_min = log[i].roll;
+            i_min = i;
+        }
+        if(log[i].roll > roll_max) {
+            roll_max = log[i].roll;
+            i_max = i;
+        }
+        if(log[i].jolt_mg > jolt_max) {
+            jolt_max = log[i].jolt_mg;
+            i_jolt = i;
+        }
+    }
+
+    d = ramp_wrap_cdeg(h1 - h0);
+    enc_yaw = (n > 0) ? (INT)(((log[n - 1].l_mm - log[n - 1].r_mm) * 573L * 100L)
+                              / (10L * HDG_TRACK_MM)) : 0;
+    tm_printf((UB *)"[RAMP] summary %s:\n", name);
+    tm_printf((UB *)"[RAMP]   roll range %d .. %d (x0.01 deg) at d=%d / %d mm\n",
+              roll_min, roll_max, log[i_min].d_mm, log[i_max].d_mm);
+    tm_printf((UB *)"[RAMP]   if roll = asin(h / %d mm): right-up h ~ %d mm\n",
+              HDG_TRACK_MM, (HDG_TRACK_MM * ramp_sin_cdeg_x1000(-roll_min)) / 1000);
+    tm_printf((UB *)"[RAMP]   compass turned %d (x0.01 deg, + = right), encoders %d"
+              " (L-R over track, + = right)\n", d, enc_yaw);
+    tm_printf((UB *)"[RAMP]   wheels L %d R %d mm, largest jolt %d mg at d=%d mm\n",
+              (n > 0) ? log[n - 1].l_mm : 0, (n > 0) ? log[n - 1].r_mm : 0,
+              jolt_max, log[i_jolt].d_mm);
+    tm_printf((UB *)"[RAMP]   Now measure how far sideways the car ended up from its"
+              " start line (mm, left or right).\n");
+}
+
+LOCAL void imu_test_ramp_roll(void)
+{
+    static const char *const passes[3] = {
+        "Pass 1/3: FLAT floor, no ramp",
+        "Pass 2/3: SMALL ramp (1.0 cm) under the RIGHT wheel only",
+        "Pass 3/3: TALL ramp (2.4 cm) under the RIGHT wheel only",
+    };
+    INT p;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[RAMP] imu_init failed, check the IMU\n");
+        return;
+    }
+    tm_printf((UB *)"\n[RAMP] One-sided hump log: %d mm straight at %d mm/s, no heading hold.\n",
+              RAMP_DIST_MM, RAMP_SPEED_MM_S);
+    tm_printf((UB *)"[RAMP] Mark the start line beside the car. Ramp start ~15 cm ahead of\n");
+    tm_printf((UB *)"[RAMP] the RIGHT wheel, lined up so only that wheel climbs it.\n");
+
+    for(p = 0; p < 3; p++) {
+        tm_printf((UB *)"\n[RAMP] %s.\n", passes[p]);
+        tm_printf((UB *)"[RAMP] Set up, keep the car still, then press a key to drive.\n");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);           /* hands off */
+        ramp_pass(passes[p]);
+    }
+    tm_printf((UB *)"\n=== One-sided hump log complete ===\n");
+}
+#elif MOTION_TEST_MODE == MOTION_TEST_STRAIGHT
+/* Straight-line drift check: STRAIGHT_RUNS key-paced runs of
+   STRAIGHT_DIST_CM at STRAIGHT_SPEED_MM_S. After each run, measure how far
+   sideways the car ended up from its start line. The encoders only show
+   that both wheels turned the same amount; ground drift is the ruler's job. */
+LOCAL void motion_test_straight(void)
+{
+    enc_diag_t l, r;
+    INT run;
+
+    tm_printf((UB *)"\n[STRAIGHT] %d runs of %d cm at %d mm/s on the floor.\n",
+              STRAIGHT_RUNS, STRAIGHT_DIST_CM, STRAIGHT_SPEED_MM_S);
+    tm_printf((UB *)"[STRAIGHT] Put a straight tape line on the floor beside the LEFT\n");
+    tm_printf((UB *)"[STRAIGHT] wheel, car parallel to it. After each run measure the gap\n");
+    tm_printf((UB *)"[STRAIGHT] between the tape and the left wheel at the start and end.\n");
+
+    for(run = 1; run <= STRAIGHT_RUNS; run++) {
+        tm_printf((UB *)"\n[STRAIGHT] Run %d/%d: line the car up, press a key.\n",
+                  run, STRAIGHT_RUNS);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);           /* hands off */
+        (void)motion_move_forward_cm(STRAIGHT_DIST_CM, STRAIGHT_SPEED_MM_S);
+        (void)motion_get_encoder_diag(&l, &r);
+        tm_printf((UB *)"[STRAIGHT]   wheels L %d R %d mm (L-R %d mm)\n",
+                  (INT)((l.hw_count * SWEEP_UM_PER_EDGE) / 1000),
+                  (INT)((r.hw_count * SWEEP_UM_PER_EDGE) / 1000),
+                  (INT)(((l.hw_count - r.hw_count) * SWEEP_UM_PER_EDGE) / 1000));
+        tm_printf((UB *)"[STRAIGHT]   now measure the sideways offset (mm, left or right)\n");
+    }
+    tm_printf((UB *)"\n=== Straight-line test complete ===\n");
+}
+#elif MOTION_TEST_MODE == IMU_TEST_SIDE_HUMP
+/* Phase 2: the roll-based one-sided hump detector (terrain.c) on the course
+   test, SIDE_RUNS runs over the TALL ramp under the RIGHT wheel only. The
+   detector runs live and sets the motion task's hump mask on the ramp.
+   Each run also checks the IR bracket strike: for every jolt of at least
+   STRIKE_MG it finds the lowest wheel speed in the next 250 ms, the same
+   test the roam/controller code uses to accept a jolt as an IMPACT
+   (wheels below 60 % of the command). Printed after the car stops. */
+#define STRIKE_MG                300
+#define STRIKE_WIN_MS            250
+#define SPD_WIN_MS               100
+
+typedef struct {
+    uint16_t t_ms;       /* since the start command */
+    int16_t  d_mm;
+    int16_t  roll;       /* raw, from rest, x0.01 deg */
+    int16_t  jolt_mg;
+    uint8_t  on_hump;
+} side_pt_t;
+
+/* Mean wheel speed over the SPD_WIN_MS before sample i, % of the command */
+LOCAL INT side_v_pct(const side_pt_t *lg, INT i)
+{
+    INT k = i;
+
+    while((k > 0) && ((INT)(lg[i].t_ms - lg[k].t_ms) < SPD_WIN_MS)) {
+        k--;
+    }
+    if(lg[i].t_ms == lg[k].t_ms) {
+        return 100;
+    }
+    return ((lg[i].d_mm - lg[k].d_mm) * 100000)
+           / ((INT)(lg[i].t_ms - lg[k].t_ms) * RAMP_SPEED_MM_S);
+}
+
+LOCAL void side_pass(const char *name)
+{
+    static side_pt_t lg[RAMP_LOG_LEN];
+    static side_hump_event_t sides[TERR_MAX_EVENTS];
+    static hump_event_t humps[TERR_MAX_EVENTS];
+    imu_attitude_t att;
+    imu_raw_t s;
+    hump_event_t h;
+    collision_event_t c;
+    enc_diag_t l, r;
+    W p0 = 0, r0 = 0;
+    INT base_n = 0, n = 0, i, d, ns = 0, nh = 0, nc = 0;
+    INT prev_ax = 0, prev_ay = 0, j, k, vmin, v;
+    BOOL have_prev = FALSE, stopping = FALSE;
+    UW ev, t_stop = 0, t0;
+    SYSTIM tim;
+
+    for(i = 0; i < 25; i++) {
+        if(E_OK == imu_read_attitude(&att, NULL)) {
+            p0 += att.pitch_cdeg;
+            r0 += att.roll_cdeg;
+            base_n++;
+        }
+        tk_dly_tsk(20);
+    }
+    if(base_n == 0) {
+        tm_printf((UB *)"[SIDE] IMU read failed\n");
+        return;
+    }
+    p0 /= base_n;
+    r0 /= base_n;
+    terrain_reset((int16_t)p0, (int16_t)r0);
+
+    fault_clear(FAULT_MOTION_MASK);
+    motion_reset_odometry();
+    tk_get_tim(&tim);
+    t0 = tim.lo;
+    motion_set_velocity(RAMP_SPEED_MM_S, RAMP_SPEED_MM_S);
+
+    while(n < RAMP_LOG_LEN) {
+        if(E_OK == imu_read_attitude(&att, &s)) {
+            (void)motion_get_encoder_diag(&l, &r);
+            tk_get_tim(&tim);
+            d = (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+            ev = terrain_update(d, &att, &s, motion_is_steady(), &h, &c);
+            motion_set_hump_mask(terrain_on_hump());
+            if((0u != (ev & TERRAIN_EVT_SIDE_HUMP)) && (ns < TERR_MAX_EVENTS)) {
+                terrain_last_side_hump(&sides[ns++]);
+            }
+            if((0u != (ev & TERRAIN_EVT_HUMP)) && (nh < TERR_MAX_EVENTS)) {
+                humps[nh++] = h;
+            }
+            if(0u != (ev & TERRAIN_EVT_COLLISION)) {
+                nc++;
+            }
+
+            j = 0;
+            if(have_prev) {
+                j = (s.ax > prev_ax) ? (s.ax - prev_ax) : (prev_ax - s.ax);
+                k = (s.ay > prev_ay) ? (s.ay - prev_ay) : (prev_ay - s.ay);
+                if(k > j) {
+                    j = k;
+                }
+            }
+            prev_ax = s.ax;
+            prev_ay = s.ay;
+            have_prev = TRUE;
+            lg[n].t_ms = (uint16_t)(tim.lo - t0);
+            lg[n].d_mm = (int16_t)d;
+            lg[n].roll = (int16_t)(att.roll_cdeg - r0);
+            lg[n].jolt_mg = (int16_t)j;
+            lg[n].on_hump = terrain_on_hump() ? 1u : 0u;
+            n++;
+
+            if((!stopping) && ((d >= RAMP_DIST_MM)
+                               || (0u != (fault_get() & FAULT_MOTION_MASK)))) {
+                motion_set_velocity(0, 0);
+                stopping = TRUE;
+                t_stop = tim.lo;
+            }
+            if(stopping && ((tim.lo - t_stop) > 800u)) {
+                break;
+            }
+        }
+        tk_dly_tsk(20);
+    }
+    motion_set_velocity(0, 0);
+    motion_set_hump_mask(FALSE);
+    tk_dly_tsk(300);
+
+    tm_printf((UB *)"\n[SIDE] %s: %d samples, rest roll %d (x0.01 deg), faults 0x%x\n",
+              name, n, (INT)r0, (INT)fault_get());
+    tm_printf((UB *)"[SIDE] i,t_ms,d_mm,roll,jolt_mg,speed_pct,on_hump\n");
+    for(i = 0; i < n; i++) {
+        tm_printf((UB *)"[SIDE] %d,%d,%d,%d,%d,%d,%d\n", i, (INT)lg[i].t_ms, lg[i].d_mm,
+                  lg[i].roll, lg[i].jolt_mg, side_v_pct(lg, i), (INT)lg[i].on_hump);
+    }
+    tm_printf((UB *)"[SIDE] summary %s:\n", name);
+    tm_printf((UB *)"[SIDE]   %d one-sided hump(s):\n", ns);
+    for(i = 0; i < ns; i++) {
+        tm_printf((UB *)"[SIDE]     %s wheel, %d..%d mm, height ~%d mm"
+                  " (30 mm mean roll %d x0.01 deg from %d mm)\n",
+                  (0u != sides[i].right_side) ? "RIGHT" : "LEFT",
+                  (INT)sides[i].start_mm, (INT)sides[i].end_mm, sides[i].height_mm,
+                  sides[i].plateau_cdeg, (INT)sides[i].plateau_mm);
+    }
+    tm_printf((UB *)"[SIDE]   %d pitch hump(s) reported, %d dropped as one-sided\n",
+              nh, (INT)terrain_pitch_humps_dropped());
+    for(i = 0; i < nh; i++) {
+        tm_printf((UB *)"[SIDE]     pitch hump %d..%d mm, height ~%d mm\n",
+                  (INT)humps[i].start_mm, (INT)humps[i].end_mm, humps[i].height_mm);
+    }
+    tm_printf((UB *)"[SIDE]   largest filtered roll %d, largest jolt %d mg, %d collision(s)\n",
+              terrain_max_roll_cdeg(), terrain_max_jolt_mg(), nc);
+
+    /* Bracket strike: would any jolt pass the IMPACT confirmation? */
+    for(i = 1; i < n; i++) {
+        if(lg[i].jolt_mg < STRIKE_MG) {
+            continue;
+        }
+        vmin = 1000;
+        for(k = i; (k < n) && ((INT)(lg[k].t_ms - lg[i].t_ms) <= STRIKE_WIN_MS); k++) {
+            v = side_v_pct(lg, k);
+            if(v < vmin) {
+                vmin = v;
+            }
+        }
+        tm_printf((UB *)"[SIDE]   jolt %d mg at %d mm: wheels down to %d %% within"
+                  " %d ms -> %s\n", lg[i].jolt_mg, lg[i].d_mm, vmin, STRIKE_WIN_MS,
+                  (vmin < ROAM_JOLT_SLOW_PCT) ? "WOULD count as IMPACT" : "ignored");
+    }
+    tm_printf((UB *)"[SIDE]   Now measure how far sideways the car ended up"
+              " (mm, left or right).\n");
+}
+
+LOCAL void imu_test_side_hump(void)
+{
+    INT run;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[SIDE] imu_init failed, check the IMU\n");
+        return;
+    }
+    tm_printf((UB *)"\n[SIDE] One-sided hump: %d runs over the TALL ramp (2.4 cm), RIGHT"
+              " wheel only, %d mm at %d mm/s.\n", SIDE_RUNS, RAMP_DIST_MM, RAMP_SPEED_MM_S);
+    tm_printf((UB *)"[SIDE] Ramp start ~15 cm ahead of the right wheel. Roll the car\n");
+    tm_printf((UB *)"[SIDE] forward a few cm by hand first so the castor trails.\n");
+
+    for(run = 1; run <= SIDE_RUNS; run++) {
+        tm_printf((UB *)"\n[SIDE] Run %d/%d: set up, keep the car still, press a key.\n",
+                  run, SIDE_RUNS);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        side_pass("TALL ramp, right wheel");
+    }
+    tm_printf((UB *)"\n=== One-sided hump detector test complete ===\n");
+}
+#elif MOTION_TEST_MODE == OBST_TEST_STOP
+/* Phase 3 step 1: obstacle watch task (obstacle.c). Key-paced runs at
+   OBS_WATCH_MAX_MM_S toward a target on the path, which must stop the car
+   with the nose (IR tip) >= 50 mm from it: runs 1..OBST_BOX_RUNS a box,
+   flat face to the car; the rest the round bottle (a weak, narrow echo).
+   Every ping is traced with the distance travelled and printed after the
+   stop. Nothing is printed while driving. */
+LOCAL INT obst_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+LOCAL void obst_run(INT run, BOOL box)
+{
+    static obstacle_trace_t tr[OBS_TRACE_LEN];
+    INT d_trig = -1, mm_trig = -1, d_end, i, n = 0, nt;
+    W sum = 0;
+    BOOL stopped = FALSE;
+
+    obstacle_watch(TRUE);
+    tk_dly_tsk(300);                 /* a few pings of history first */
+    motion_reset_odometry();
+    obstacle_trace_start();
+    motion_set_velocity(OBS_WATCH_MAX_MM_S, OBS_WATCH_MAX_MM_S);
+
+    while(obst_dist_mm() < OBST_MAX_DIST_MM) {
+        if(obstacle_blocked()) {
+            motion_stop();
+            d_trig = obst_dist_mm();
+            mm_trig = obstacle_last_mm();
+            stopped = TRUE;
+            break;
+        }
+        if(0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO))) {
+            motion_stop();
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    if(!stopped) {
+        motion_stop();
+    }
+    tk_dly_tsk(800);
+    d_end = obst_dist_mm();
+
+    /* Reading at rest: mean of 5 good pings */
+    for(i = 0; (i < 12) && (n < 5); i++) {
+        tk_dly_tsk(70);
+        if(obstacle_last_mm() > 0) {
+            sum += obstacle_last_mm();
+            n++;
+        }
+    }
+    obstacle_watch(FALSE);
+    nt = (INT)obstacle_trace_get(tr);
+
+    tm_printf((UB *)"[OBST] run %d pings (d_mm,reading_mm,near_bits; -1 no echo,"
+              " -2 dead):", run);
+    for(i = 0; i < nt; i++) {
+        if((i % 6) == 0) {
+            tm_printf((UB *)"\n[OBST]  ");
+        }
+        tm_printf((UB *)" %d,%d,%d%d%d", tr[i].d_mm, tr[i].mm,
+                  (tr[i].hist >> 2) & 1, (tr[i].hist >> 1) & 1, tr[i].hist & 1);
+    }
+    tm_printf((UB *)"\n");
+    tm_printf((UB *)"[OBST] run %d (%s): ", run, box ? "box" : "bottle");
+    if(stopped) {
+        tm_printf((UB *)"STOPPED, triggered at %d mm travelled with reading %d mm;"
+                  " at rest after %d mm, reading %d mm (braking %d mm)\n",
+                  d_trig, mm_trig, d_end, (n > 0) ? (INT)(sum / n) : -1, d_end - d_trig);
+    } else {
+        tm_printf((UB *)"no stop, drove %d mm%s\n", d_end,
+                  (0u != fault_get()) ? " (FAULT)" : "");
+    }
+    tm_printf((UB *)"[OBST]   faults 0x%x, pings %d. %s\n", (INT)fault_get(),
+              (INT)obstacle_ping_count(),
+              "Measure the gap from the nose (IR tip) to the target (mm).");
+}
+
+LOCAL void obst_test_stop(void)
+{
+    INT run;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[OBST] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[OBST] Obstacle watch: stop when 2 of the last 3 pings <= %d mm"
+              " (raw), driving at %d mm/s.\n", OBS_STOP_MM, OBS_WATCH_MAX_MM_S);
+    tm_printf((UB *)"[OBST] Runs 1-%d: a BOX, flat face to the car, ~60-100 cm ahead"
+              " on the path. Runs %d-%d: the round BOTTLE instead.\n", OBST_BOX_RUNS,
+              OBST_BOX_RUNS + 1, OBST_RUNS);
+
+    for(run = 1; run <= OBST_RUNS; run++) {
+        tm_printf((UB *)"\n[OBST] Run %d/%d: set up (%s), press a key.\n", run, OBST_RUNS,
+                  (run <= OBST_BOX_RUNS) ? "box, flat face to the car" : "round bottle");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        fault_clear(FAULT_MOTION_MASK);
+        obst_run(run, (run <= OBST_BOX_RUNS) ? TRUE : FALSE);
+    }
+    tm_printf((UB *)"\n=== Obstacle watch test complete ===\n");
+}
+#elif MOTION_TEST_MODE == DEMO_STOP
+/* Obstacle demo version 1 (course): drive forward at DEMOSTOP_MM_S with
+   the obstacle watch on, stop at the block (>= 5 cm nose gap; measured
+   12.7-15.0 cm on a flat face at 300 mm/s), stay stopped. A key starts
+   each run; a key while driving stops it too. Faults stop the car. */
+LOCAL INT demostop_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+LOCAL void demo_stop(void)
+{
+    INT run, d_trig, mm_trig, d_end;
+    UB why;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[STOP] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[STOP] Obstacle demo v1: drive at %d mm/s, stop at the block,"
+              " stay stopped.\n", DEMOSTOP_MM_S);
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[STOP] Run %d: point the car at the block, press a key to go"
+                  " (any key while driving stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+
+        obstacle_watch(TRUE);
+        tk_dly_tsk(300);
+        motion_reset_odometry();
+        motion_set_velocity(DEMOSTOP_MM_S, DEMOSTOP_MM_S);
+
+        why = 0u;
+        d_trig = 0;
+        mm_trig = -1;
+        while(0u == why) {
+            if(obstacle_blocked()) {
+                why = 1u;
+            } else if(0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO))) {
+                why = 2u;
+            } else if(console_try_getc() >= 0) {
+                why = 3u;
+            } else if(demostop_dist_mm() >= DEMOSTOP_MAX_MM) {
+                why = 4u;
+            } else {
+                tk_dly_tsk(5);
+            }
+        }
+        motion_stop();
+        d_trig = demostop_dist_mm();
+        mm_trig = obstacle_last_mm();
+        tk_dly_tsk(800);
+        d_end = demostop_dist_mm();
+        obstacle_watch(FALSE);
+
+        tm_printf((UB *)"[STOP] %s after %d mm (sensor %d mm), at rest after %d mm,"
+                  " faults 0x%x\n",
+                  (1u == why) ? "OBSTACLE: stopped" : (2u == why) ? "FAULT: stopped"
+                  : (3u == why) ? "KEY: stopped" : "NOTHING FOUND: stopped at the limit",
+                  d_trig, mm_trig, d_end, (INT)fault_get());
+    }
+}
+#elif MOTION_TEST_MODE == SCAN_TEST_ABORT
+/* Phase 3 step 2: the scan runs in the obstacle task and can be stopped.
+   Car on the floor with ~20 cm clear around it, a box ~30-40 cm ahead.
+   A: a full scan (time and profile). B: abort mid-scan with STOP, time
+   until the wheels are still and until the scan hands back. C: a
+   too-short timeout, which must raise FAULT_SCAN_TIMEOUT and stop. */
+LOCAL UW scanab_now_ms(void)
+{
+    SYSTIM tim;
+
+    tk_get_tim(&tim);
+    return tim.lo;
+}
+
+/* ms from t0 until neither wheel has moved for 20 ms (5 ms steps) */
+LOCAL UW scanab_still_ms(UW t0)
+{
+    enc_diag_t l, r;
+    W last = -1, now;
+    UW still = 0;
+
+    while((still < 20u) && ((scanab_now_ms() - t0) < 3000u)) {
+        (void)motion_get_encoder_diag(&l, &r);
+        now = (W)(l.hw_edges + r.hw_edges);
+        still = (now == last) ? (still + 5u) : 0u;
+        last = now;
+        tk_dly_tsk(5);
+    }
+    return scanab_now_ms() - t0 - still;
+}
+
+LOCAL void scanab_key(const char *what)
+{
+    tm_printf((UB *)"\n[SCANAB] %s Press a key.\n", what);
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tk_dly_tsk(50);
+    }
+    tk_dly_tsk(1000);
+}
+
+LOCAL void scan_test_abort(void)
+{
+    obstacle_profile_t prof;
+    scan_timing_t tmg;
+    UW t0, t_still, t_done;
+    INT arun;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[SCANAB] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[SCANAB] Scan safety test. Car on the floor, ~20 cm clear around"
+              " it, a box ~30-40 cm ahead.\n");
+
+    /* A: normal scans, timed by phase */
+    for(arun = 1; arun <= SCANAB_A_RUNS; arun++) {
+        tm_printf((UB *)"\n[SCANAB] Part A run %d/%d (move the box between runs).", arun,
+                  SCANAB_A_RUNS);
+        scanab_key("Part A: one full scan (+/-45 deg), up to 90 s, timed by phase.");
+        t0 = scanab_now_ms();
+        (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+        er = obstacle_scan_wait(SCANAB_LONG_MS, &prof);
+        tm_printf((UB *)"[SCANAB]   result %d after %d ms\n", er, (INT)(scanab_now_ms() - t0));
+        if((E_OK == er) && prof.found) {
+            tm_printf((UB *)"[SCANAB]   nearest %d mm at %d cdeg, sides %d .. %d mm\n",
+                      prof.nearest_mm, prof.nearest_cdeg, prof.right_side_mm,
+                      prof.left_side_mm);
+        }
+        scan_get_timing(&tmg);
+        tm_printf((UB *)"[SCANAB]   time: turn to start %d ms, sweep %d ms (%d pings),"
+                  " return %d ms\n", (INT)tmg.start_ms, (INT)tmg.coarse_ms,
+                  (INT)tmg.coarse_samples, (INT)tmg.return_ms);
+        tm_printf((UB *)"[SCANAB]   fine right edge %d ms, %d steps covering %d cdeg;"
+                  " left edge %d ms, %d steps covering %d cdeg\n",
+                  (INT)tmg.fine_ms[0], (INT)tmg.fine_steps[0], tmg.fine_span_cdeg[0],
+                  (INT)tmg.fine_ms[1], (INT)tmg.fine_steps[1], tmg.fine_span_cdeg[1]);
+        fault_clear(FAULT_SCAN_TIMEOUT);
+    }
+
+    /* B: STOP mid-scan */
+    scanab_key("Part B: a scan starts; after 3 s it is stopped (abort + STOP).");
+    (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+    tk_dly_tsk(3000);
+    t0 = scanab_now_ms();
+    obstacle_scan_abort();
+    motion_stop();
+    t_still = scanab_still_ms(t0);
+    er = obstacle_scan_wait(OBS_ABORT_WAIT_MS, NULL);
+    t_done = scanab_now_ms() - t0;
+    tm_printf((UB *)"[SCANAB]   wheels still %d ms after STOP; scan handed back after"
+              " %d ms with %d (%s)\n", (INT)t_still, (INT)t_done, er,
+              (E_RLWAI == er) ? "aborted, as expected" : "UNEXPECTED");
+
+    /* C: timeout */
+    scanab_key("Part C: a scan with a 4 s timeout (too short on purpose).");
+    fault_clear(FAULT_SCAN_TIMEOUT);
+    (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+    t0 = scanab_now_ms();
+    er = obstacle_scan_wait(4000u, NULL);
+    tm_printf((UB *)"[SCANAB]   wait returned %d after %d ms, faults 0x%x (%s)\n", er,
+              (INT)(scanab_now_ms() - t0), (INT)fault_get(),
+              ((E_TMOUT == er) && (0u != (fault_get() & FAULT_SCAN_TIMEOUT)))
+              ? "timeout fault raised, wheels stopped" : "UNEXPECTED");
+    fault_clear(FAULT_SCAN_TIMEOUT);
+
+    tm_printf((UB *)"\n=== Scan safety test complete ===\n");
+}
+#elif MOTION_TEST_MODE == DEMO_AVOID
+/* Obstacle demo version 2 (course): drive with the watch on, stop at the
+   block, scan +/-45 deg, then go round it on the side that needs the
+   smaller sideways shift, as tight as the scan allows, and come back onto
+   the original path with 90 deg turns on the spot:
+
+        turn 90 toward the side    -> sideways: shift
+        turn back 90 (parallel)    -> straight past the block's back
+        turn 90 back toward path   -> sideways: shift
+        turn back 90 (original heading) -> carry on driving
+
+   90 deg legs keep the car's side parallel to the block, so the gap can be
+   small: shift = block side + the car's half width on that side +
+   AVOID_GAP_MM. Each turn
+   is checked on the encoders and trimmed if it missed. A 45 deg diagonal would
+   swing the car's front corner across the block's near corner at these
+   distances. The block's depth is not measured (the sonar only sees its
+   front), so AVOID_DEPTH_MM is assumed. The sideways legs watch in the
+   direction of travel; the straight beside the block does not (the block
+   is ~50 mm off the car's side and would trip it). Until Buddy 3 can find
+   the line, "back on the path" means the original line by encoders. */
+LOCAL INT avoid_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+/* Turn by cdeg on the spot, then one small correcting turn if the
+   encoders say it missed by more than AVOID_TRIM_CDEG. Returns the angle
+   actually turned. */
+LOCAL INT avoid_turn(INT cdeg)
+{
+    INT got = (INT)motion_turn_cdeg(cdeg, AVOID_TURN_MM_S);
+
+    if(((cdeg - got) > AVOID_TRIM_CDEG) || ((got - cdeg) > AVOID_TRIM_CDEG)) {
+        got += (INT)motion_turn_cdeg(cdeg - got, AVOID_TRIM_MM_S);
+    }
+    return got;
+}
+
+/* Drive mm forward with the watch on. Returns TRUE if it got there,
+   FALSE if blocked, faulted or a key was pressed (car stopped). */
+LOCAL BOOL avoid_leg(INT mm, BOOL watch)
+{
+    INT d0 = avoid_dist_mm();
+    BOOL ok = TRUE;
+
+    if(watch) {
+        obstacle_watch(TRUE);
+        tk_dly_tsk(200);
+    }
+    motion_set_velocity(AVOID_LEG_MM_S, AVOID_LEG_MM_S);
+    while((avoid_dist_mm() - d0) < (mm - AVOID_LEG_BRAKE_MM)) {
+        if((watch && obstacle_blocked())
+           || (0u != (fault_get() & FAULT_MOTION_MASK))
+           || (console_try_getc() >= 0)) {
+            ok = FALSE;
+            break;
+        }
+        tk_dly_tsk(5);
+    }
+    motion_stop();
+    tk_dly_tsk(400);
+    if(watch) {
+        obstacle_watch(FALSE);
+    }
+    return ok;
+}
+
+LOCAL void demo_avoid(void)
+{
+    obstacle_profile_t prof;
+    INT run, shift_l, shift_r, shift, straight, d_stop, side, t1;
+    UB why;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[AVOID] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[AVOID] Obstacle demo v2: drive, stop at the block, scan, go round"
+              " it, back onto the original path.\n");
+    tm_printf((UB *)"[AVOID] Needs ~60 cm clear on each side of the block. Assumed block"
+              " depth %d mm.\n", AVOID_DEPTH_MM);
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[AVOID] Run %d: point the car at the block, press a key"
+                  " (any key while moving stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK | FAULT_SCAN_TIMEOUT);
+
+        /* 1: approach and stop (as demo v1) */
+        obstacle_watch(TRUE);
+        tk_dly_tsk(300);
+        motion_reset_odometry();
+        motion_set_velocity(DEMOSTOP_MM_S, DEMOSTOP_MM_S);
+        why = 0u;
+        while(0u == why) {
+            if(obstacle_blocked()) {
+                why = 1u;
+            } else if(0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO))) {
+                why = 2u;
+            } else if(console_try_getc() >= 0) {
+                why = 3u;
+            } else if(avoid_dist_mm() >= DEMOSTOP_MAX_MM) {
+                why = 4u;
+            } else {
+                tk_dly_tsk(5);
+            }
+        }
+        motion_stop();
+        tk_dly_tsk(800);
+        obstacle_watch(FALSE);
+        d_stop = avoid_dist_mm();
+        if(1u != why) {
+            tm_printf((UB *)"[AVOID] stopped without a block (%s) after %d mm\n",
+                      (2u == why) ? "fault" : (3u == why) ? "key" : "nothing found",
+                      d_stop);
+            continue;
+        }
+
+        /* 2: scan */
+        (void)obstacle_scan_start(SCAN_HALF_DEG, SCAN_DETECT_MM);
+        er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
+        if((E_OK != er) || (!prof.found)) {
+            tm_printf((UB *)"[AVOID] scan %s (%d): staying stopped\n",
+                      (E_OK == er) ? "found nothing" : "failed", er);
+            continue;
+        }
+
+        /* 3: pick the side needing the smaller shift (left positive) */
+        /* Passing left puts the block on the car's right side, and the
+           other way round */
+        shift_l = prof.left_side_mm + AVOID_HALF_R_MM + AVOID_GAP_MM;
+        shift_r = AVOID_HALF_L_MM + AVOID_GAP_MM - prof.right_side_mm;
+        if(shift_l < 0) {
+            shift_l = 0;
+        }
+        if(shift_r < 0) {
+            shift_r = 0;
+        }
+        side = (shift_l <= shift_r) ? 1 : -1;
+        shift = (side > 0) ? shift_l : shift_r;
+        /* Sideways legs do not move the car forward, so the straight leg
+           runs from here (axle) past the block's back by AVOID_PAST_MM */
+        straight = prof.nearest_mm + AVOID_SENSOR_AHEAD_MM + AVOID_DEPTH_MM
+                 + AVOID_PAST_MM;
+        tm_printf((UB *)"[AVOID] block %d mm ahead, sides %d .. %d mm: passing %s,"
+                  " sideways %d mm, straight %d mm\n", prof.nearest_mm,
+                  prof.right_side_mm, prof.left_side_mm,
+                  (side > 0) ? "LEFT" : "RIGHT", shift, straight);
+
+        /* 4: go round; prints only once the car has stopped */
+        t1 = avoid_turn(side * 9000);
+        if(!avoid_leg(shift, TRUE)) {
+            tm_printf((UB *)"[AVOID] stopped on the sideways leg\n");
+            continue;
+        }
+        t1 += avoid_turn(-side * 9000);
+        if(!avoid_leg(straight, FALSE)) {
+            tm_printf((UB *)"[AVOID] stopped on the straight\n");
+            continue;
+        }
+        t1 += avoid_turn(-side * 9000);
+        if(!avoid_leg(shift, TRUE)) {
+            tm_printf((UB *)"[AVOID] stopped on the way back to the path\n");
+            continue;
+        }
+        t1 += avoid_turn(side * 9000);
+        tm_printf((UB *)"[AVOID] back on the original path; net heading error %s%d.%d deg"
+                  " (encoders, left +)\n", (t1 < 0) ? "-" : "",
+                  ((t1 < 0) ? -t1 : t1) / 100, ((t1 < 0) ? -t1 : t1) % 100 / 10);
+
+        /* 5: carry on along the path */
+        if(avoid_leg(AVOID_AFTER_MM, TRUE)) {
+            tm_printf((UB *)"[AVOID] drove %d mm past: run complete\n", AVOID_AFTER_MM);
+        } else {
+            tm_printf((UB *)"[AVOID] stopped after the manoeuvre (blocked or key)\n");
+        }
+    }
+}
+#elif MOTION_TEST_MODE == LINE_TEST_FOLLOW
+/* Buddy 3 line following, step 1: key-paced runs on the joined straight +
+   cross mats. Each run follows the line at LINE_TEST_MM_S and stops after
+   LINE_TEST_MAX_MM of travel (wheels stay on the raised mats), or when the
+   line is lost and the on-spot search fails, or on a key. The 20 ms trace
+   is printed afterwards: d_mm, bits L C R, steering corr and held trim
+   (mm/s, + = left), s = searching. */
+LOCAL void line_test_follow(void)
+{
+    static line_trace_t tr[LINE_TRACE_LEN];
+    static const char *const end_txt[4] = {
+        "running", "distance limit reached", "LINE LOST (search failed)", "stopped"
+    };
+    INT run, n, i, offc = 0;
+    ER er;
+
+    er = line_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[LINE] line_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[LINE] Line following on the straight + cross mats: %d mm/s,"
+              " stops after %d mm.\n", LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+    tm_printf((UB *)"[LINE] Suggested runs: centred; ~5 mm off to the left; ~5 mm off to"
+              " the right; ~10 deg crooked each way; just off the line.\n");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[LINE] Run %d: place the car at the start of the straight mat,"
+                  " press a key (any key while running stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+
+        (void)line_follow_start(LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+        tk_dly_tsk(50);
+        while(LINE_END_NONE == line_follow_end()) {
+            if(console_try_getc() >= 0) {
+                line_follow_stop();
+            }
+            tk_dly_tsk(20);
+        }
+        tk_dly_tsk(500);
+
+        n = (INT)line_trace_get(tr);
+        offc = 0;
+        tm_printf((UB *)"[LINE] run %d trace (d_mm,LCR,corr,periods[,s]):", run);
+        for(i = 0; i < n; i++) {
+            if((i % 5) == 0) {
+                tm_printf((UB *)"\n[LINE]  ");
+            }
+            tm_printf((UB *)" %d,%d%d%d,%d,%d%s", tr[i].d_mm,
+                      (0u != (tr[i].bits & IR_BIT_LEFT)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 1 : 0,
+                      tr[i].corr, tr[i].trim, (0u != tr[i].searching) ? ",s" : "");
+            /* Edge following toggles the centre on every crossing; count
+               the periods spent with the right spot on the line instead */
+            if((0u == tr[i].searching) && (0u == (tr[i].bits & IR_BIT_CENTRE))
+               && (0u != (tr[i].bits & IR_BIT_RIGHT))) {
+                offc++;
+            }
+        }
+        tm_printf((UB *)"\n[LINE] run %d: %s after %d periods; right spot only on the line in %d;"
+                  " recoveries so far %d; faults 0x%x\n", run,
+                  end_txt[line_follow_end() & 3u], n, offc, (INT)line_recoveries(),
+                  (INT)fault_get());
+        tm_printf((UB *)"[LINE]   Note where the car ended up relative to the line.\n");
+    }
+}
+#elif MOTION_TEST_MODE == LINE_TEST_RAMP
+/* Course scenario 1: the one-sided ramp while line following. The line
+   task follows the line on the straight mat at LINE_TEST_MM_S with the
+   TALL ramp (2.4 cm) under the RIGHT wheel only. This task samples the
+   IMU every 20 ms, feeds the roll-based hump detector (terrain.c) and
+   sets the motion task's hump mask while the car is on the ramp, so the
+   stall/encoder checks do not trip on the climb. Run 1 is a flat control
+   (no ramp). While on the ramp the line task drives straight on the
+   encoders (line_set_hold) and picks the line up 50 mm after it; driving
+   with the hump mask on for > 4 s is a stall fault (stuck on the ramp).
+   Pass (user 2026-10-24): rides up and down the ramp straight, then finds
+   and follows the line; the run ends on the distance limit with no faults;
+   the ramp is reported once as a RIGHT one-sided hump of ~24 mm. */
+#define RL_LOG_LEN               ((INT)LINE_TRACE_LEN)
+#define RL_AFTER_MM              100   /* line check window past the hump */
+
+typedef struct {
+    int16_t d_mm;
+    int16_t roll;        /* raw, from rest, x0.01 deg */
+    uint8_t on_hump;
+} rl_pt_t;
+
+LOCAL void line_test_ramp(void)
+{
+    static line_trace_t tr[LINE_TRACE_LEN];
+    static rl_pt_t lg[RL_LOG_LEN];
+    static side_hump_event_t sides[TERR_MAX_EVENTS];
+    static const char *const end_txt[4] = {
+        "running", "distance limit reached", "LINE LOST (search failed)", "stopped"
+    };
+    imu_attitude_t att;
+    imu_raw_t s;
+    hump_event_t h;
+    collision_event_t c;
+    enc_diag_t l, r;
+    W p0, r0;
+    INT run, n, nt, i, d, ns, nh, nc, base_n, white0, white_max, srch, lo, hi;
+    UW ev;
+    ER er;
+
+    i2c1_init();
+    if(E_OK != imu_init()) {
+        tm_printf((UB *)"[RLINE] imu_init failed, check the IMU\n");
+        return;
+    }
+    er = line_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[RLINE] line_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[RLINE] One-sided ramp while line following: %d mm/s, stops after"
+              " %d mm.\n", LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+    tm_printf((UB *)"[RLINE] Run 1: flat (no ramp), as a control. Runs 2-6: TALL ramp under"
+              " the RIGHT wheel only, its start ~10 cm ahead of the wheel.\n");
+    tm_printf((UB *)"[RLINE] Start with the wheels at the mat edge, centre IR on the line's"
+              " right edge.\n");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[RLINE] Run %d (%s): set up, keep the car still, press a key"
+                  " (any key while running stops it).\n", run,
+                  (run == 1) ? "flat" : "TALL ramp, right wheel");
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+
+        /* Rest attitude: the zero for roll and pitch */
+        p0 = 0;
+        r0 = 0;
+        base_n = 0;
+        for(i = 0; i < 25; i++) {
+            if(E_OK == imu_read_attitude(&att, NULL)) {
+                p0 += att.pitch_cdeg;
+                r0 += att.roll_cdeg;
+                base_n++;
+            }
+            tk_dly_tsk(20);
+        }
+        if(base_n == 0) {
+            tm_printf((UB *)"[RLINE] IMU read failed\n");
+            continue;
+        }
+        p0 /= base_n;
+        r0 /= base_n;
+        terrain_reset((int16_t)p0, (int16_t)r0);
+
+        n = 0;
+        ns = 0;
+        nh = 0;
+        nc = 0;
+        (void)line_follow_start(LINE_TEST_MM_S, LINE_TEST_MAX_MM);
+        tk_dly_tsk(20);
+        while(LINE_END_NONE == line_follow_end()) {
+            if(console_try_getc() >= 0) {
+                line_follow_stop();
+            }
+            if(E_OK == imu_read_attitude(&att, &s)) {
+                (void)motion_get_encoder_diag(&l, &r);
+                d = (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+                ev = terrain_update(d, &att, &s, motion_is_steady(), &h, &c);
+                motion_set_hump_mask(terrain_on_hump());
+                line_set_hold(terrain_on_hump());
+                if((0u != (ev & TERRAIN_EVT_SIDE_HUMP)) && (ns < TERR_MAX_EVENTS)) {
+                    terrain_last_side_hump(&sides[ns++]);
+                }
+                if(0u != (ev & TERRAIN_EVT_HUMP)) {
+                    nh++;
+                }
+                if(0u != (ev & TERRAIN_EVT_COLLISION)) {
+                    nc++;
+                }
+                /* Log only when the car has moved (a search or a stop
+                   would otherwise fill the log) */
+                if((n < RL_LOG_LEN)
+                   && ((n == 0) || (d >= lg[n - 1].d_mm + 2) || (d <= lg[n - 1].d_mm - 2)
+                       || ((terrain_on_hump() ? 1u : 0u) != lg[n - 1].on_hump))) {
+                    lg[n].d_mm = (int16_t)d;
+                    lg[n].roll = (int16_t)(att.roll_cdeg - r0);
+                    lg[n].on_hump = terrain_on_hump() ? 1u : 0u;
+                    n++;
+                }
+            }
+            tk_dly_tsk(20);
+        }
+        motion_set_hump_mask(FALSE);
+        line_set_hold(FALSE);
+        tk_dly_tsk(500);
+
+        /* IMU log: d_mm,roll[,H while on the hump] */
+        tm_printf((UB *)"[RLINE] run %d IMU (d_mm,roll x0.01 deg[,H = on hump]):", run);
+        for(i = 0; i < n; i++) {
+            if((i % 8) == 0) {
+                tm_printf((UB *)"\n[RLINE]  ");
+            }
+            tm_printf((UB *)" %d,%d%s", lg[i].d_mm, lg[i].roll,
+                      (0u != lg[i].on_hump) ? ",H" : "");
+        }
+        nt = (INT)line_trace_get(tr);
+        tm_printf((UB *)"\n[RLINE] run %d line trace (d_mm,LCR,corr,run[,s = search"
+                  " every 200 ms, h = ramp hold]):", run);
+        for(i = 0; i < nt; i++) {
+            if((i % 5) == 0) {
+                tm_printf((UB *)"\n[RLINE]  ");
+            }
+            tm_printf((UB *)" %d,%d%d%d,%d,%d%s", tr[i].d_mm,
+                      (0u != (tr[i].bits & IR_BIT_LEFT)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 1 : 0,
+                      (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 1 : 0,
+                      tr[i].corr, tr[i].trim,
+                      (LINE_TR_SEARCH == tr[i].searching) ? ",s"
+                      : ((LINE_TR_HOLD == tr[i].searching) ? ",h" : ""));
+        }
+
+        tm_printf((UB *)"\n[RLINE] run %d summary: %s, faults 0x%x, recoveries so far %d\n",
+                  run, end_txt[line_follow_end() & 3u], (INT)fault_get(),
+                  (INT)line_recoveries());
+        tm_printf((UB *)"[RLINE]   %d one-sided hump(s):\n", ns);
+        for(i = 0; i < ns; i++) {
+            tm_printf((UB *)"[RLINE]     %s wheel, %d..%d mm, height ~%d mm\n",
+                      (0u != sides[i].right_side) ? "RIGHT" : "LEFT",
+                      (INT)sides[i].start_mm, (INT)sides[i].end_mm, sides[i].height_mm);
+        }
+        tm_printf((UB *)"[RLINE]   %d pitch hump(s), %d dropped as one-sided; largest roll"
+                  " %d x0.01 deg; largest jolt %d mg; %d collision event(s)\n",
+                  nh, (INT)terrain_pitch_humps_dropped(), terrain_max_roll_cdeg(),
+                  terrain_max_jolt_mg(), nc);
+
+        /* Line held over the ramp? Longest stretch with the centre on white
+           (normal edge following crosses white in short bits) and any
+           on-spot search, from the hump start to RL_AFTER_MM past its end */
+        for(i = 0; i < ns; i++) {
+            lo = (INT)sides[i].start_mm;
+            hi = (INT)sides[i].end_mm + RL_AFTER_MM;
+            white0 = -1;
+            white_max = 0;
+            srch = 0;
+            for(d = 0; d < nt; d++) {
+                if((tr[d].d_mm < lo) || (tr[d].d_mm > hi)) {
+                    continue;
+                }
+                if(LINE_TR_SEARCH == tr[d].searching) {
+                    srch++;
+                }
+                if(LINE_TR_HOLD == tr[d].searching) {
+                    white0 = -1;
+                    continue;
+                }
+                if(0u == (tr[d].bits & (IR_BIT_CENTRE | IR_BIT_RIGHT))) {
+                    if(white0 < 0) {
+                        white0 = tr[d].d_mm;
+                    }
+                    if((tr[d].d_mm - white0) > white_max) {
+                        white_max = tr[d].d_mm - white0;
+                    }
+                } else {
+                    white0 = -1;
+                }
+            }
+            tm_printf((UB *)"[RLINE]   hump %d (%d..%d mm, held straight on it): longest"
+                      " centre-white after it %d mm (lost at > 40), %d search sample(s)\n",
+                      i + 1, lo, hi, white_max, srch);
+        }
+        tm_printf((UB *)"[RLINE]   Note where the car ended up relative to the line, and"
+                  " whether the bracket touched the ramp.\n");
+    }
+}
+#elif MOTION_TEST_MODE == CTRL_TEST_COURSE
+/* Vehicle controller (controller/vehicle_ctrl.c), key-paced course runs:
+     l  line following + one-sided ramp (no obstacle watch)
+     o  line following + obstacle stop (block on the line, >= 5 cm gap)
+     b  line following + barcode on the straight, command at the cross
+        (turns stop the run: the test mats have nothing past the cross)
+   The controller runs everything; this task only starts runs, samples
+   robot_status every 500 ms like Buddy 1's telemetry will (kept, printed
+   after the run: no printing while the wheels turn), and prints the
+   controller's event log. Impacts are logged, not acted on, until the
+   bracket's ramp strike has been checked against the rule. */
+#define CTRLT_MM_S               100
+#define CTRLT_MAX_MM             450
+#define CTRLT_SNAP_MS            500
+#define CTRLT_SNAPS              24
+
+LOCAL void ctrlt_print_pts(const char *name, const scan_pt_t *p, INT n)
+{
+    INT i;
+
+    tm_printf((UB *)"[CTRL]   %s (%d readings, cdeg,mm):", name, n);
+    for(i = 0; i < n; i++) {
+        if((i % 10) == 0) {
+            tm_printf((UB *)"\n[CTRL]    ");
+        }
+        tm_printf((UB *)" %d,%d", p[i].cdeg, p[i].mm);
+    }
+    tm_printf((UB *)"\n");
+}
+
+/* The obstacle scan in detail, as the width test (mode 33) prints it, plus
+   the right encoder check across the scan */
+LOCAL void ctrlt_print_scan(void)
+{
+    static scan_pt_t pts[SCAN_LOG_MAX];
+    enc_check_t pre, post;
+    obstacle_profile_t prof;
+    INT n;
+
+    ctrl_get_scan_diag(&pre, &post, &prof);
+    tm_printf((UB *)"[CTRL]   right encoder before / after the scan: A raw %d / %d,"
+              " B %d / %d, fixed %d / %d (A-B over the scan %d)\n",
+              (INT)pre.right_a_raw, (INT)post.right_a_raw, (INT)pre.right_b,
+              (INT)post.right_b, (INT)pre.fixed_edges, (INT)post.fixed_edges,
+              (INT)((post.right_a_raw - pre.right_a_raw) - (post.right_b - pre.right_b)));
+    if(!prof.found) {
+        tm_printf((UB *)"[CTRL]   scan: nothing found\n");
+        return;
+    }
+    tm_printf((UB *)"[CTRL]   scan: nearest %d mm at %d cdeg; seen from %d to %d cdeg"
+              " (span %d), beam %d -> width %d mm (old rule %d mm)\n", prof.nearest_mm,
+              prof.nearest_cdeg, prof.right_cdeg, prof.left_cdeg,
+              prof.left_cdeg - prof.right_cdeg, prof.beam_cdeg, prof.width_mm,
+              prof.width_old_mm);
+    n = (INT)scan_get_coarse(pts, SCAN_LOG_MAX);
+    ctrlt_print_pts("coarse sweep right to left", pts, n);
+    n = (INT)scan_get_fine(0u, pts, SCAN_FINE_MAX);
+    ctrlt_print_pts("fine, right edge", pts, n);
+    n = (INT)scan_get_fine(1u, pts, SCAN_FINE_MAX);
+    ctrlt_print_pts("fine, left edge", pts, n);
+}
+
+LOCAL const char *ctrlt_state(UB s)
+{
+    static const char *const txt[9] = {
+        "idle", "starting", "following", "on ramp", "DONE (distance or stop)",
+        "OBSTACLE: stopped", "IMPACT: stopped", "FAULT / line lost", "turning"
+    };
+    return (s < 9u) ? txt[s] : "?";
+}
+
+LOCAL const char *ctrlt_evt(UB e)
+{
+    static const char *const txt[13] = {
+        "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
+        "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND", "OBST_WIDTH"
+    };
+    return (e < 13u) ? txt[e] : "?";
+}
+
+LOCAL const char *ctrlt_cmd(UB c)
+{
+    static const char *const txt[5] = {"none", "LEFT", "RIGHT", "STRAIGHT", "U-TURN"};
+    return (c < 5u) ? txt[c] : "?";
+}
+
+LOCAL void ctrl_test_course(void)
+{
+    static robot_status_t snaps[CTRLT_SNAPS];
+    static ctrl_log_t lg[CTRL_LOG_LEN];
+    static bc_elem_t bel[BC_MAX_ELEMS];
+    robot_status_t st;
+    INT run, c, n, i, k, ns;
+    UB opts;
+    ER er;
+
+    er = ctrl_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[CTRL] ctrl_task_create failed: %d\n", er);
+        return;
+    }
+    ctrl_set_after_turn_mm(0);
+    tm_printf((UB *)"\n[CTRL] Vehicle controller: %d mm/s, stops after %d mm. IMU %s.\n",
+              CTRLT_MM_S, CTRLT_MAX_MM,
+              (0u != (fault_get() & FAULT_IMU)) ? "NOT answering (no ramp handling)" : "ok");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[CTRL] Run %d: set the car at the mat edge (centre IR on the line's"
+                  " right edge), keep it still, then press\n[CTRL]   l = line + ramp,"
+                  "  o = line + obstacle stop,  b = line + barcode command at the cross"
+                  "\n[CTRL]   (any key while running stops it)\n", run);
+        console_flush_input();
+        do {
+            c = console_try_getc();
+            tk_dly_tsk(50);
+        } while((c != 'l') && (c != 'o') && (c != 'b'));
+        opts = (c == 'o') ? CTRL_OPT_OBSTACLE : ((c == 'b') ? CTRL_OPT_BARCODE : 0u);
+        tk_dly_tsk(500);
+        console_flush_input();
+
+        er = ctrl_run(CTRLT_MM_S, CTRLT_MAX_MM, opts);
+        if(E_OK != er) {
+            tm_printf((UB *)"[CTRL] ctrl_run failed: %d\n", er);
+            continue;
+        }
+        ns = 0;
+        while(ctrl_running()) {
+            for(i = 0; (i < CTRLT_SNAP_MS / 20) && ctrl_running(); i++) {
+                if(console_try_getc() >= 0) {
+                    ctrl_stop();
+                }
+                tk_dly_tsk(20);
+            }
+            if(ns < CTRLT_SNAPS) {
+                ctrl_get_status(&snaps[ns++]);
+            }
+        }
+        ctrl_get_status(&st);
+
+        tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
+                  " faults 0x%x, events dropped %d\n", run,
+                  (0u != (opts & CTRL_OPT_OBSTACLE)) ? "line + obstacle"
+                  : ((0u != (opts & CTRL_OPT_BARCODE)) ? "line + barcode" : "line + ramp"),
+                  ctrlt_state(st.state),
+                  st.dist_mm, st.heading_cdeg, (INT)st.faults, (INT)ctrl_evt_dropped());
+        tm_printf((UB *)"[CTRL]   REPORT: highest ramp %d mm", (INT)st.max_ramp_mm);
+        if(0u != (opts & CTRL_OPT_OBSTACLE)) {
+            tm_printf((UB *)", obstacle width %d mm (about +/-4 cm)", st.obstacle_width_mm);
+        }
+        tm_printf((UB *)"\n");
+        n = (INT)ctrl_log_get(lg);
+        tm_printf((UB *)"[CTRL]   events (t_ms, d_mm, event, arg, val):\n");
+        for(i = 0; i < n; i++) {
+            tm_printf((UB *)"[CTRL]     %d, %d, %s, %d, %d", (INT)lg[i].t_ms, lg[i].d_mm,
+                      ctrlt_evt(lg[i].type), (INT)lg[i].arg, lg[i].val);
+            if(EVT_BARCODE == lg[i].type) {
+                if(0u != lg[i].arg) {
+                    tm_printf((UB *)"   (read '%c' %s)", (INT)lg[i].arg,
+                              (0 != lg[i].val) ? "REVERSED" : "forward");
+                } else {
+                    tm_printf((UB *)"   (no read, %d bars/spaces)", lg[i].val);
+                }
+            } else if(EVT_OBST_WIDTH == lg[i].type) {
+                if(0u != lg[i].arg) {
+                    tm_printf((UB *)"   (width estimate %d mm)", lg[i].val);
+                } else {
+                    tm_printf((UB *)"   (scan failed or nothing found: %d)", lg[i].val);
+                }
+            } else if(EVT_COMMAND == lg[i].type) {
+                tm_printf((UB *)"   (%s done, turned %d x0.01 deg)", ctrlt_cmd(lg[i].arg),
+                          lg[i].val);
+            }
+            tm_printf((UB *)"\n");
+        }
+        if(0u != (opts & CTRL_OPT_BARCODE)) {
+            n = (INT)barcode_scan_last(bel, BC_MAX_ELEMS);
+            tm_printf((UB *)"[CTRL]   last barcode read, %d bars/spaces (B mm/peak mV,"
+                      " w mm):\n[CTRL]    ", n);
+            for(i = 0; i < n; i++) {
+                k = (INT)((bel[i].w * SWEEP_UM_PER_EDGE) / 100);
+                if(0u != bel[i].bar) {
+                    tm_printf((UB *)" B%d.%d/%d", k / 10, k % 10, bel[i].peak);
+                } else {
+                    tm_printf((UB *)" w%d.%d", k / 10, k % 10);
+                }
+                if((i % 10) == 9) {
+                    tm_printf((UB *)"\n[CTRL]    ");
+                }
+            }
+            tm_printf((UB *)"\n");
+        }
+        tm_printf((UB *)"[CTRL]   robot_status every %d ms (state, d_mm, heading, roll,"
+                  " sonar_mm, flags R/I/W, pending command, last event):\n", CTRLT_SNAP_MS);
+        for(i = 0; i < ns; i++) {
+            tm_printf((UB *)"[CTRL]     %s, %d, %d, %d, %d, %c%c%c, %s, %s\n",
+                      ctrlt_state(snaps[i].state), snaps[i].dist_mm, snaps[i].heading_cdeg,
+                      snaps[i].roll_cdeg, snaps[i].obstacle_mm,
+                      (0u != (snaps[i].flags & CTRL_FLAG_ON_RAMP)) ? 'R' : '-',
+                      (0u != (snaps[i].flags & CTRL_FLAG_IMU_OK)) ? 'I' : '-',
+                      (0u != (snaps[i].flags & CTRL_FLAG_WATCHING)) ? 'W' : '-',
+                      ctrlt_cmd((UB)((snaps[i].flags >> CTRL_FLAG_CMD_SHIFT) & 7u)),
+                      ctrlt_evt(snaps[i].last_evt));
+        }
+        if(0u != (opts & CTRL_OPT_OBSTACLE)) {
+            ctrlt_print_scan();
+        }
+        tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose gap for o).\n");
+    }
+}
+#elif MOTION_TEST_MODE == BARCODE_TEST_DRIVE
+/* Buddy 3 barcode step 2: driven scan with the slit-taped left IR. The car
+   drives itself straight at BCD_MM_S for BCD_DIST_MM with the barcode
+   under the left IR, storing the left AO once per encoder step (0.33 mm):
+   constant speed and height, unlike the hand-pushed passes. Decoder v2
+   (barcode.c, 24 Oct): threshold just above white, bars and spaces split
+   into narrow/wide separately, "*...*" searched both ways. Printed after
+   the car stops: levels, every bar (width, peak) and space, the decode,
+   and the profile every 1 mm. */
+#define BCD_MM_S                 50
+#define BCD_DIST_MM              250
+#define BCD_LEN                  800    /* steps: 262 mm */
+#define BCD_ROW                  20     /* profile values per line (1 mm each) */
+
+LOCAL INT bcd_steps(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((l.hw_count + r.hw_count) / 2);
+}
+
+LOCAL void bcd_print_mm(INT steps)
+{
+    INT mm10 = (steps * SWEEP_UM_PER_EDGE) / 100;
+
+    tm_printf((UB *)"%d.%d", mm10 / 10, mm10 % 10);
+}
+
+LOCAL void barcode_test_drive(void)
+{
+    static UH prof[BCD_LEN];
+    static bc_elem_t el[BC_MAX_ELEMS];
+    bc_result_t res;
+    INT pass, n, i, k, s, last, ne, ok_n = 0, tries = 0;
+    uint32_t une;
+    BOOL dec_ok;
+    UH white;
+
+    ir_init();
+    ir_ao_init();
+    tm_printf((UB *)"\n[BCD] Driven barcode scan v2: left IR AO, %d mm/s for %d mm.\n",
+              BCD_MM_S, BCD_DIST_MM);
+    tm_printf((UB *)"[BCD] Live readout first: check white, line, wide bar, thin bar."
+              " Press a key to go on.\n");
+    console_flush_input();
+    while(console_try_getc() < 0) {
+        tm_printf((UB *)"[BCD]   AO=%d mV\n", (INT)ir_ao_left_mv());
+        tk_dly_tsk(400);
+    }
+
+    for(pass = 1; ; pass++) {
+        tm_printf((UB *)"\n[BCD] Pass %d: put the car so the left IR is ~3 cm before the"
+                  " barcode, square to it, press a key (any key while driving stops it).\n",
+                  pass);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK);
+        motion_reset_odometry();
+        motion_set_velocity(BCD_MM_S, BCD_MM_S);
+
+        /* No printing while driving */
+        last = -1;
+        while(console_try_getc() < 0) {
+            s = bcd_steps();
+            if((s >= BCD_LEN) || (((s * SWEEP_UM_PER_EDGE) / 1000) >= BCD_DIST_MM)
+               || (0u != (fault_get() & FAULT_MOTION_MASK))) {
+                break;
+            }
+            if(s >= 0) {
+                UH mv = (UH)ir_ao_left_mv();
+
+                for(k = last + 1; k <= s; k++) {
+                    prof[k] = mv;
+                }
+                if(s > last) {
+                    last = s;
+                }
+            }
+            tk_dly_tsk(1);
+        }
+        motion_stop();
+        tk_dly_tsk(500);
+        n = last + 1;
+
+        tm_printf((UB *)"\n[BCD] Pass %d: ", pass);
+        bcd_print_mm(n);
+        tm_printf((UB *)" mm recorded, faults 0x%x\n", (INT)fault_get());
+        if(n < 30) {
+            continue;
+        }
+
+        dec_ok = barcode_read(prof, (uint32_t)n, el, BC_MAX_ELEMS, &une, &white, &res);
+        ne = (INT)une;
+        tm_printf((UB *)"[BCD]   white %d mV (fixed threshold %d mV); %d elements"
+                  " (B width mm/peak mV, w width mm):\n[BCD]  ",
+                  white, white + BC_ON_MV, ne);
+        for(i = 0; i < ne; i++) {
+            if(0u != el[i].bar) {
+                tm_printf((UB *)" B");
+                bcd_print_mm(el[i].w);
+                tm_printf((UB *)"/%d", el[i].peak);
+            } else {
+                tm_printf((UB *)" w");
+                bcd_print_mm(el[i].w);
+            }
+            if((i % 10) == 9) {
+                tm_printf((UB *)"\n[BCD]  ");
+            }
+        }
+        tm_printf((UB *)"\n");
+        tries++;
+        if(dec_ok) {
+            ok_n++;
+            tm_printf((UB *)"[BCD]   DECODED \"%s\" %s, from element %d, %d star element(s)"
+                      " corrected\n", res.text, (0u != res.reversed) ? "REVERSED" : "forward",
+                      (INT)res.first, (INT)res.star_errs);
+        } else {
+            tm_printf((UB *)"[BCD]   no Code 39 match\n");
+        }
+        tm_printf((UB *)"[BCD]   decoded %d of %d passes so far\n", ok_n, tries);
+
+        tm_printf((UB *)"[BCD]   profile, mV every 1 mm:\n");
+        for(i = 0; i < n; i += 3 * BCD_ROW) {
+            tm_printf((UB *)"[BCD] %d mm:", (i * SWEEP_UM_PER_EDGE) / 1000);
+            for(k = i; (k < (i + (3 * BCD_ROW))) && (k < n); k += 3) {
+                tm_printf((UB *)" %d", prof[k]);
+            }
+            tm_printf((UB *)"\n");
+        }
+    }
+}
+#elif MOTION_TEST_MODE == OBST_TEST_WIDTH
+/* Buddy 5: obstacle width (course: a 10-20 cm block, detect it, measure or
+   estimate its width and report it). Calibration runs: the car drives at
+   WIDTH_MM_S toward a flat-faced object until the obstacle task's stop
+   rule triggers, stops, then scans +/-WIDTH_HALF_DEG in the obstacle task.
+   Printed afterwards: the stop, the present width estimate (seen span
+   minus the narrow-target beam width) and every coarse and fine reading,
+   so the estimator can be fitted to objects of known width. */
+#define WIDTH_MM_S               200
+#define WIDTH_MAX_MM             1200   /* stop anyway after this far */
+#define WIDTH_HALF_DEG           45
+#define WIDTH_DETECT_MM          600
+#define WIDTH_ROW                8
+
+LOCAL INT width_dist_mm(void)
+{
+    enc_diag_t l, r;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    return (INT)((((l.hw_count + r.hw_count) / 2) * SWEEP_UM_PER_EDGE) / 1000);
+}
+
+LOCAL void width_print_pts(const char *name, const scan_pt_t *p, INT n)
+{
+    INT i;
+
+    tm_printf((UB *)"[WIDTH]   %s (%d readings, cdeg,mm):", name, n);
+    for(i = 0; i < n; i++) {
+        if((i % WIDTH_ROW) == 0) {
+            tm_printf((UB *)"\n[WIDTH]    ");
+        }
+        tm_printf((UB *)" %d,%d", p[i].cdeg, p[i].mm);
+    }
+    tm_printf((UB *)"\n");
+}
+
+LOCAL void obst_test_width(void)
+{
+    static scan_pt_t pts[SCAN_LOG_MAX];
+    obstacle_profile_t prof;
+    INT run, i, n, d_trig, mm_trig, rest, nr;
+    W sum;
+    BOOL stopped;
+    ER er;
+
+    er = obstacle_task_create();
+    if(E_OK != er) {
+        tm_printf((UB *)"[WIDTH] obstacle_task_create failed: %d\n", er);
+        return;
+    }
+    tm_printf((UB *)"\n[WIDTH] Obstacle width calibration: drive at %d mm/s, stop at the"
+              " object, scan +/-%d deg.\n", WIDTH_MM_S, WIDTH_HALF_DEG);
+    tm_printf((UB *)"[WIDTH] Use flat-faced objects ~10, ~15 and ~20 cm wide, face square"
+              " to the car, about 50 cm ahead. Keep ~25 cm clear on each side.\n");
+
+    for(run = 1; ; run++) {
+        tm_printf((UB *)"\n[WIDTH] Run %d: aim the car at the object (centred, or offset if"
+                  " you like), press a key (any key while driving stops it).\n", run);
+        console_flush_input();
+        while(console_try_getc() < 0) {
+            tk_dly_tsk(50);
+        }
+        tk_dly_tsk(1000);
+        console_flush_input();
+        fault_clear(FAULT_MOTION_MASK | FAULT_SCAN_TIMEOUT);
+
+        obstacle_watch(TRUE);
+        tk_dly_tsk(300);
+        motion_reset_odometry();
+        motion_set_velocity(WIDTH_MM_S, WIDTH_MM_S);
+        stopped = FALSE;
+        d_trig = -1;
+        mm_trig = -1;
+        while(width_dist_mm() < WIDTH_MAX_MM) {
+            if(obstacle_blocked()) {
+                motion_stop();
+                d_trig = width_dist_mm();
+                mm_trig = obstacle_last_mm();
+                stopped = TRUE;
+                break;
+            }
+            if((console_try_getc() >= 0)
+               || (0u != (fault_get() & (FAULT_MOTION_MASK | FAULT_NO_ECHO)))) {
+                break;
+            }
+            tk_dly_tsk(5);
+        }
+        motion_stop();
+        tk_dly_tsk(800);
+
+        /* Range at rest: mean of up to 5 good pings */
+        sum = 0;
+        nr = 0;
+        for(i = 0; (i < 12) && (nr < 5); i++) {
+            tk_dly_tsk(70);
+            if(obstacle_last_mm() > 0) {
+                sum += obstacle_last_mm();
+                nr++;
+            }
+        }
+        rest = (nr > 0) ? (INT)(sum / nr) : -1;
+        obstacle_watch(FALSE);
+
+        if(!stopped) {
+            tm_printf((UB *)"[WIDTH] run %d: no obstacle stop (faults 0x%x), skipped\n",
+                      run, (INT)fault_get());
+            continue;
+        }
+
+        er = obstacle_scan_start(WIDTH_HALF_DEG, WIDTH_DETECT_MM);
+        if(E_OK == er) {
+            er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
+        }
+
+        tm_printf((UB *)"[WIDTH] run %d: stopped (triggered at %d mm travelled, sensor %d mm),"
+                  " at rest sensor %d mm; scan %s, faults 0x%x\n", run, d_trig, mm_trig, rest,
+                  (E_OK == er) ? "ok" : "FAILED", (INT)fault_get());
+        if((E_OK == er) && prof.found) {
+            tm_printf((UB *)"[WIDTH]   nearest %d mm at %d cdeg; seen from %d to %d cdeg"
+                      " (span %d), beam %d -> width estimate %d mm (old rule %d mm),"
+                      " sides %d / %d mm (left of centreline +)\n", prof.nearest_mm,
+                      prof.nearest_cdeg, prof.right_cdeg, prof.left_cdeg,
+                      prof.left_cdeg - prof.right_cdeg, prof.beam_cdeg, prof.width_mm,
+                      prof.width_old_mm, prof.left_side_mm, prof.right_side_mm);
+        } else if(E_OK == er) {
+            tm_printf((UB *)"[WIDTH]   nothing within %d mm\n", WIDTH_DETECT_MM);
+        }
+        n = (INT)scan_get_coarse(pts, SCAN_LOG_MAX);
+        width_print_pts("coarse sweep right to left", pts, n);
+        n = (INT)scan_get_fine(0u, pts, SCAN_FINE_MAX);
+        width_print_pts("fine, right edge", pts, n);
+        n = (INT)scan_get_fine(1u, pts, SCAN_FINE_MAX);
+        width_print_pts("fine, left edge", pts, n);
+        tm_printf((UB *)"[WIDTH]   Note the object's real width, which face, and the nose"
+                  " gap.\n");
+    }
+}
 #elif MOTION_TEST_MODE == MOTION_TEST_PI_STEP
 /* Run a list of speed steps under PI control. Nothing is printed while the
    motors run (usermain outranks the motion task, so a blocking print would
@@ -3124,14 +5090,22 @@ LOCAL void motion_test_pi_step(void)
 /* Motors are never commanded, so the only edges are from hand turning. */
 LOCAL void motion_test_hand(void)
 {
+    enc_check_t chk;
+
     tm_printf((UB *)"\n[TEST] Hand-turn test: motors OFF\n");
     tm_printf((UB *)"[TEST] Mark each wheel. Turn it 10 full turns FORWARD,"
               " note cnt, then 10 turns BACK. Reset to zero the counters.\n");
+    tm_printf((UB *)"[TEST] Right wheel: A = GP15 as counted, B = GP17, fixed = taken off"
+              " A beyond B + 1 (expected ~6340 for 10 turns).\n");
 
     motion_reset_odometry();
     while(1) {
         tk_dly_tsk(HAND_PRINT_MS);
         motion_print_encoder_diag("HAND");
+        motion_get_enc_check(&chk);
+        tm_printf((UB *)"[HAND] right A raw=%d  B=%d  fixed=%d in %d passes\n",
+                  (INT)chk.right_a_raw, (INT)chk.right_b, (INT)chk.fixed_edges,
+                  (INT)chk.bad_windows);
     }
 }
 #else
@@ -3259,6 +5233,34 @@ EXPORT INT usermain(void)
     ir_test_log();
 #elif MOTION_TEST_MODE == IR_TEST_AO
     ir_test_ao();
+#elif MOTION_TEST_MODE == MOTION_TEST_SAFETY
+    motion_test_safety();
+#elif MOTION_TEST_MODE == MOTION_TEST_CPU
+    motion_test_cpu();
+#elif MOTION_TEST_MODE == IMU_TEST_RAMP_ROLL
+    imu_test_ramp_roll();
+#elif MOTION_TEST_MODE == MOTION_TEST_STRAIGHT
+    motion_test_straight();
+#elif MOTION_TEST_MODE == IMU_TEST_SIDE_HUMP
+    imu_test_side_hump();
+#elif MOTION_TEST_MODE == OBST_TEST_STOP
+    obst_test_stop();
+#elif MOTION_TEST_MODE == DEMO_STOP
+    demo_stop();
+#elif MOTION_TEST_MODE == SCAN_TEST_ABORT
+    scan_test_abort();
+#elif MOTION_TEST_MODE == DEMO_AVOID
+    demo_avoid();
+#elif MOTION_TEST_MODE == LINE_TEST_FOLLOW
+    line_test_follow();
+#elif MOTION_TEST_MODE == LINE_TEST_RAMP
+    line_test_ramp();
+#elif MOTION_TEST_MODE == CTRL_TEST_COURSE
+    ctrl_test_course();
+#elif MOTION_TEST_MODE == BARCODE_TEST_DRIVE
+    barcode_test_drive();
+#elif MOTION_TEST_MODE == OBST_TEST_WIDTH
+    obst_test_width();
 #elif MOTION_TEST_MODE == MOTION_TEST_HAND
     motion_test_hand();
 #else

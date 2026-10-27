@@ -29,8 +29,9 @@ void us_delay(uint32_t us);
 /**
  * @brief One measurement.
  * @param p_echo_us echo pulse width in microseconds
- * @return E_OK, or E_TMOUT if no echo came back (nothing in range, or a
- *         soft/angled target) or ECHO was stuck high from the last ping
+ * @return E_OK; E_TMOUT if no echo came back (nothing in range, or a
+ *         soft/angled target) or ECHO was stuck high from the last ping;
+ *         E_IO if the ECHO pulse never started (sensor missing or dead)
  */
 ER ultrasonic_read_us(uint32_t *p_echo_us);
 
