@@ -650,7 +650,7 @@ LOCAL T_CFLG cflg = {
 #define OBST_TEST_WIDTH          33
 
 #ifndef MOTION_TEST_MODE
-#define MOTION_TEST_MODE         CTRL_TEST_COURSE
+#define MOTION_TEST_MODE         OBST_TEST_WIDTH
 #endif
 
 #define IMU_SAMPLE_COUNT         20
@@ -4947,10 +4947,11 @@ LOCAL void obst_test_width(void)
                   (E_OK == er) ? "ok" : "FAILED", (INT)fault_get());
         if((E_OK == er) && prof.found) {
             tm_printf((UB *)"[WIDTH]   nearest %d mm at %d cdeg; seen from %d to %d cdeg"
-                      " (span %d), beam %d -> width estimate %d mm, sides %d / %d mm"
-                      " (left of centreline +)\n", prof.nearest_mm, prof.nearest_cdeg,
-                      prof.right_cdeg, prof.left_cdeg, prof.left_cdeg - prof.right_cdeg,
-                      prof.beam_cdeg, prof.width_mm, prof.left_side_mm, prof.right_side_mm);
+                      " (span %d), beam %d -> width estimate %d mm (old rule %d mm),"
+                      " sides %d / %d mm (left of centreline +)\n", prof.nearest_mm,
+                      prof.nearest_cdeg, prof.right_cdeg, prof.left_cdeg,
+                      prof.left_cdeg - prof.right_cdeg, prof.beam_cdeg, prof.width_mm,
+                      prof.width_old_mm, prof.left_side_mm, prof.right_side_mm);
         } else if(E_OK == er) {
             tm_printf((UB *)"[WIDTH]   nothing within %d mm\n", WIDTH_DETECT_MM);
         }

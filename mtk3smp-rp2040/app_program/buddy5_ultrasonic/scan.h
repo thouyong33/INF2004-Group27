@@ -9,7 +9,9 @@
  * the wheel encoders (spin test: encoders 920 deg vs compass 922 deg).
  *
  * Coarse: one continuous sweep across +/-half_deg finds the nearest
- * obstacle and roughly where its edges are. Fine: around each edge the
+ * obstacle and roughly where its edges are: the readings within 45 mm of
+ * the nearest one (a range gate, so things behind or beside it don't
+ * widen it). Fine: around each edge the
  * car stops every ~2 deg and takes a median of three pings, to place the
  * edge more precisely. The obstacle is seen over its own angular size plus
  * the beam width at its distance, so
@@ -43,6 +45,7 @@ typedef struct {
     int16_t left_cdeg;       /**< left-most angle it was still seen */
     int16_t beam_cdeg;       /**< beam width used for the correction */
     int16_t width_mm;        /**< estimated width (0 = below resolution) */
+    int16_t width_old_mm;    /**< same, by the old "anything in range" edges */
     int16_t left_side_mm;    /**< obstacle's left side, mm left of centreline */
     int16_t right_side_mm;   /**< obstacle's right side, mm left of centreline
                                   (negative = to the right) */
