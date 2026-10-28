@@ -196,19 +196,24 @@ rest_attitude(int32_t *p_roll0)
     return true;
 }
 
+/* Barcode command table: [letter - 'A'][0 = read forward, 1 = reversed].
+ * Any Code 39 letter can appear on the course and the final mapping is not
+ * fixed yet (it may be letter ranges, e.g. A-E = left); until then: A left,
+ * A reversed right, Z straight, Z reversed U-turn, the rest no command. */
+static const uint8_t g_cmd_table[26][2] = {
+    ['A' - 'A'] = { CTRL_CMD_LEFT, CTRL_CMD_RIGHT },
+    ['Z' - 'A'] = { CTRL_CMD_STRAIGHT, CTRL_CMD_UTURN },
+};
+
 /* Barcode read -> command (user's mapping; see vehicle_ctrl.h) */
 static uint8_t
 cmd_for(uint8_t ch, bool b_reversed)
 {
-    if ('A' == ch)
+    if ((ch < (uint8_t)'A') || (ch > (uint8_t)'Z'))
     {
-        return b_reversed ? CTRL_CMD_RIGHT : CTRL_CMD_LEFT;
+        return CTRL_CMD_NONE;
     }
-    if ('Z' == ch)
-    {
-        return b_reversed ? CTRL_CMD_UTURN : CTRL_CMD_STRAIGHT;
-    }
-    return CTRL_CMD_NONE;
+    return g_cmd_table[ch - (uint8_t)'A'][b_reversed ? 1u : 0u];
 }
 
 /* Wind the line task down; its LINE_END(STOPPED) is ours, not news */

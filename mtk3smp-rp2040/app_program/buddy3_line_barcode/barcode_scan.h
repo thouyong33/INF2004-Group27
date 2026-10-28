@@ -5,7 +5,8 @@
  * While enabled, a low-priority task polls the left IR's analog output
  * every 2 ms and keeps one reading per encoder step (0.33 mm). It tracks
  * the white level; once a reading rises BC_ON_MV above it, it records
- * (with ~10 mm of white before) until BCS_QUIET_MM of white follow, then
+ * (with ~10 mm of white before) until BCS_QUIET_MM of white follow (more
+ * for a larger-scale code: 4 x its narrowest bar, up to 30 mm), then
  * decodes (barcode.c) and posts EVT_BARCODE to the controller:
  *   arg = the character ('A', 'Z', ...) or 0 if nothing decoded,
  *   val = 1 if read backwards in the travel direction (0 forward), or,

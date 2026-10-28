@@ -154,8 +154,8 @@ void ir_test_log(void)
    the car stops: levels, every bar (width, peak) and space, the decode,
    and the profile every 1 mm. */
 #define BCD_MM_S                 50
-#define BCD_DIST_MM              250
-#define BCD_LEN                  800    /* steps: 262 mm */
+#define BCD_DIST_MM              400    /* A4 code: 282 mm */
+#define BCD_LEN                  1300   /* steps: 426 mm */
 /* profile values per line (1 mm each) */
 #define BCD_ROW                  20
 

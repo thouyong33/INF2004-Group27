@@ -22,12 +22,22 @@
 #define BCS_POLL_MS          1u      /* tk_dly_tsk(1) = 2 ms */
 
 #define UM_PER_EDGE          328
-/* steps: ~210 mm (code 141 mm + margins) */
-#define BCS_LEN              640
+/* steps: ~360 mm, a 3-character code at the A4 scale (narrow 6 mm,
+ * 282 mm) plus margins; the sample scale (narrow 3 mm) is 141 mm */
+#define BCS_LEN              1100
 /* steps of white kept before the first bar */
 #define BCS_LEAD             32
 #define BCS_QUIET_STEPS      ((BCS_QUIET_MM * 1000) / UM_PER_EDGE)
 #define BCS_RESET_STEPS      300     /* a drop this big = odometry was reset */
+/* End of a code: white for BCS_QUIET_MM, or for BCS_QUIET_NARROW_X times
+ * the narrowest bar seen so far if that is longer (up to BCS_QUIET_MAX_MM).
+ * A wide space is 3 narrow at any scale (1:3), so at the A4 scale (wide
+ * space 18 mm) a fixed 15 mm cut codes into pieces; one piece could even
+ * look like a cross arm. Bars under BCS_BAR_MIN_STEPS are noise. */
+#define BCS_QUIET_NARROW_X   4u
+#define BCS_QUIET_MAX_MM     30
+#define BCS_QUIET_MAX_STEPS  ((BCS_QUIET_MAX_MM * 1000) / UM_PER_EDGE)
+#define BCS_BAR_MIN_STEPS    3u
 /* A cross arm under the left IR reads as one bar 18 mm wide. When the
  * car crosses pointing a few degrees left, the right IR runs from the arm
  * straight onto the main line and the line task never reports the
@@ -38,6 +48,10 @@
 #define ARM_MIN_MM           10
 #define ARM_MAX_MM           35
 #define LEFT_IR_AHEAD_MM     20
+/* ...and only if no other read ended within this before it began (a
+ * piece of a code is never an arm) */
+#define ARM_CLEAR_MM         30
+#define ARM_CLEAR_STEPS      ((ARM_CLEAR_MM * 1000) / UM_PER_EDGE)
 
 /* Distance travelled AT THE LEFT IR, not at the car's centre. While line
  * following the car yaws +/-0.5..2 rad/s, and the left IR sits ~80 mm left
@@ -70,22 +84,24 @@ steps_now(void)
 }
 
 /* Where the right IR meets the arm whose bar (w steps) just ended a read
- * (BCS_QUIET_STEPS of white after it), as the line task's distance (the
- * mean of both wheels, mm) */
+ * (quiet steps of white after it), as the line task's distance (the mean
+ * of both wheels, mm) */
 static int32_t
-arm_start_mm(uint16_t w)
+arm_start_mm(uint16_t w, uint32_t quiet)
 {
     enc_diag_t l, r;
     int32_t now_mm;
 
     (void)motion_get_encoder_diag(&l, &r);
     now_mm = (((l.hw_count + r.hw_count) / 2) * UM_PER_EDGE) / 1000;
-    return now_mm - ((((int32_t)w + BCS_QUIET_STEPS) * UM_PER_EDGE) / 1000)
+    return now_mm - ((((int32_t)w + (int32_t)quiet) * UM_PER_EDGE) / 1000)
            + LEFT_IR_AHEAD_MM;
 }
 
+/* Decode a finished read of n steps (quiet: the white that ended it;
+ * b_clear: no other read ended just before it) and post the result */
 static void
-finish(uint32_t n)
+finish(uint32_t n, uint32_t quiet, bool b_clear)
 {
     bc_result_t res;
     uint32_t ne;
@@ -102,11 +118,12 @@ finish(uint32_t n)
         }
         g_last_n = ne;
     }
-    if ((!b_ok) && (1u == ne) && (0u != g_el[0].bar)
+    if ((!b_ok) && b_clear && (1u == ne) && (0u != g_el[0].bar)
         && (g_el[0].w >= (uint16_t)((ARM_MIN_MM * 1000) / UM_PER_EDGE))
         && (g_el[0].w <= (uint16_t)((ARM_MAX_MM * 1000) / UM_PER_EDGE)))
     {
-        ctrl_evt_post(EVT_JUNCTION, 1u, (int16_t)arm_start_mm(g_el[0].w));
+        ctrl_evt_post(EVT_JUNCTION, 1u,
+                      (int16_t)arm_start_mm(g_el[0].w, quiet));
     }
     if (b_ok)
     {
@@ -130,6 +147,11 @@ bcs_task_main(INT stacd, void *exinf)
     uint32_t lead_i;
     uint32_t lead_n;
     uint32_t quiet;
+    uint32_t quiet_need;
+    uint32_t bar_run;
+    uint32_t min_bar;
+    int32_t cap_start;
+    int32_t last_end;
     uint32_t i;
     uint16_t mv;
     uint16_t white;
@@ -149,6 +171,11 @@ bcs_task_main(INT stacd, void *exinf)
         lead_i = 0u;
         lead_n = 0u;
         quiet = 0u;
+        quiet_need = (uint32_t)BCS_QUIET_STEPS;
+        bar_run = 0u;
+        min_bar = 0xFFFFu;
+        cap_start = 0;
+        last_end = last - (2 * ARM_CLEAR_STEPS);
 
         while (0u != g_enabled)
         {
@@ -194,6 +221,10 @@ bcs_task_main(INT stacd, void *exinf)
                                                 % BCS_LEAD];
                         }
                         quiet = 0u;
+                        quiet_need = (uint32_t)BCS_QUIET_STEPS;
+                        bar_run = 0u;
+                        min_bar = 0xFFFFu;
+                        cap_start = k;
                     }
                     else
                     {
@@ -208,11 +239,33 @@ bcs_task_main(INT stacd, void *exinf)
                 }
 
                 g_buf[n++] = mv;
-                quiet = (mv < (uint16_t)(white + BC_OFF_MV)) ? (quiet + 1u)
-                                                              : 0u;
-                if ((quiet >= (uint32_t)BCS_QUIET_STEPS) || (n >= BCS_LEN))
+                if (mv < (uint16_t)(white + BC_OFF_MV))
                 {
-                    finish(n);
+                    /* White: a bar just ended? keep the narrowest */
+                    if ((bar_run >= BCS_BAR_MIN_STEPS) && (bar_run < min_bar))
+                    {
+                        min_bar = bar_run;
+                        quiet_need = BCS_QUIET_NARROW_X * min_bar;
+                        quiet_need = (quiet_need < (uint32_t)BCS_QUIET_STEPS)
+                                     ? (uint32_t)BCS_QUIET_STEPS
+                                     : ((quiet_need
+                                         > (uint32_t)BCS_QUIET_MAX_STEPS)
+                                        ? (uint32_t)BCS_QUIET_MAX_STEPS
+                                        : quiet_need);
+                    }
+                    bar_run = 0u;
+                    quiet++;
+                }
+                else
+                {
+                    bar_run++;
+                    quiet = 0u;
+                }
+                if ((quiet >= quiet_need) || (n >= BCS_LEN))
+                {
+                    finish(n, quiet,
+                           (cap_start - last_end) >= ARM_CLEAR_STEPS);
+                    last_end = k;
                     b_capturing = false;
                     lead_n = 0u;
                     break;
