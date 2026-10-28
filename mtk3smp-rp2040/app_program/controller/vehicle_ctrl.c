@@ -356,7 +356,12 @@ creep_to_scan_range(void)
  *---------------------------------------------------------------------------*/
 #define PROBE_STEP_MM        25      /* sideways step: edge to +/-12 mm */
 #define PROBE_MAX_MM         250     /* per side: faces up to ~50 cm */
-#define PROBE_BAND_MM        25      /* face echo = start range +/- this */
+/* A reading is the face if it is no further than this beyond the median
+ * of the face readings so far (a nearer one always is): the face's range
+ * drifts 25-40 mm along it, and comparing with the first reading ended
+ * probes early on one stray reading (ctrl_course_v19 runs 7, 8, 13) */
+#define PROBE_BAND_MM        25
+#define PROBE_OFF_NEEDED     2       /* off-face readings in a row = edge */
 #define PROBE_DRIVE_MM_S     60
 #define PROBE_BRAKE_MM       3       /* stop command this early */
 #define PROBE_TURN_MM_S      80
@@ -374,6 +379,9 @@ creep_to_scan_range(void)
 #define AVOID_HALF_L_MM      85      /* centre to the left IR bracket */
 #define AVOID_SENSOR_AHEAD_MM 70     /* sonar ahead of the axle */
 #define AVOID_MARGIN_MM      40      /* beyond the width estimate's error */
+/* plan for at least this width (course obstacles are 10-20 cm): a low
+ * estimate left too little room (v19, the car brushed the box) */
+#define AVOID_MIN_WIDTH_MM   100
 /* not measurable from the front: assumed */
 #define AVOID_DEPTH_MM       200
 #define AVOID_MM_S           100
@@ -381,6 +389,26 @@ creep_to_scan_range(void)
 
 static ctrl_probe_pt_t g_probe[CTRL_PROBE_MAX];
 static volatile uint32_t g_probe_n = 0u;
+static int16_t g_face[CTRL_PROBE_MAX];      /* face readings, sorted */
+static uint32_t g_face_n = 0u;
+
+/* Keep a face reading (sorted) and return the median of those kept */
+static int32_t
+face_add(int32_t mm)
+{
+    uint32_t j;
+
+    if (g_face_n < CTRL_PROBE_MAX)
+    {
+        for (j = g_face_n; (j > 0u) && (g_face[j - 1u] > mm); j--)
+        {
+            g_face[j] = g_face[j - 1u];
+        }
+        g_face[j] = (int16_t)mm;
+        g_face_n++;
+    }
+    return g_face[g_face_n / 2u];
+}
 
 /* Turn on the spot to an absolute heading (heading_raw_cdeg reference) */
 static void
@@ -460,15 +488,18 @@ probe_log(int32_t y, int32_t mm)
 }
 
 /* Step sideways from *p_y (left +) by dir (+1 / -1) until the face's echo
- * is lost; returns the edge (midway between the last step on the face and
- * the first off it), *p_capped if PROBE_MAX_MM went by still on it */
+ * is lost PROBE_OFF_NEEDED steps in a row; returns the edge (midway
+ * between the last step on the face and the first off it), *p_capped if
+ * PROBE_MAX_MM went by still on it. *p_ref is the face's median range. */
 static int32_t
-probe_edge(int32_t dir_cdeg, int32_t side, int32_t face_mm, int32_t *p_y,
+probe_edge(int32_t dir_cdeg, int32_t side, int32_t *p_ref, int32_t *p_y,
            bool *p_capped)
 {
     int32_t mm;
     int32_t moved;
     int32_t y_on = *p_y;
+    int32_t y_off = *p_y;
+    uint32_t offs = 0u;
 
     *p_capped = false;
     for (;;)
@@ -487,14 +518,22 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t face_mm, int32_t *p_y,
         tk_dly_tsk(PROBE_SETTLE_MS);
         mm = probe_ping();
         probe_log(*p_y, mm);
-        if ((mm > 0) && (mm >= (face_mm - PROBE_BAND_MM))
-            && (mm <= (face_mm + PROBE_BAND_MM)))
+        if ((mm > 0) && (mm <= (*p_ref + PROBE_BAND_MM)))
         {
             y_on = *p_y;
+            offs = 0u;
+            *p_ref = face_add(mm);
         }
         else
         {
-            return (y_on + *p_y) / 2;
+            if (0u == offs)
+            {
+                y_off = *p_y;
+            }
+            if (++offs >= PROBE_OFF_NEEDED)
+            {
+                return (y_on + y_off) / 2;
+            }
         }
     }
 }
@@ -513,10 +552,12 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     int32_t right;
     int32_t left;
     int32_t moved;
+    int32_t ref;
     bool b_cap_r;
     bool b_cap_l;
 
     g_probe_n = 0u;
+    g_face_n = 0u;
     dir = line_direction_cdeg();
     probe_turn_to(dir);
     tk_dly_tsk(PROBE_SETTLE_MS);
@@ -527,8 +568,9 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
         log_evt(EVT_OBST_WIDTH, 0u, -1, dist_mm());
         return 0;
     }
+    ref = face_add(face_mm);
 
-    right = probe_edge(dir, -1, face_mm, &y, &b_cap_r) + PROBE_EDGE_OVER_MM;
+    right = probe_edge(dir, -1, &ref, &y, &b_cap_r) + PROBE_EDGE_OVER_MM;
     log_evt(EVT_OBST_EDGE, b_cap_r ? 2u : 0u, (int16_t)right, dist_mm());
 
     /* Back to the start in one move, then on to the left edge */
@@ -539,7 +581,7 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
         y += moved;
         probe_turn_to(dir);
     }
-    left = probe_edge(dir, +1, face_mm, &y, &b_cap_l) - PROBE_EDGE_OVER_MM;
+    left = probe_edge(dir, +1, &ref, &y, &b_cap_l) - PROBE_EDGE_OVER_MM;
     log_evt(EVT_OBST_EDGE, b_cap_l ? 3u : 1u, (int16_t)left, dist_mm());
 
     g_obst_width = (int16_t)(left - right);
@@ -568,10 +610,16 @@ avoid_obstacle(void)
     int32_t face_mm;
     int32_t out;
     int32_t past;
+    int32_t width;
 
     if (0 >= probe_obstacle(&dir, &y, &left, &face_mm))
     {
         return false;
+    }
+    width = g_obst_width;
+    if (width < AVOID_MIN_WIDTH_MM)
+    {
+        left += AVOID_MIN_WIDTH_MM - width;  /* all the shortfall this side */
     }
     out = left + AVOID_HALF_R_MM + AVOID_MARGIN_MM;
     if (out > y)
@@ -724,6 +772,7 @@ ctrl_task_main(INT stacd, void *exinf)
                         line_wind_down();
                         obstacle_watch(false);
                         tk_dly_tsk(300u);
+                        probe_turn_to(line_direction_cdeg());
                         log_evt(EVT_OBST_CREEP, 0u,
                                 (int16_t)creep_to_scan_range(), dist_mm());
                         if (!avoid_obstacle())
@@ -993,6 +1042,7 @@ ctrl_task_main(INT stacd, void *exinf)
         if (CTRL_ST_OBSTACLE == state)
         {
             tk_dly_tsk(300u);
+            probe_turn_to(line_direction_cdeg());
             log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
                     dist_mm());
             {
