@@ -2,14 +2,14 @@
 # micro T-Kernel 3.0 BSP  makefile
 ################################################################################
 
-TEMP_SRCS = $(wildcard ../app_program/*.c)	$(wildcard ../app_program/demo/*.c)	$(wildcard ../app_program/buddy*/*.c)	$(wildcard ../app_program/common/*.c)	$(wildcard ../app_program/controller/*.c)
+TEMP_SRCS = $(wildcard ../app_program/*.c)	$(wildcard ../app_program/test_modes/*.c)	$(wildcard ../app_program/buddy*/*.c)	$(wildcard ../app_program/common/*.c)	$(wildcard ../app_program/controller/*.c)
 TEMP_OBJS = $(TEMP_SRCS:.c=.o)
 TEMP_DEPS = $(TEMP_SRCS:.c=.d)
 
 OBJS += $(subst ../, ./mtkernel_3/, $(TEMP_OBJS))
 C_DEPS += $(subst ../, ./mtkernel_3/, $(TEMP_DEPS))
 
-# One rule for app_program and every subdirectory (demo/, buddy*/, common/, controller/).
+# One rule for app_program and every subdirectory (buddy*/, common/, controller/, test_modes/).
 # mkdir makes the output folder, so a new buddy folder needs no extra rule.
 mtkernel_3/app_program/%.o: ../app_program/%.c
 	@mkdir -p $(dir $@)
