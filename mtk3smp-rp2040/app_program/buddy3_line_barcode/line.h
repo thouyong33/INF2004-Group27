@@ -34,7 +34,7 @@
 #define LINE_END_NONE        0u      /**< still running */
 #define LINE_END_DISTANCE    1u      /**< reached max_mm */
 #define LINE_END_LOST        2u      /**< line lost, on-spot search failed */
-/* *< line_follow_stop() or a motion fault */
+/** line_follow_stop() or a motion fault */
 #define LINE_END_STOPPED     3u
 
 /** One 20 ms control period, recorded for tests */
@@ -47,7 +47,7 @@ typedef struct {
 } line_trace_t;
 
 #define LINE_TR_FOLLOW       0u      /**< following the line */
-/* *< searching on the spot (every 200 ms) */
+/** searching on the spot (every 200 ms) */
 #define LINE_TR_SEARCH       1u
 #define LINE_TR_HOLD         2u      /**< ramp hold: straight on the encoders */
 

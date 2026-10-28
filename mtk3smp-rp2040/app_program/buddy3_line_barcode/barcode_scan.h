@@ -23,7 +23,7 @@
 
 #include "barcode.h"
 
-/* *< white after the last bar: code ended */
+/** white after the last bar: code ended */
 #define BCS_QUIET_MM         15
 
 /** @brief Set up the ADC and create the (idle) scanning task. */

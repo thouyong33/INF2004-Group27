@@ -26,7 +26,6 @@
 #define LINE_KP_MM_S         20
 #define LINE_KI_MM_S         2
 #define LINE_TRIM_MAX_MM_S   60      /* one side's steering cap */
-#define LINE_CORR_MAX_MM_S   120     /* the hard-right case (line under R) */
 #define LINE_SLEW_MM_S       15      /* max steering change per period */
 #define LINE_JUNCTION_MM     30      /* drive straight this far over an arm */
 /* C and R both black this far before it counts as a junction: a cross arm
@@ -38,12 +37,6 @@
  * test ramp, 27 Oct) for 100 mm or more. The junction is reported when the
  * black ends, from where it began. */
 #define LINE_JUNC_MAX_MM     35
-/* Right IR black alone (centre white) longer than this is not the line:
- * the line under R is pulled back under C within a few cm, while the black
- * ramp beside the line keeps R black and the hard right turn swung the car
- * 70 deg into it (ctrl_course_v11 runs 1-2, 27 Oct). Past this the reading
- * counts as "centre on the white" (steer left, toward the line's edge). */
-#define LINE_R_ONLY_MAX_MM   35
 /* centre white this far (steering left): lost */
 #define LINE_LOST_MM         40
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
@@ -124,10 +117,12 @@ trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode)
     g_trace_n++;
 }
 
+/* Found the line: the centre IR only (the right IR also sees a black ramp
+ * beside the line, see the steering notes below) */
 static bool
 on_line(uint32_t bits)
 {
-    return 0u != (bits & (IR_BIT_CENTRE | IR_BIT_RIGHT));
+    return 0u != (bits & IR_BIT_CENTRE);
 }
 
 /* Heading since following started (odometry reset), x0.01 deg, left + */
@@ -339,7 +334,7 @@ line_task_main(INT stacd, void *exinf)
             if (b_after_hold)
             {
                 b_after_hold = false;
-                if (!(b_c_on || b_r_on))
+                if (!b_c_on)
                 {
                     motion_stop();
                     tk_dly_tsk(200u);
@@ -379,16 +374,22 @@ line_task_main(INT stacd, void *exinf)
              * right edge, so each reading has one meaning:
              *   C R
              *   1 0  centre on the line   -> steer right, toward the edge
-             *   0 0  centre on the white  -> steer left, toward the edge
-             *   0 1  line under the right spot (car far left) -> right, hard
+             *   0 x  centre on the white  -> steer left, toward the edge
              *   1 1  black under both: a junction arm (the right spot is
-             *        20 mm out over white on a plain line) -> straight on */
+             *        20 mm out over white on a plain line) -> straight on,
+             *        unless R has been black longer than an arm (a ramp
+             *        beside the line) -> as 1 0
+             * The right IR never steers on its own: a black ramp close to
+             * the line kept it black, the old "0 1 = car far left, hard
+             * right" turned the car onto the ramp within 35 mm and it then
+             * followed the ramp's edge (ctrl_course_v11/v13, 27-28 Oct). A
+             * car that really is far left loses the line and searches. */
             if (d < straight_until)
             {
                 off = 0;
                 white_since = -1;
             }
-            else if (b_c_on && b_r_on)
+            else if (b_c_on && b_r_on && ((d - r_since) <= LINE_JUNC_MAX_MM))
             {
                 /* Both black: hold straight; once it has lasted
                  * LINE_JUNC_CONFIRM_MM it may be a junction arm (reported
@@ -409,12 +410,6 @@ line_task_main(INT stacd, void *exinf)
             else if (b_c_on)
             {
                 off = -1;
-                white_since = -1;
-            }
-            else if (b_r_on && ((d - r_since) <= LINE_R_ONLY_MAX_MM))
-            {
-                off = -2;
-                last_side = -1;
                 white_since = -1;
             }
             else
@@ -482,9 +477,7 @@ line_task_main(INT stacd, void *exinf)
                 {
                     target = LINE_TRIM_MAX_MM_S;
                 }
-                target = (off < 0) ? -(target * ((off < -1) ? 2 : 1)) : target;
-                target = (target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S
-                                                        : target;
+                target = (off < 0) ? -target : target;
             }
             /* Slew-limit the steering so it never jerks */
             corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S

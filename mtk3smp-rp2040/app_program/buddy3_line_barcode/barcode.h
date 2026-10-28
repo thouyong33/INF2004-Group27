@@ -31,7 +31,7 @@
 /* Replays 26 Oct: the 1 mm slit at ~8 mm decodes 3/3 at 15-30 % of the
  * span (narrow spaces stay 200-330 mV); the faint 24 Oct set needs the
  * fixed margin, so barcode_read() tries 20 % first, then the fixed margin */
-/* *< ...or this % of white-to-dark, if higher */
+/** ...or this % of white-to-dark, if higher */
 #define BC_ON_PCT            20u
 #endif
 #ifndef BC_OFF_PCT

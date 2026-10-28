@@ -86,12 +86,12 @@ LOCAL const char *ctrlt_state(UB s)
 
 LOCAL const char *ctrlt_evt(UB e)
 {
-    static const char *const txt[13] = {
+    static const char *const txt[14] = {
         "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
         "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND",
-            "OBST_WIDTH"
+        "OBST_WIDTH", "OBST_CREEP"
     };
-    return (e < 13u) ? txt[e] : "?";
+    return (e < 14u) ? txt[e] : "?";
 }
 
 LOCAL const char *ctrlt_cmd(UB c)
@@ -196,6 +196,9 @@ void ctrl_test_course(void)
                     tm_printf((UB *)"   (scan failed or nothing found: %d)",
                               lg[i].val);
                 }
+            } else if(EVT_OBST_CREEP == lg[i].type) {
+                tm_printf((UB *)"   (crept in to scan, sonar %d mm)",
+                          lg[i].val);
             } else if(EVT_COMMAND == lg[i].type) {
                 tm_printf((UB *)"   (%s done, turned %d x0.01 deg)",
                           ctrlt_cmd(lg[i].arg),

@@ -747,7 +747,8 @@ motion_checks(uint32_t dt_ms)
         g_hump_ms = 0u;
     }
 
-    if ((!b_settled) || (g_settled_ms < PULLAWAY_MASK_MS) || (0u != g_hump_mask))
+    if ((!b_settled) || (g_settled_ms < PULLAWAY_MASK_MS)
+        || (0u != g_hump_mask))
     {
         g_stall_ms = 0u;
         g_enc_l_silent_ms = 0u;

@@ -16,6 +16,7 @@
 #include "../buddy4_imu/imu.h"
 #include "../buddy4_imu/terrain.h"
 #include "../buddy5_ultrasonic/obstacle.h"
+#include "../buddy5_ultrasonic/ultrasonic.h"
 #include "vehicle_ctrl.h"
 
 /* Below motion (5) so the I2C reads never delay the motor loop; same as
@@ -31,6 +32,18 @@
 #define CTRL_END_WAIT_MS     3000u   /* line task to wind down (a search) */
 #define CTRL_SCAN_HALF_DEG   45      /* obstacle width scan */
 #define CTRL_SCAN_DETECT_MM  600
+/* Creep in before the scan: every scan has a fixed echo at ~290-315 mm
+ * (the floor, the sonar points slightly down). Stopping from 100 mm/s
+ * leaves the face at ~290 mm, inside it, and the width gate then took the
+ * floor in across +/-32 deg (9 cm face read 151-169 mm, ctrl_course_v13).
+ * At 200 mm the face is clear of it, as in the width calibration (stops
+ * from 200 mm/s, face ~250 mm). Sonar ~60 mm behind the nose: nose gap
+ * ~14 cm; the creep limit keeps it >= 8 cm even if every ping is lost. */
+#define CTRL_SCAN_RANGE_MM   200
+#define CTRL_CREEP_MM_S      40
+#define CTRL_CREEP_MAX_MM    150
+#define CTRL_CREEP_PING_MS   65u     /* >= 60 ms between pings */
+#define CTRL_CREEP_TIMEOUT_MS 6000u
 
 /* Impact confirmation (as in the roam demo, 21 Oct) */
 #define CTRL_SPD_WIN_MS      100u    /* forward speed window */
@@ -294,6 +307,40 @@ junction_turn(uint8_t cmd, int32_t d_seen)
     }
     tk_dly_tsk(200u);
     return got;
+}
+
+/* Creep toward the obstacle until the sonar reads CTRL_SCAN_RANGE_MM (see
+ * there), then stop; returns the last reading (-1 = none) */
+static int32_t
+creep_to_scan_range(void)
+{
+    int32_t d0;
+    int32_t mm = -1;
+    uint32_t echo_us;
+    uint32_t t;
+
+    d0 = dist_mm();
+    (void)motion_set_velocity(CTRL_CREEP_MM_S, CTRL_CREEP_MM_S);
+    for (t = 0u; t < CTRL_CREEP_TIMEOUT_MS; t += CTRL_CREEP_PING_MS)
+    {
+        if (E_OK == ultrasonic_read_us(&echo_us))
+        {
+            mm = ultrasonic_us_to_mm(echo_us);
+            if ((mm > 0) && (mm <= CTRL_SCAN_RANGE_MM))
+            {
+                break;
+            }
+        }
+        if (((dist_mm() - d0) >= CTRL_CREEP_MAX_MM)
+            || (0u != (fault_get() & FAULT_MOTION_MASK)))
+        {
+            break;
+        }
+        tk_dly_tsk(CTRL_CREEP_PING_MS);
+    }
+    motion_stop();
+    tk_dly_tsk(300u);
+    return mm;
 }
 
 static void
@@ -575,7 +622,8 @@ ctrl_task_main(INT stacd, void *exinf)
 
                     /* A jolt is an impact only at steady speed, off the
                      * ramp, and only if the wheels then slow right down */
-                    if ((0u != (ev & TERRAIN_EVT_COLLISION)) && (!b_jolt_pending)
+                    if ((0u != (ev & TERRAIN_EVT_COLLISION))
+                        && (!b_jolt_pending)
                         && (!b_on_ramp) && motion_is_steady())
                     {
                         b_jolt_pending = true;
@@ -650,6 +698,8 @@ ctrl_task_main(INT stacd, void *exinf)
             ER er;
 
             tk_dly_tsk(300u);
+            log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
+                    dist_mm());
             prof.found = false;
             motion_get_enc_check(&g_scan_enc[0]);
             er = obstacle_scan_start(CTRL_SCAN_HALF_DEG, CTRL_SCAN_DETECT_MM);

@@ -246,7 +246,8 @@ void barcode_test_drive(void)
             continue;
         }
 
-        b_dec_ok = barcode_read(prof, (uint32_t)n, el, BC_MAX_ELEMS, &une, &white,
+        b_dec_ok = barcode_read(prof, (uint32_t)n, el, BC_MAX_ELEMS, &une,
+                                &white,
                               &res);
         ne = (INT)une;
         tm_printf((UB *)"[BCD]   white %d mV (fixed threshold %d mV); %d "

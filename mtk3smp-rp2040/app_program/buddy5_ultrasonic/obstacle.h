@@ -68,7 +68,7 @@ uint32_t obstacle_ping_count(void);
 /** One ping as recorded by the trace (tests only). */
 typedef struct {
     int16_t d_mm;            /**< distance travelled (encoders) at the ping */
-    /* *< reading; -1 no echo / beyond 1 m, -2 echo never started */
+    /** reading; -1 no echo / beyond 1 m, -2 echo never started */
     int16_t mm;
     uint8_t hist;            /**< near history after this ping, bit 0 newest */
 } obstacle_trace_t;
