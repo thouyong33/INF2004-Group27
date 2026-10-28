@@ -33,7 +33,8 @@
 #define EVT_JUNCTION         10u  /* arg 0 = right IR, 1 = left IR */
 /** controller: command done, arg = CTRL_CMD_* */
 #define EVT_COMMAND          11u
-/** controller: arg = 1 if found, val = width, mm */
+/** controller: arg = 1 found, 2 found but the face ran past the sweep
+ * (val is a lower bound), 0 none; val = width, mm */
 #define EVT_OBST_WIDTH       12u
 /** controller: crept in before the scan, val = sonar mm (-1 = none) */
 #define EVT_OBST_CREEP       13u

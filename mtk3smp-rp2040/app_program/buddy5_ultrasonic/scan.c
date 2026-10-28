@@ -42,21 +42,23 @@
  * tolerated). Replaying those two scans: ~6-8 cm against 9 cm. */
 #define SCAN_GATE_MM             45
 #define GAP_ALLOW_GATE           1
-/* Reported width (27 Oct, fitted on 10 scans of a 9 and a 15.5 cm face):
- * from the coarse sweep only, the face being the readings within
- * WIDTH_GATE_MM of the face range (median of the nearest third of the
- * readings, so one short echo cannot set it), up to WIDTH_GAP_ALLOW
- * readings off the face tolerated (stray ~300 mm echoes interleave with
- * it), then scaled by WIDTH_CAL_X100. A flat face is a mirror to the
- * sonar, so the seen span is mostly beam: estimates spread about +/-4 cm
- * (9 cm face 70-102 mm, 15.5 cm face 118-193 mm after scaling).
- * Gate 30 -> 40 mm (28 Oct): the course run now creeps in to ~190 mm
- * before scanning, and that close a 15 cm face's outer readings come back
- * 30-40 mm beyond its middle (15 cm face read 84 mm at +30; replayed at
- * +40: 9 cm 84 mm, 15 cm 170 mm). The floor echo (~290 mm) stays clear. */
-#define WIDTH_GATE_MM            40
-#define WIDTH_GAP_ALLOW          3
-#define WIDTH_CAL_X100           120
+/* Reported width, from the coarse sweep only: the face is the readings
+ * within WIDTH_GATE_MM of the face range (median of the nearest third of
+ * the readings, so one short echo cannot set it), up to WIDTH_GAP_ALLOW
+ * readings off it tolerated. A flat face is a mirror to the sonar, so the
+ * span it is seen over is mostly beam and grows only ~0.7 deg per cm of
+ * width at the ~190 mm the controller scans from (geometry alone: ~2.7).
+ * The span maps to width on a line through the two faces measured
+ * (28 Oct, ctrl_course_v16, 7 scans: 9 cm face seen over 47-51 deg,
+ * 15 cm over 52-57 deg; the line gives 79-114 and 128-171 mm, within
+ * +/-25 mm). Valid for scans from ~190 mm and faces 9-15 cm until a wider
+ * face is measured. Earlier rules (beam-subtracted geometry x1.2, gates
+ * 30/40 with 3 strays) read the 15 cm face 2-4 cm low. */
+#define WIDTH_GATE_MM            30
+#define WIDTH_GAP_ALLOW          1
+#define WIDTH_REF_SPAN_CDEG      4798    /* 9 cm face, mean seen span */
+#define WIDTH_REF_MM             90
+#define WIDTH_MM_PER_DEG_X100    910     /* (150 - 90) mm / 6.59 deg */
 
 static scan_pt_t g_log[SCAN_LOG_MAX];
 static volatile uint32_t g_log_n = 0u;
@@ -301,9 +303,11 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool b_print)
     return best;
 }
 
-/* Width from the coarse sweep (see WIDTH_*); 0 if below resolution */
+/* Width from the coarse sweep (see WIDTH_*); 0 if below resolution.
+ * *p_capped is set if the face still ran on at either end of the sweep:
+ * the width is then only a lower bound. */
 static int16_t
-coarse_width_mm(int32_t n, int32_t near_i)
+coarse_width_mm(int32_t n, int32_t near_i, bool *p_capped)
 {
     int16_t v[LOG_MAX];
     int16_t t;
@@ -315,8 +319,9 @@ coarse_width_mm(int32_t n, int32_t near_i)
     int32_t lo;
     int32_t hi;
     int32_t gap;
-    int32_t excess;
+    int32_t w;
 
+    *p_capped = false;
     for (i = 0; i < n; i++)
     {
         if (g_log[i].mm > 0)
@@ -369,15 +374,11 @@ coarse_width_mm(int32_t n, int32_t near_i)
             break;
         }
     }
-    excess = (int32_t)g_log[hi].cdeg - (int32_t)g_log[lo].cdeg
-             - beam_cdeg_at(face);
-    if (excess <= 0)
-    {
-        return 0;
-    }
-    return (int16_t)((2.0f * (float)face * tan_cdeg(excess / 2)
-                      * (float)WIDTH_CAL_X100)
-                     / 100.0f);
+    *p_capped = (0 == lo) || ((n - 1) == hi);
+    w = WIDTH_REF_MM
+        + (((((int32_t)g_log[hi].cdeg - (int32_t)g_log[lo].cdeg)
+             - WIDTH_REF_SPAN_CDEG) * WIDTH_MM_PER_DEG_X100) / 10000);
+    return (int16_t)((w > 0) ? w : 0);
 }
 
 /*----------------------------------------------------------------------------
@@ -569,7 +570,7 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool b_print,
     p_prof->beam_cdeg = (int16_t)beam;
 
     half_w = (excess > 0) ? (d * tan_cdeg(excess / 2)) : 0.0f;
-    p_prof->width_mm = coarse_width_mm(n, near_i);
+    p_prof->width_mm = coarse_width_mm(n, near_i, &p_prof->width_capped);
 
     /* Old rule's estimate from the coarse sweep alone (comparison) */
     excess = (int32_t)g_log[old_hi].cdeg - (int32_t)g_log[old_lo].cdeg - beam;

@@ -47,6 +47,8 @@ typedef struct {
     /** estimated width, about +/-4 cm (0 = below resolution) */
     int16_t width_mm;
     int16_t width_old_mm;    /**< same, by the old "anything in range" edges */
+    /** the face ran past the sweep: width_mm is only a lower bound */
+    bool    width_capped;
     int16_t left_side_mm;    /**< obstacle's left side, mm left of centreline */
     int16_t right_side_mm;   /**< obstacle's right side, mm left of centreline
                                   (negative = to the right) */

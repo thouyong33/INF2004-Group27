@@ -190,7 +190,10 @@ void ctrl_test_course(void)
                     tm_printf((UB *)"   (no read, %d bars/spaces)", lg[i].val);
                 }
             } else if(EVT_OBST_WIDTH == lg[i].type) {
-                if(0u != lg[i].arg) {
+                if(2u == lg[i].arg) {
+                    tm_printf((UB *)"   (width at least %d mm: the face ran"
+                              " past the sweep)", lg[i].val);
+                } else if(0u != lg[i].arg) {
                     tm_printf((UB *)"   (width estimate %d mm)", lg[i].val);
                 } else {
                     tm_printf((UB *)"   (scan failed or nothing found: %d)",

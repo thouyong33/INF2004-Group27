@@ -30,7 +30,9 @@
 #define CTRL_WATCH_SETTLE_MS 300u    /* a few pings before driving */
 #define CTRL_IMU_FAIL_MAX    10u     /* reads failed in a row = FAULT_IMU */
 #define CTRL_END_WAIT_MS     3000u   /* line task to wind down (a search) */
-#define CTRL_SCAN_HALF_DEG   45      /* obstacle width scan */
+/* obstacle width scan: +/-60 deg sees the edges of a face up to ~30 cm
+ * wide from ~190 mm (edge +/-atan(w/2 / 190) plus ~14 deg of beam) */
+#define CTRL_SCAN_HALF_DEG   60
 #define CTRL_SCAN_DETECT_MM  600
 /* Creep in before the scan: every scan has a fixed echo at ~290-315 mm
  * (the floor, the sonar points slightly down). Stopping from 100 mm/s
@@ -729,7 +731,8 @@ ctrl_task_main(INT stacd, void *exinf)
             if ((E_OK == er) && prof.found)
             {
                 g_obst_width = prof.width_mm;
-                log_evt(EVT_OBST_WIDTH, 1u, prof.width_mm, dist_mm());
+                log_evt(EVT_OBST_WIDTH, prof.width_capped ? 2u : 1u,
+                        prof.width_mm, dist_mm());
             }
             else
             {
