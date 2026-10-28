@@ -10,7 +10,8 @@
 
 #define CTRL_EVT_QUEUE_LEN   16u
 /* Each queued message also carries the kernel's size header */
-#define CTRL_EVT_BUF_SZ      (CTRL_EVT_QUEUE_LEN * (sizeof(ctrl_evt_t) + sizeof(INT)))
+#define CTRL_EVT_BUF_SZ      (CTRL_EVT_QUEUE_LEN \
+                              * (sizeof(ctrl_evt_t) + sizeof(INT)))
 
 static ID g_ctrl_evt_mbf = 0;
 static volatile uint32_t g_dropped = 0u;

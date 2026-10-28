@@ -25,10 +25,12 @@
 /** @brief Start 50 Hz PWM on GP12 and move to start_us. */
 void servo_init(uint16_t start_us);
 
-/** @brief Set the soft limits (from the jog test); pulses are clamped to them. */
+/** @brief Set the soft limits (from the jog test); pulses are clamped to
+   them. */
 void servo_set_limits(uint16_t min_us, uint16_t max_us);
 
-/** @brief Command a pulse width in microseconds (clamped). Returns the pulse used. */
+/** @brief Command a pulse width in microseconds (clamped). Returns the pulse
+   used. */
 uint16_t servo_set_us(uint16_t pulse_us);
 
 /** @brief Last commanded pulse width. */

@@ -44,7 +44,8 @@ typedef struct {
     int16_t right_cdeg;      /**< right-most angle it was still seen */
     int16_t left_cdeg;       /**< left-most angle it was still seen */
     int16_t beam_cdeg;       /**< beam width used for the correction */
-    int16_t width_mm;        /**< estimated width, about +/-4 cm (0 = below resolution) */
+    /* *< estimated width, about +/-4 cm (0 = below resolution) */
+    int16_t width_mm;
     int16_t width_old_mm;    /**< same, by the old "anything in range" edges */
     int16_t left_side_mm;    /**< obstacle's left side, mm left of centreline */
     int16_t right_side_mm;   /**< obstacle's right side, mm left of centreline
@@ -58,7 +59,7 @@ typedef struct {
  * motors are left stopped and the car where it was.
  * @param p_print  true to print the coarse and fine logs ([SCAN] lines)
  */
-ER scan_obstacle(int16_t half_deg, int16_t detect_mm, bool p_print,
+ER scan_obstacle(int16_t half_deg, int16_t detect_mm, bool b_print,
                  obstacle_profile_t *p_prof);
 
 /** Where the last scan spent its time (diagnostics). Index 0 = right
@@ -77,10 +78,12 @@ typedef struct {
 /** @brief Timing of the last scan_obstacle() call. */
 void scan_get_timing(scan_timing_t *p_t);
 
-/** @brief Copy the last scan's coarse sweep (right to left); returns the count. */
+/** @brief Copy the last scan's coarse sweep (right to left); returns the
+   count. */
 uint32_t scan_get_coarse(scan_pt_t *p_out, uint32_t max);
 
-/** @brief Copy the last scan's fine readings at one edge (0 = right, 1 = left). */
+/** @brief Copy the last scan's fine readings at one edge (0 = right, 1 =
+   left). */
 uint32_t scan_get_fine(uint32_t edge, scan_pt_t *p_out, uint32_t max);
 
 /**

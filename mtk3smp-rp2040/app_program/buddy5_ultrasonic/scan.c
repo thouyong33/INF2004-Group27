@@ -13,7 +13,8 @@
 #include "servo.h"
 #include "scan.h"
 
-#define TRACK_MM                 114     /* wheel track, confirmed by the compass */
+/* wheel track, confirmed by the compass */
+#define TRACK_MM                 114
 #define UM_PER_EDGE              328     /* odometry calibration (Buddy 2) */
 #define PING_GAP_MS              70      /* datasheet: >= 60 ms between pings */
 
@@ -32,7 +33,8 @@
 #define FINE_SETTLE_MS           150
 #define FINE_HALF_CDEG           800     /* fine window: edge +/-8 deg */
 #define LOG_MAX                  ((int32_t)SCAN_LOG_MAX)
-#define GAP_ALLOW                2       /* missed pings tolerated inside the obstacle */
+/* missed pings tolerated inside the obstacle */
+#define GAP_ALLOW                2
 /* Edges by range gate (27 Oct): a 9 cm toolbox read 33 cm wide because
  * every echo within detect_mm counted, including things 5-20 cm behind and
  * beside it. Now only readings within SCAN_GATE_MM of the nearest one are
@@ -124,20 +126,21 @@ ping_median3_mm(void)
 
 /* Turn on the spot to an absolute scan angle and stop */
 static void
-turn_to_ex(int32_t target_cdeg, int16_t speed, int32_t brake_cdeg, uint32_t settle_ms)
+turn_to_ex(int32_t target_cdeg, int16_t speed, int32_t brake_cdeg,
+           uint32_t settle_ms)
 {
     int32_t a;
     uint32_t i;
-    bool left;
+    bool b_left;
 
     a = angle_cdeg();
     if ((target_cdeg - a) > -50 && (target_cdeg - a) < 50)
     {
         return;
     }
-    left = (target_cdeg > a);
+    b_left = (target_cdeg > a);
 
-    if (left)
+    if (b_left)
     {
         (void)motion_set_velocity((int16_t)-speed, speed);
     }
@@ -148,8 +151,8 @@ turn_to_ex(int32_t target_cdeg, int16_t speed, int32_t brake_cdeg, uint32_t sett
     for (i = 0u; (i < 3000u) && (!aborted()); i++)
     {
         a = angle_cdeg();
-        if ((left && (a >= target_cdeg - brake_cdeg))
-            || ((!left) && (a <= target_cdeg + brake_cdeg)))
+        if ((b_left && (a >= target_cdeg - brake_cdeg))
+            || ((!b_left) && (a <= target_cdeg + brake_cdeg)))
         {
             break;
         }
@@ -200,8 +203,10 @@ tan_cdeg(int32_t cdeg)
 {
     float x = (float)cdeg * (3.14159265f / 18000.0f);
     float x2 = x * x;
-    float s = x * (1.0f - (x2 / 6.0f) * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
-    float c = 1.0f - (x2 / 2.0f) * (1.0f - (x2 / 12.0f) * (1.0f - (x2 / 30.0f)));
+    float s = x * (1.0f - (x2 / 6.0f)
+                          * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
+    float c = 1.0f - (x2 / 2.0f)
+                     * (1.0f - (x2 / 12.0f) * (1.0f - (x2 / 30.0f)));
 
     return s / c;
 }
@@ -212,14 +217,15 @@ sin_cdeg(int32_t cdeg)
     float x = (float)cdeg * (3.14159265f / 18000.0f);
     float x2 = x * x;
 
-    return x * (1.0f - (x2 / 6.0f) * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
+    return x * (1.0f - (x2 / 6.0f)
+                       * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
 }
 
 /* Fine look around one edge: stop every ~2 deg across edge +/-8 deg and
  * return the outermost angle (in the outward direction) where the
  * obstacle is still seen. outward = +1 for the left edge, -1 for the right. */
 static int32_t
-fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
+fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool b_print)
 {
     int32_t a;
     int32_t from;
@@ -228,7 +234,7 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
     int16_t mm;
     uint32_t guard;
     uint32_t misses = 0u;
-    bool past = false;
+    bool b_past = false;
 
     uint32_t t0 = now_ms();
     uint32_t idx = (outward < 0) ? 0u : 1u;
@@ -256,17 +262,19 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
             g_fine[idx][g_fine_n[idx]].mm = mm;
             g_fine_n[idx]++;
         }
-        if (print)
+        if (b_print)
         {
-            tm_printf((UB *)"[SCAN] fine %s %d,%d\n", (outward > 0) ? "L" : "R", (INT)a, (INT)mm);
+            tm_printf((UB *)"[SCAN] fine %s %d,%d\n", (outward > 0) ? "L" : "R",
+                      (INT)a, (INT)mm);
         }
         /* The edge is the outermost reading still in the gate before the
          * readings leave it for good (more than GAP_ALLOW_GATE in a row) */
         if (is_obstacle(mm, detect_mm))
         {
             misses = 0u;
-            if ((!past)
-                && (((outward > 0) && (a > best)) || ((outward < 0) && (a < best))))
+            if ((!b_past)
+                && (((outward > 0) && (a > best)) || ((outward < 0)
+                                                      && (a < best))))
             {
                 best = a;
             }
@@ -275,7 +283,7 @@ fine_edge(int32_t edge_cdeg, int32_t outward, int16_t detect_mm, bool print)
         {
             if (++misses > GAP_ALLOW_GATE)
             {
-                past = true;
+                b_past = true;
             }
         }
         if (((outward > 0) && (a >= to)) || ((outward < 0) && (a <= to)))
@@ -357,12 +365,14 @@ coarse_width_mm(int32_t n, int32_t near_i)
             break;
         }
     }
-    excess = (int32_t)g_log[hi].cdeg - (int32_t)g_log[lo].cdeg - beam_cdeg_at(face);
+    excess = (int32_t)g_log[hi].cdeg - (int32_t)g_log[lo].cdeg
+             - beam_cdeg_at(face);
     if (excess <= 0)
     {
         return 0;
     }
-    return (int16_t)((2.0f * (float)face * tan_cdeg(excess / 2) * (float)WIDTH_CAL_X100)
+    return (int16_t)((2.0f * (float)face * tan_cdeg(excess / 2)
+                      * (float)WIDTH_CAL_X100)
                      / 100.0f);
 }
 
@@ -370,7 +380,7 @@ coarse_width_mm(int32_t n, int32_t near_i)
  * Scan
  *---------------------------------------------------------------------------*/
 ER
-scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
+scan_obstacle(int16_t half_deg, int16_t detect_mm, bool b_print,
               obstacle_profile_t *p_prof)
 {
     enc_diag_t l, r;
@@ -437,12 +447,13 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     }
     tk_dly_tsk(TURN_SETTLE_MS);
 
-    if (print)
+    if (b_print)
     {
         tm_printf((UB *)"[SCAN] coarse: angle_cdeg,range_mm\n");
         for (i = 0; i < n; i++)
         {
-            tm_printf((UB *)"[SCAN] %d,%d\n", (INT)g_log[i].cdeg, (INT)g_log[i].mm);
+            tm_printf((UB *)"[SCAN] %d,%d\n", (INT)g_log[i].cdeg,
+                      (INT)g_log[i].mm);
         }
     }
 
@@ -529,8 +540,10 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
     p_prof->nearest_cdeg = g_log[near_i].cdeg;
 
     /* ---- Fine: stop-and-look around each coarse edge ---- */
-    p_prof->right_cdeg = (int16_t)fine_edge(g_log[lo].cdeg, -1, (int16_t)gate, print);
-    p_prof->left_cdeg = (int16_t)fine_edge(g_log[hi].cdeg, +1, (int16_t)gate, print);
+    p_prof->right_cdeg = (int16_t)fine_edge(g_log[lo].cdeg, -1, (int16_t)gate,
+                                            b_print);
+    p_prof->left_cdeg = (int16_t)fine_edge(g_log[hi].cdeg, +1, (int16_t)gate,
+                                           b_print);
     if (aborted())
     {
         p_prof->found = false;
@@ -556,7 +569,9 @@ scan_obstacle(int16_t half_deg, int16_t detect_mm, bool print,
 
     /* Old rule's estimate from the coarse sweep alone (comparison) */
     excess = (int32_t)g_log[old_hi].cdeg - (int32_t)g_log[old_lo].cdeg - beam;
-    p_prof->width_old_mm = (int16_t)((excess > 0) ? (2.0f * d * tan_cdeg(excess / 2)) : 0.0f);
+    p_prof->width_old_mm = (int16_t)((excess > 0)
+                                     ? (2.0f * d * tan_cdeg(excess / 2))
+                                     : 0.0f);
 
     /* Centre bearing, then the sides relative to the car's centreline */
     centre = ((int32_t)p_prof->left_cdeg + (int32_t)p_prof->right_cdeg) / 2;

@@ -53,7 +53,8 @@
 /* 100 kHz from clk_sys (SYSCLK MHz), same arithmetic as the Pico SDK */
 #define I2C_BAUD_HZ              100000u
 #define I2C_CLK_HZ               (SYSCLK * 1000000u)
-#define I2C_PERIOD               ((I2C_CLK_HZ + (I2C_BAUD_HZ / 2u)) / I2C_BAUD_HZ)
+#define I2C_PERIOD               ((I2C_CLK_HZ + (I2C_BAUD_HZ / 2u)) \
+                                  / I2C_BAUD_HZ)
 #define I2C_LCNT                 ((I2C_PERIOD * 3u) / 5u)
 #define I2C_HCNT                 (I2C_PERIOD - I2C_LCNT)
 #define I2C_SPKLEN               ((I2C_LCNT < 16u) ? 1u : (I2C_LCNT / 16u))

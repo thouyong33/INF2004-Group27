@@ -23,18 +23,20 @@
 
 #include "barcode.h"
 
-#define BCS_QUIET_MM         15      /**< white after the last bar: code ended */
+/* *< white after the last bar: code ended */
+#define BCS_QUIET_MM         15
 
 /** @brief Set up the ADC and create the (idle) scanning task. */
 ER barcode_scan_create(void);
 
 /** @brief Start or stop scanning (stopping drops a read in progress). */
-void barcode_scan_enable(bool on);
+void barcode_scan_enable(bool b_on);
 
 /** @brief Reads finished since start-up (decoded or not). */
 uint32_t barcode_scan_count(void);
 
-/** @brief Bars and spaces of the last read with >= 9 of them (tests); returns the count. */
+/** @brief Bars and spaces of the last read with >= 9 of them (tests); returns
+   the count. */
 uint32_t barcode_scan_last(bc_elem_t *p_out, uint32_t max);
 
 #endif /* BUDDY3_BARCODE_SCAN_H */

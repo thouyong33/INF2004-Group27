@@ -20,7 +20,8 @@
 #define SERVO_FRAME_TOP          19999u
 
 #if ((SERVO_PWM & 1) != 0)
-#error "Servo pin must be a PWM A channel (even GPIO): CC is written to the A half"
+#error "Servo pin must be a PWM A channel (even GPIO): CC is written to the A "
+       "half"
 #endif
 
 static uint16_t g_min_us = SERVO_ABS_MIN_US;
@@ -41,7 +42,8 @@ servo_init(uint16_t start_us)
     }
 
     out_w(PWM_REG(PWM_CHx_CSR), 0u);
-    out_w(PWM_REG(PWM_CHx_DIV), PWM_DIV_INT(SYSCLK));     /* SYSCLK MHz -> 1 MHz */
+    /* SYSCLK MHz -> 1 MHz */
+    out_w(PWM_REG(PWM_CHx_DIV), PWM_DIV_INT(SYSCLK));
     out_w(PWM_REG(PWM_CHx_TOP), SERVO_FRAME_TOP);
     out_w(PWM_REG(PWM_CHx_CTR), 0u);
     (void)servo_set_us(start_us);

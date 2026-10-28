@@ -51,7 +51,7 @@ void obst_test_width(void)
     obstacle_profile_t prof;
     INT run, i, n, d_trig, mm_trig, rest, nr;
     W sum;
-    BOOL stopped;
+    BOOL b_stopped;
     ER er;
 
     er = obstacle_task_create();
@@ -59,14 +59,19 @@ void obst_test_width(void)
         tm_printf((UB *)"[WIDTH] obstacle_task_create failed: %d\n", er);
         return;
     }
-    tm_printf((UB *)"\n[WIDTH] Obstacle width calibration: drive at %d mm/s, stop at the"
+    tm_printf((UB *)"\n[WIDTH] Obstacle width calibration: drive at %d mm/s, "
+                    "stop at the"
               " object, scan +/-%d deg.\n", WIDTH_MM_S, WIDTH_HALF_DEG);
-    tm_printf((UB *)"[WIDTH] Use flat-faced objects ~10, ~15 and ~20 cm wide, face square"
-              " to the car, about 50 cm ahead. Keep ~25 cm clear on each side.\n");
+    tm_printf((UB *)"[WIDTH] Use flat-faced objects ~10, ~15 and ~20 cm wide, "
+                    "face square"
+              " to the car, about 50 cm ahead. Keep ~25 cm clear on each "
+              "side.\n");
 
     for(run = 1; ; run++) {
-        tm_printf((UB *)"\n[WIDTH] Run %d: aim the car at the object (centred, or offset if"
-                  " you like), press a key (any key while driving stops it).\n", run);
+        tm_printf((UB *)"\n[WIDTH] Run %d: aim the car at the object (centred, "
+                        "or offset if"
+                  " you like), press a key (any key while driving stops it).\n",
+                      run);
         console_flush_input();
         while(console_try_getc() < 0) {
             tk_dly_tsk(50);
@@ -79,7 +84,7 @@ void obst_test_width(void)
         tk_dly_tsk(300);
         motion_reset_odometry();
         motion_set_velocity(WIDTH_MM_S, WIDTH_MM_S);
-        stopped = FALSE;
+        b_stopped = FALSE;
         d_trig = -1;
         mm_trig = -1;
         while(width_dist_mm() < WIDTH_MAX_MM) {
@@ -87,7 +92,7 @@ void obst_test_width(void)
                 motion_stop();
                 d_trig = width_dist_mm();
                 mm_trig = obstacle_last_mm();
-                stopped = TRUE;
+                b_stopped = TRUE;
                 break;
             }
             if((console_try_getc() >= 0)
@@ -112,8 +117,9 @@ void obst_test_width(void)
         rest = (nr > 0) ? (INT)(sum / nr) : -1;
         obstacle_watch(FALSE);
 
-        if(!stopped) {
-            tm_printf((UB *)"[WIDTH] run %d: no obstacle stop (faults 0x%x), skipped\n",
+        if(!b_stopped) {
+            tm_printf((UB *)"[WIDTH] run %d: no obstacle stop (faults 0x%x), "
+                            "skipped\n",
                       run, (INT)fault_get());
             continue;
         }
@@ -123,18 +129,25 @@ void obst_test_width(void)
             er = obstacle_scan_wait(OBS_SCAN_TIMEOUT_MS, &prof);
         }
 
-        tm_printf((UB *)"[WIDTH] run %d: stopped (triggered at %d mm travelled, sensor %d mm),"
-                  " at rest sensor %d mm; scan %s, faults 0x%x\n", run, d_trig, mm_trig, rest,
+        tm_printf((UB *)"[WIDTH] run %d: stopped (triggered at %d mm "
+                        "travelled, sensor %d mm),"
+                  " at rest sensor %d mm; scan %s, faults 0x%x\n", run, d_trig,
+                      mm_trig, rest,
                   (E_OK == er) ? "ok" : "FAILED", (INT)fault_get());
         if((E_OK == er) && prof.found) {
-            tm_printf((UB *)"[WIDTH]   nearest %d mm at %d cdeg; seen from %d to %d cdeg"
-                      " (span %d), beam %d -> width estimate %d mm (old rule %d mm),"
-                      " sides %d / %d mm (left of centreline +)\n", prof.nearest_mm,
+            tm_printf((UB *)"[WIDTH]   nearest %d mm at %d cdeg; seen from %d "
+                            "to %d cdeg"
+                      " (span %d), beam %d -> width estimate %d mm (old rule "
+                      "%d mm),"
+                      " sides %d / %d mm (left of centreline +)\n",
+                          prof.nearest_mm,
                       prof.nearest_cdeg, prof.right_cdeg, prof.left_cdeg,
-                      prof.left_cdeg - prof.right_cdeg, prof.beam_cdeg, prof.width_mm,
+                      prof.left_cdeg - prof.right_cdeg, prof.beam_cdeg,
+                          prof.width_mm,
                       prof.width_old_mm, prof.left_side_mm, prof.right_side_mm);
         } else if(E_OK == er) {
-            tm_printf((UB *)"[WIDTH]   nothing within %d mm\n", WIDTH_DETECT_MM);
+            tm_printf((UB *)"[WIDTH]   nothing within %d mm\n",
+                      WIDTH_DETECT_MM);
         }
         n = (INT)scan_get_coarse(pts, SCAN_LOG_MAX);
         width_print_pts("coarse sweep right to left", pts, n);
@@ -142,7 +155,8 @@ void obst_test_width(void)
         width_print_pts("fine, right edge", pts, n);
         n = (INT)scan_get_fine(1u, pts, SCAN_FINE_MAX);
         width_print_pts("fine, left edge", pts, n);
-        tm_printf((UB *)"[WIDTH]   Note the object's real width, which face, and the nose"
+        tm_printf((UB *)"[WIDTH]   Note the object's real width, which face, "
+                        "and the nose"
                   " gap.\n");
     }
 }

@@ -31,7 +31,8 @@
 /* Replays 26 Oct: the 1 mm slit at ~8 mm decodes 3/3 at 15-30 % of the
  * span (narrow spaces stay 200-330 mV); the faint 24 Oct set needs the
  * fixed margin, so barcode_read() tries 20 % first, then the fixed margin */
-#define BC_ON_PCT            20u     /**< ...or this % of white-to-dark, if higher */
+/* *< ...or this % of white-to-dark, if higher */
+#define BC_ON_PCT            20u
 #endif
 #ifndef BC_OFF_PCT
 #define BC_OFF_PCT           10u
@@ -66,13 +67,14 @@ typedef struct {
  *        white-to-dark span when that is above the fixed margin
  */
 uint32_t barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
-                          uint32_t max, uint16_t *p_white, bool span_thr);
+                          uint32_t max, uint16_t *p_white, bool b_span_thr);
 
 /**
  * @brief Split and decode a profile: span threshold first, then the fixed
  * margin. p_el/p_ne hold the elements of the decoded (or last) attempt.
  */
-bool barcode_read(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el, uint32_t max,
+bool barcode_read(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
+                  uint32_t max,
                   uint32_t *p_ne, uint16_t *p_white, bc_result_t *p_res);
 
 /** @brief Find and decode "*...*" either way round; true if found. */

@@ -34,7 +34,8 @@
 #define LINE_END_NONE        0u      /**< still running */
 #define LINE_END_DISTANCE    1u      /**< reached max_mm */
 #define LINE_END_LOST        2u      /**< line lost, on-spot search failed */
-#define LINE_END_STOPPED     3u      /**< line_follow_stop() or a motion fault */
+/* *< line_follow_stop() or a motion fault */
+#define LINE_END_STOPPED     3u
 
 /** One 20 ms control period, recorded for tests */
 typedef struct {
@@ -46,7 +47,8 @@ typedef struct {
 } line_trace_t;
 
 #define LINE_TR_FOLLOW       0u      /**< following the line */
-#define LINE_TR_SEARCH       1u      /**< searching on the spot (every 200 ms) */
+/* *< searching on the spot (every 200 ms) */
+#define LINE_TR_SEARCH       1u
 #define LINE_TR_HOLD         2u      /**< ramp hold: straight on the encoders */
 
 #define LINE_TRACE_LEN       400u    /**< 8 s at 20 ms */
@@ -72,7 +74,7 @@ void line_follow_stop(void);
  * of that direction (FAULT_LINE_LOST if not found).
  * The line need not be followed on the ramp (course rule, user 2026-10-24).
  */
-void line_set_hold(bool hold);
+void line_set_hold(bool b_hold);
 
 /**
  * @brief The line's direction: the encoder heading averaged over the last

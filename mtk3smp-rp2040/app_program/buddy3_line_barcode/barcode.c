@@ -10,7 +10,8 @@
 #include "barcode.h"
 
 #define BC_HIST_BINS         256u    /* 16 mV bins up to 4095 mV */
-#define BC_WIDE_RATIO_X10    18      /* widest >= 1.8 x narrowest, else all narrow */
+/* widest >= 1.8 x narrowest, else all narrow */
+#define BC_WIDE_RATIO_X10    18
 #define BC_STAR              0x094u
 
 /* Code 39: 9 elements (bar, space, ... bar), bit 8 = first, 1 = wide */
@@ -36,7 +37,7 @@ levels(const uint16_t *p_mv, uint32_t n, uint16_t *p_white, uint16_t *p_dark)
     uint16_t hist[BC_HIST_BINS];
     uint32_t i;
     uint32_t sum = 0u;
-    bool got_white = false;
+    bool b_got_white = false;
 
     for (i = 0u; i < BC_HIST_BINS; i++)
     {
@@ -53,10 +54,10 @@ levels(const uint16_t *p_mv, uint32_t n, uint16_t *p_white, uint16_t *p_dark)
     for (i = 0u; i < BC_HIST_BINS; i++)
     {
         sum += hist[i];
-        if ((!got_white) && ((sum * 10u) >= n))
+        if ((!b_got_white) && ((sum * 10u) >= n))
         {
             *p_white = (uint16_t)((i * 16u) + 8u);
-            got_white = true;
+            b_got_white = true;
         }
         if ((sum * 100u) >= (n * BC_DARK_PCTL))
         {
@@ -68,7 +69,7 @@ levels(const uint16_t *p_mv, uint32_t n, uint16_t *p_white, uint16_t *p_dark)
 
 uint32_t
 barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
-                 uint32_t max, uint16_t *p_white, bool span_thr)
+                 uint32_t max, uint16_t *p_white, bool b_span_thr)
 {
     uint32_t i;
     uint32_t start = 0u;
@@ -79,7 +80,7 @@ barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
     uint16_t off;
     uint16_t peak;
     uint32_t span;
-    bool black;
+    bool b_black;
 
     if ((NULL == p_mv) || (NULL == p_el) || (n < 2u) || (0u == max))
     {
@@ -93,24 +94,24 @@ barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
     /* Threshold: a fixed margin above white (faint thin bars, 24 Oct), or
      * with span_thr a share of the white-to-dark span if that is higher
      * (strong contrast leaves the narrow spaces well above white, 26 Oct) */
-    span = (span_thr && (dark > white)) ? (uint32_t)(dark - white) : 0u;
+    span = (b_span_thr && (dark > white)) ? (uint32_t)(dark - white) : 0u;
     on = (uint16_t)(white + (((span * BC_ON_PCT) / 100u > BC_ON_MV)
                              ? ((span * BC_ON_PCT) / 100u) : BC_ON_MV));
     off = (uint16_t)(white + (((span * BC_OFF_PCT) / 100u > BC_OFF_MV)
                               ? ((span * BC_OFF_PCT) / 100u) : BC_OFF_MV));
 
-    black = (p_mv[0] > on);
+    b_black = (p_mv[0] > on);
     peak = p_mv[0];
     for (i = 1u; i <= n; i++)
     {
-        if ((i == n) || (black ? (p_mv[i] < off) : (p_mv[i] > on)))
+        if ((i == n) || (b_black ? (p_mv[i] < off) : (p_mv[i] > on)))
         {
             /* Skip the white lead-in; the lead-out is trimmed below */
-            if ((ne > 0u) || black)
+            if ((ne > 0u) || b_black)
             {
                 if (ne < max)
                 {
-                    p_el[ne].bar = black ? 1u : 0u;
+                    p_el[ne].bar = b_black ? 1u : 0u;
                     p_el[ne].w = (uint16_t)(i - start);
                     p_el[ne].peak = peak;
                     ne++;
@@ -118,7 +119,7 @@ barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
             }
             if (i < n)
             {
-                black = !black;
+                b_black = !b_black;
                 start = i;
                 peak = p_mv[i];
             }
@@ -137,14 +138,14 @@ barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
 
 /* Element k of the window, read forwards or backwards */
 static const bc_elem_t *
-elem(const bc_elem_t *p_el, uint32_t n, uint32_t k, bool rev)
+elem(const bc_elem_t *p_el, uint32_t n, uint32_t k, bool b_rev)
 {
-    return rev ? &p_el[n - 1u - k] : &p_el[k];
+    return b_rev ? &p_el[n - 1u - k] : &p_el[k];
 }
 
 /* Wide/narrow split for one kind (bars or spaces) of a window */
 static uint16_t
-split(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool rev,
+split(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool b_rev,
       uint8_t bar)
 {
     uint32_t k;
@@ -153,7 +154,7 @@ split(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool rev,
 
     for (k = st; k < (st + ln); k++)
     {
-        const bc_elem_t *p_e = elem(p_el, n, k, rev);
+        const bc_elem_t *p_e = elem(p_el, n, k, b_rev);
 
         if (p_e->bar == bar)
         {
@@ -183,7 +184,8 @@ bits_diff(uint16_t a, uint16_t b)
 }
 
 static bool
-try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool rev,
+try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
+           bool b_rev,
            bc_result_t *p_res)
 {
     uint16_t bthr;
@@ -194,10 +196,10 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool rev
     uint32_t i;
     uint32_t nch = (ln + 1u) / 10u;
     uint32_t errs = 0u;
-    bool found;
+    bool b_found;
 
-    bthr = split(p_el, n, st, ln, rev, 1u);
-    sthr = split(p_el, n, st, ln, rev, 0u);
+    bthr = split(p_el, n, st, ln, b_rev, 1u);
+    sthr = split(p_el, n, st, ln, b_rev, 0u);
     p_res->len = 0u;
 
     for (c = 0u; c < nch; c++)
@@ -205,10 +207,11 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool rev
         pat = 0u;
         for (k = 0u; k < 9u; k++)
         {
-            const bc_elem_t *p_e = elem(p_el, n, st + (c * 10u) + k, rev);
+            const bc_elem_t *p_e = elem(p_el, n, st + (c * 10u) + k, b_rev);
 
             pat = (uint16_t)((pat << 1)
-                             | ((p_e->w > ((0u != p_e->bar) ? bthr : sthr)) ? 1u : 0u));
+                             | ((p_e->w > ((0u != p_e->bar) ? bthr : sthr))
+                                ? 1u : 0u));
         }
         if ((0u == c) || ((nch - 1u) == c))
         {
@@ -219,25 +222,25 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln, bool rev
             }
             continue;
         }
-        found = false;
+        b_found = false;
         for (i = 0u; i < (sizeof(c_c39) / sizeof(c_c39[0])); i++)
         {
             if (c_c39[i].pat == pat)
             {
                 p_res->text[p_res->len++] = c_c39[i].c;
-                found = true;
+                b_found = true;
                 break;
             }
         }
-        if (!found)
+        if (!b_found)
         {
             return false;
         }
     }
     p_res->text[p_res->len] = '\0';
-    p_res->reversed = rev ? 1u : 0u;
+    p_res->reversed = b_rev ? 1u : 0u;
     p_res->star_errs = (uint8_t)errs;
-    p_res->first = (uint8_t)(rev ? (n - st - ln) : st);
+    p_res->first = (uint8_t)(b_rev ? (n - st - ln) : st);
     return true;
 }
 

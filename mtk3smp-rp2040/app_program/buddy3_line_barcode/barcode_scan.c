@@ -22,8 +22,10 @@
 #define BCS_POLL_MS          1u      /* tk_dly_tsk(1) = 2 ms */
 
 #define UM_PER_EDGE          328
-#define BCS_LEN              640     /* steps: ~210 mm (code 141 mm + margins) */
-#define BCS_LEAD             32      /* steps of white kept before the first bar */
+/* steps: ~210 mm (code 141 mm + margins) */
+#define BCS_LEN              640
+/* steps of white kept before the first bar */
+#define BCS_LEAD             32
 #define BCS_QUIET_STEPS      ((BCS_QUIET_MM * 1000) / UM_PER_EDGE)
 #define BCS_RESET_STEPS      300     /* a drop this big = odometry was reset */
 
@@ -64,7 +66,7 @@ finish(uint32_t n)
     uint32_t ne;
     uint32_t i;
 
-    bool ok = barcode_read(g_buf, n, g_el, BC_MAX_ELEMS, &ne, NULL, &res);
+    bool b_ok = barcode_read(g_buf, n, g_el, BC_MAX_ELEMS, &ne, NULL, &res);
 
     /* Keep the last read long enough to be a code (not a junction arm) */
     if (ne >= 9u)
@@ -75,7 +77,7 @@ finish(uint32_t n)
         }
         g_last_n = ne;
     }
-    if (ok)
+    if (b_ok)
     {
         ctrl_evt_post(EVT_BARCODE, (uint8_t)res.text[0], (int16_t)res.reversed);
     }
@@ -100,7 +102,7 @@ bcs_task_main(INT stacd, void *exinf)
     uint32_t i;
     uint16_t mv;
     uint16_t white;
-    bool capturing;
+    bool b_capturing;
 
     (void)stacd;
     (void)exinf;
@@ -111,7 +113,7 @@ bcs_task_main(INT stacd, void *exinf)
 
         last = steps_now();
         white = (uint16_t)ir_ao_left_mv();
-        capturing = false;
+        b_capturing = false;
         n = 0u;
         lead_i = 0u;
         lead_n = 0u;
@@ -125,7 +127,7 @@ bcs_task_main(INT stacd, void *exinf)
             {
                 /* Odometry was reset (line following restarted) */
                 last = s;
-                capturing = false;
+                b_capturing = false;
                 lead_n = 0u;
                 continue;
             }
@@ -138,7 +140,7 @@ bcs_task_main(INT stacd, void *exinf)
 
             for (k = last + 1; k <= s; k++)
             {
-                if (!capturing)
+                if (!b_capturing)
                 {
                     /* Follow the white level slowly, faster downwards */
                     if (mv < white)
@@ -153,11 +155,12 @@ bcs_task_main(INT stacd, void *exinf)
                     if (mv > (uint16_t)(white + BC_ON_MV))
                     {
                         /* First bar: start with the white kept before it */
-                        capturing = true;
+                        b_capturing = true;
                         n = 0u;
                         for (i = 0u; i < lead_n; i++)
                         {
-                            g_buf[n++] = g_lead[(lead_i + BCS_LEAD - lead_n + i) % BCS_LEAD];
+                            g_buf[n++] = g_lead[(lead_i + BCS_LEAD - lead_n + i)
+                                                % BCS_LEAD];
                         }
                         quiet = 0u;
                     }
@@ -174,11 +177,12 @@ bcs_task_main(INT stacd, void *exinf)
                 }
 
                 g_buf[n++] = mv;
-                quiet = (mv < (uint16_t)(white + BC_OFF_MV)) ? (quiet + 1u) : 0u;
+                quiet = (mv < (uint16_t)(white + BC_OFF_MV)) ? (quiet + 1u)
+                                                              : 0u;
                 if ((quiet >= (uint32_t)BCS_QUIET_STEPS) || (n >= BCS_LEN))
                 {
                     finish(n);
-                    capturing = false;
+                    b_capturing = false;
                     lead_n = 0u;
                     break;
                 }
@@ -236,14 +240,14 @@ barcode_scan_create(void)
 }
 
 void
-barcode_scan_enable(bool on)
+barcode_scan_enable(bool b_on)
 {
     if (g_bcs_flg <= 0)
     {
         return;
     }
-    g_enabled = on ? 1u : 0u;
-    if (on)
+    g_enabled = b_on ? 1u : 0u;
+    if (b_on)
     {
         (void)tk_set_flg(g_bcs_flg, BCS_FLG_RUN);
     }

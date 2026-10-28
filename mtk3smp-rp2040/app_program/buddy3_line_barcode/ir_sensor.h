@@ -27,10 +27,12 @@
 #define IR_BIT_CENTRE   (1u << 1)
 #define IR_BIT_RIGHT    (1u << 2)
 
-/** @brief Set GP6, GP4 and GP26 as SIO inputs (GP26 boots with its input off). */
+/** @brief Set GP6, GP4 and GP26 as SIO inputs (GP26 boots with its input
+   off). */
 void ir_init(void);
 
-/** @brief All three sensors at once: IR_BIT_* set where the sensor sees black. */
+/** @brief All three sensors at once: IR_BIT_* set where the sensor sees
+   black. */
 uint32_t ir_read(void);
 
 /** @brief Set up GP27 as an analog input and power the ADC. */

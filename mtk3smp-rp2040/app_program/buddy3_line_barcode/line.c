@@ -44,7 +44,8 @@
  * 70 deg into it (ctrl_course_v11 runs 1-2, 27 Oct). Past this the reading
  * counts as "centre on the white" (steer left, toward the line's edge). */
 #define LINE_R_ONLY_MAX_MM   35
-#define LINE_LOST_MM         40      /* centre white this far (steering left): lost */
+/* centre white this far (steering left): lost */
+#define LINE_LOST_MM         40
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
  * toward the side the line was last seen, so a perpendicular junction arm
@@ -52,12 +53,14 @@
 #define SEARCH_HALF_CDEG     6000    /* line lost while following */
 #define SEARCH_RAMP_CDEG     4500    /* line not under C/R right after a ramp */
 #define SEARCH_TIMEOUT_MS    8000u
-#define SEARCH_TRACE_MS      200u    /* trace a search this often (keeps the trace short) */
+/* trace a search this often (keeps the trace short) */
+#define SEARCH_TRACE_MS      200u
 /* Ramp hold (line_set_hold): tilted on the one-sided ramp the IR reads
  * false black (ramp runs 2026-10-24), so the car drives straight on the
  * encoders and only looks at the line again this far past the ramp */
 #define HOLD_AFTER_MM        50
-#define HOLD_GAIN_DIV        20      /* steering mm/s = heading x0.01 deg / 20 */
+/* steering mm/s = heading x0.01 deg / 20 */
+#define HOLD_GAIN_DIV        20
 #define HOLD_CORR_MAX_MM_S   30
 /* Line direction: the encoder heading averaged over ~LINE_DIR_MM of
  * following, so the weave and a knock just before the ramp (the IR
@@ -146,7 +149,7 @@ search_turn(int32_t to_cdeg)
     int32_t cdeg;
     uint32_t waited = 0u;
     uint32_t bits;
-    bool found = false;
+    bool b_found = false;
 
     (void)motion_get_encoder_diag(&l, &r);
     l0 = l.hw_count;
@@ -172,7 +175,7 @@ search_turn(int32_t to_cdeg)
         bits = ir_read();
         if (on_line(bits))
         {
-            found = true;
+            b_found = true;
             break;
         }
         if (((cdeg > 0) && (turned_cdeg(l0, r0) >= cdeg))
@@ -189,7 +192,7 @@ search_turn(int32_t to_cdeg)
     }
     motion_stop();
     tk_dly_tsk(150u);
-    return found;
+    return b_found;
 }
 
 /* Sweep dir +/- half on the spot, first toward side (+1 left, -1 right) */
@@ -215,13 +218,13 @@ line_task_main(INT stacd, void *exinf)
     int32_t straight_until;
     int32_t both_since;
     int32_t r_since;
-    bool junc_ok;
+    bool b_junc_ok;
     int32_t target;
-    bool c_on;
-    bool r_on;
-    bool holding;
+    bool b_c_on;
+    bool b_r_on;
+    bool b_holding;
     int32_t hold_until;
-    bool after_hold;
+    bool b_after_hold;
     int32_t hold_dir = 0;
     int32_t line_dir;
     int32_t prev_d;
@@ -232,7 +235,8 @@ line_task_main(INT stacd, void *exinf)
 
     while (1)
     {
-        (void)tk_wai_flg(g_line_flg, LINE_FLG_RUN, TWF_ORW | TWF_CLR, &flgptn, TMO_FEVR);
+        (void)tk_wai_flg(g_line_flg, LINE_FLG_RUN, TWF_ORW | TWF_CLR, &flgptn,
+                         TMO_FEVR);
 
         corr = 0;
         prev_off = 0;
@@ -242,9 +246,9 @@ line_task_main(INT stacd, void *exinf)
         straight_until = -1;
         both_since = -1;
         r_since = -1;
-        junc_ok = false;
-        holding = false;
-        after_hold = false;
+        b_junc_ok = false;
+        b_holding = false;
+        b_after_hold = false;
         hold_until = -1;
         line_dir = 0;
         g_line_dir = 0;
@@ -267,59 +271,62 @@ line_task_main(INT stacd, void *exinf)
             }
 
             bits = ir_read();
-            c_on = (0u != (bits & IR_BIT_CENTRE));
-            r_on = (0u != (bits & IR_BIT_RIGHT));
+            b_c_on = (0u != (bits & IR_BIT_CENTRE));
+            b_r_on = (0u != (bits & IR_BIT_RIGHT));
 
             /* Junction report: when the right IR's black stretch ends, if
              * it was arm-sized and C and R were black together for
              * LINE_JUNC_CONFIRM_MM within it */
-            if (r_on)
+            if (b_r_on)
             {
                 if (r_since < 0)
                 {
                     r_since = d;
-                    junc_ok = false;
+                    b_junc_ok = false;
                 }
             }
             else if (r_since >= 0)
             {
-                if (junc_ok && ((d - r_since) <= LINE_JUNC_MAX_MM))
+                if (b_junc_ok && ((d - r_since) <= LINE_JUNC_MAX_MM))
                 {
                     ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)r_since);
                 }
                 r_since = -1;
-                junc_ok = false;
+                b_junc_ok = false;
             }
 
             /* Ramp hold: drive along the line's direction on the encoders,
              * ignore the IR */
             if (0u != g_hold)
             {
-                if (!holding)
+                if (!b_holding)
                 {
-                    holding = true;
+                    b_holding = true;
                     hold_dir = line_dir;
                 }
                 hold_until = d + HOLD_AFTER_MM;
             }
-            if (holding && (d >= hold_until))
+            if (b_holding && (d >= hold_until))
             {
                 /* Past the ramp: pick the line up again from scratch */
-                holding = false;
-                after_hold = true;
+                b_holding = false;
+                b_after_hold = true;
                 run = 0;
                 prev_off = 0;
                 white_since = -1;
                 last_side = 1;
             }
-            if (holding)
+            if (b_holding)
             {
                 target = (hold_dir - heading_cdeg()) / HOLD_GAIN_DIV;
                 target = (target > HOLD_CORR_MAX_MM_S) ? HOLD_CORR_MAX_MM_S
-                       : ((target < -HOLD_CORR_MAX_MM_S) ? -HOLD_CORR_MAX_MM_S : target);
+                       : ((target < -HOLD_CORR_MAX_MM_S) ? -HOLD_CORR_MAX_MM_S
+                                                          : target);
                 corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
-                      : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S : (target - corr));
-                (void)motion_set_velocity((int16_t)(base - corr), (int16_t)(base + corr));
+                      : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S
+                                                          : (target - corr));
+                (void)motion_set_velocity((int16_t)(base - corr),
+                                          (int16_t)(base + corr));
                 prev_d = d;
                 trace(d, corr, 0, bits, LINE_TR_HOLD);
                 tk_dly_tsk(LINE_PERIOD_MS);
@@ -329,10 +336,10 @@ line_task_main(INT stacd, void *exinf)
             /* Just off the ramp and the line is not under C or R: search
              * on the spot now, only within +/-45 deg of the line's
              * direction (steering left blind could reach a junction arm) */
-            if (after_hold)
+            if (b_after_hold)
             {
-                after_hold = false;
-                if (!(c_on || r_on))
+                b_after_hold = false;
+                if (!(b_c_on || b_r_on))
                 {
                     motion_stop();
                     tk_dly_tsk(200u);
@@ -381,7 +388,7 @@ line_task_main(INT stacd, void *exinf)
                 off = 0;
                 white_since = -1;
             }
-            else if (c_on && r_on)
+            else if (b_c_on && b_r_on)
             {
                 /* Both black: hold straight; once it has lasted
                  * LINE_JUNC_CONFIRM_MM it may be a junction arm (reported
@@ -392,19 +399,19 @@ line_task_main(INT stacd, void *exinf)
                 }
                 if ((d - both_since) >= LINE_JUNC_CONFIRM_MM)
                 {
-                    junc_ok = true;      /* reported when R's black ends */
+                    b_junc_ok = true;      /* reported when R's black ends */
                     straight_until = d + LINE_JUNCTION_MM;
                     both_since = -1;
                 }
                 off = 0;
                 white_since = -1;
             }
-            else if (c_on)
+            else if (b_c_on)
             {
                 off = -1;
                 white_since = -1;
             }
-            else if (r_on && ((d - r_since) <= LINE_R_ONLY_MAX_MM))
+            else if (b_r_on && ((d - r_since) <= LINE_R_ONLY_MAX_MM))
             {
                 off = -2;
                 last_side = -1;
@@ -446,7 +453,7 @@ line_task_main(INT stacd, void *exinf)
                     break;
                 }
             }
-            if (!(c_on && r_on))
+            if (!(b_c_on && b_r_on))
             {
                 both_since = -1;
             }
@@ -476,13 +483,16 @@ line_task_main(INT stacd, void *exinf)
                     target = LINE_TRIM_MAX_MM_S;
                 }
                 target = (off < 0) ? -(target * ((off < -1) ? 2 : 1)) : target;
-                target = (target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S : target;
+                target = (target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S
+                                                        : target;
             }
             /* Slew-limit the steering so it never jerks */
             corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
-                  : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S : (target - corr));
+                  : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S
+                                                      : (target - corr));
 
-            (void)motion_set_velocity((int16_t)(base - corr), (int16_t)(base + corr));
+            (void)motion_set_velocity((int16_t)(base - corr),
+                                      (int16_t)(base + corr));
             trace(d, corr, run, bits, LINE_TR_FOLLOW);
             tk_dly_tsk(LINE_PERIOD_MS);
         }
@@ -570,9 +580,9 @@ line_direction_cdeg(void)
 }
 
 void
-line_set_hold(bool hold)
+line_set_hold(bool b_hold)
 {
-    g_hold = hold ? 1u : 0u;
+    g_hold = b_hold ? 1u : 0u;
 }
 
 uint8_t

@@ -7,7 +7,8 @@
 
 #include "test_common.h"
 
-#define HDG_TRACK_MM             114   /* ruler, 2026-10-07; confirmed by compass spin */
+/* ruler, 2026-10-07; confirmed by compass spin */
+#define HDG_TRACK_MM             114
 #define RAMP_SPEED_MM_S          150
 #define RAMP_DIST_MM             500
 #define RAMP_LOG_LEN             300   /* 20 ms samples: 6 s */
@@ -61,10 +62,11 @@ LOCAL void ramp_pass(const char *name)
     W roll0 = 0, pitch0 = 0, hdg_unwrap = 0;
     INT hdg_first = -1, d, j;
     INT prev_ax = 0, prev_ay = 0;
-    BOOL have_prev = FALSE, stopping = FALSE;
+    BOOL b_have_prev = FALSE, b_stopping = FALSE;
     UW t_stop = 0;
     SYSTIM tim;
-    INT roll_min = 0, roll_max = 0, i_min = 0, i_max = 0, jolt_max = 0, i_jolt = 0;
+    INT roll_min = 0, roll_max = 0, i_min = 0, i_max = 0, jolt_max = 0,
+        i_jolt = 0;
     INT h0, h1, enc_yaw;
 
     /* Rest reference: 0.5 s still */
@@ -102,7 +104,7 @@ LOCAL void ramp_pass(const char *name)
             log[n].pitch = (int16_t)(att.pitch_cdeg - pitch0);
             log[n].hdg = att.heading_cdeg;
             j = 0;
-            if(have_prev) {
+            if(b_have_prev) {
                 j = (s.ax > prev_ax) ? (s.ax - prev_ax) : (prev_ax - s.ax);
                 k = (s.ay > prev_ay) ? (s.ay - prev_ay) : (prev_ay - s.ay);
                 if(k > j) {
@@ -111,18 +113,18 @@ LOCAL void ramp_pass(const char *name)
             }
             prev_ax = s.ax;
             prev_ay = s.ay;
-            have_prev = TRUE;
+            b_have_prev = TRUE;
             log[n].jolt_mg = (int16_t)j;
             n++;
 
             tk_get_tim(&tim);
-            if((!stopping) && ((log[n - 1].d_mm >= RAMP_DIST_MM)
+            if((!b_stopping) && ((log[n - 1].d_mm >= RAMP_DIST_MM)
                                || (0u != (fault_get() & FAULT_MOTION_MASK)))) {
                 motion_set_velocity(0, 0);
-                stopping = TRUE;
+                b_stopping = TRUE;
                 t_stop = tim.lo;
             }
-            if(stopping && ((tim.lo - t_stop) > 800u)) {
+            if(b_stopping && ((tim.lo - t_stop) > 800u)) {
                 break;
             }
         }
@@ -147,12 +149,16 @@ LOCAL void ramp_pass(const char *name)
     }
     h1 = (base_n > 0) ? (hdg_first + (INT)(hdg_unwrap / base_n)) : h0;
 
-    tm_printf((UB *)"\n[RAMP] %s: %d samples, rest roll %d pitch %d (x0.01 deg), faults 0x%x\n",
+    tm_printf((UB *)"\n[RAMP] %s: %d samples, rest roll %d pitch %d (x0.01 "
+                    "deg), faults 0x%x\n",
               name, n, (INT)roll0, (INT)pitch0, (INT)fault_get());
-    tm_printf((UB *)"[RAMP] i,d_mm,l_mm,r_mm,roll,pitch,hdg,jolt_mg  (roll/pitch from rest)\n");
+    tm_printf((UB *)"[RAMP] i,d_mm,l_mm,r_mm,roll,pitch,hdg,jolt_mg  "
+                    "(roll/pitch from rest)\n");
     for(i = 0; i < n; i++) {
-        tm_printf((UB *)"[RAMP] %d,%d,%d,%d,%d,%d,%d,%d\n", i, log[i].d_mm, log[i].l_mm,
-                  log[i].r_mm, log[i].roll, log[i].pitch, (INT)log[i].hdg, log[i].jolt_mg);
+        tm_printf((UB *)"[RAMP] %d,%d,%d,%d,%d,%d,%d,%d\n", i, log[i].d_mm,
+                  log[i].l_mm,
+                  log[i].r_mm, log[i].roll, log[i].pitch, (INT)log[i].hdg,
+                      log[i].jolt_mg);
         if(log[i].roll < roll_min) {
             roll_min = log[i].roll;
             i_min = i;
@@ -168,19 +174,25 @@ LOCAL void ramp_pass(const char *name)
     }
 
     d = ramp_wrap_cdeg(h1 - h0);
-    enc_yaw = (n > 0) ? (INT)(((log[n - 1].l_mm - log[n - 1].r_mm) * 573L * 100L)
-                              / (10L * HDG_TRACK_MM)) : 0;
+    enc_yaw = (n > 0)
+        ? (INT)(((log[n - 1].l_mm - log[n - 1].r_mm) * 573L * 100L)
+                / (10L * HDG_TRACK_MM)) : 0;
     tm_printf((UB *)"[RAMP] summary %s:\n", name);
-    tm_printf((UB *)"[RAMP]   roll range %d .. %d (x0.01 deg) at d=%d / %d mm\n",
+    tm_printf((UB *)"[RAMP]   roll range %d .. %d (x0.01 deg) at d=%d / %d "
+                    "mm\n",
               roll_min, roll_max, log[i_min].d_mm, log[i_max].d_mm);
     tm_printf((UB *)"[RAMP]   if roll = asin(h / %d mm): right-up h ~ %d mm\n",
-              HDG_TRACK_MM, (HDG_TRACK_MM * ramp_sin_cdeg_x1000(-roll_min)) / 1000);
-    tm_printf((UB *)"[RAMP]   compass turned %d (x0.01 deg, + = right), encoders %d"
+              HDG_TRACK_MM,
+                  (HDG_TRACK_MM * ramp_sin_cdeg_x1000(-roll_min)) / 1000);
+    tm_printf((UB *)"[RAMP]   compass turned %d (x0.01 deg, + = right), "
+                    "encoders %d"
               " (L-R over track, + = right)\n", d, enc_yaw);
-    tm_printf((UB *)"[RAMP]   wheels L %d R %d mm, largest jolt %d mg at d=%d mm\n",
+    tm_printf((UB *)"[RAMP]   wheels L %d R %d mm, largest jolt %d mg at d=%d "
+                    "mm\n",
               (n > 0) ? log[n - 1].l_mm : 0, (n > 0) ? log[n - 1].r_mm : 0,
               jolt_max, log[i_jolt].d_mm);
-    tm_printf((UB *)"[RAMP]   Now measure how far sideways the car ended up from its"
+    tm_printf((UB *)"[RAMP]   Now measure how far sideways the car ended up "
+                    "from its"
               " start line (mm, left or right).\n");
 }
 
@@ -198,14 +210,18 @@ void imu_test_ramp_roll(void)
         tm_printf((UB *)"[RAMP] imu_init failed, check the IMU\n");
         return;
     }
-    tm_printf((UB *)"\n[RAMP] One-sided hump log: %d mm straight at %d mm/s, no heading hold.\n",
+    tm_printf((UB *)"\n[RAMP] One-sided hump log: %d mm straight at %d mm/s, "
+                    "no heading hold.\n",
               RAMP_DIST_MM, RAMP_SPEED_MM_S);
-    tm_printf((UB *)"[RAMP] Mark the start line beside the car. Ramp start ~15 cm ahead of\n");
-    tm_printf((UB *)"[RAMP] the RIGHT wheel, lined up so only that wheel climbs it.\n");
+    tm_printf((UB *)"[RAMP] Mark the start line beside the car. Ramp start ~15 "
+                    "cm ahead of\n");
+    tm_printf((UB *)"[RAMP] the RIGHT wheel, lined up so only that wheel "
+                    "climbs it.\n");
 
     for(p = 0; p < 3; p++) {
         tm_printf((UB *)"\n[RAMP] %s.\n", passes[p]);
-        tm_printf((UB *)"[RAMP] Set up, keep the car still, then press a key to drive.\n");
+        tm_printf((UB *)"[RAMP] Set up, keep the car still, then press a key "
+                        "to drive.\n");
         console_flush_input();
         while(console_try_getc() < 0) {
             tk_dly_tsk(50);

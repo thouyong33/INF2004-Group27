@@ -54,7 +54,7 @@
 ER obstacle_task_create(void);
 
 /** @brief Turn watching on (clears the history first) or off. */
-void obstacle_watch(bool on);
+void obstacle_watch(bool b_on);
 
 /** @brief True when at least 2 of the last 3 pings were near. */
 bool obstacle_blocked(void);
@@ -68,13 +68,15 @@ uint32_t obstacle_ping_count(void);
 /** One ping as recorded by the trace (tests only). */
 typedef struct {
     int16_t d_mm;            /**< distance travelled (encoders) at the ping */
-    int16_t mm;              /**< reading; -1 no echo / beyond 1 m, -2 echo never started */
+    /* *< reading; -1 no echo / beyond 1 m, -2 echo never started */
+    int16_t mm;
     uint8_t hist;            /**< near history after this ping, bit 0 newest */
 } obstacle_trace_t;
 
 #define OBS_TRACE_LEN        64u
 
-/** @brief Start recording every ping (overwrites the oldest past OBS_TRACE_LEN). */
+/** @brief Start recording every ping (overwrites the oldest past
+   OBS_TRACE_LEN). */
 void obstacle_trace_start(void);
 
 /**

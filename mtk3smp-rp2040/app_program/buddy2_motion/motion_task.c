@@ -30,7 +30,8 @@
  * Calibrated Encoder / Wheel Constants
  *---------------------------------------------------------------------------*/
 /* Hardware edge counter: rising edges of one encoder channel per wheel turn.
- * Measured 2026-10-07, 10 hand turns x 2 per wheel: L 6301/6363, R 6349/6333. */
+ * Measured 2026-10-07, 10 hand turns x 2 per wheel: L 6301/6363, R 6349/6333.
+ */
 #define EDGES_PER_REV             634u
 #define WHEEL_DIAMETER_MM         65u
 #define WHEEL_CIRCUMFERENCE_MM    204u
@@ -68,9 +69,9 @@
 /*----------------------------------------------------------------------------
  * Module State
  *---------------------------------------------------------------------------*/
-static ID motion_task_id = 0;
-static ID motion_msgbuf_id = 0;
-static void *motion_task_stack = NULL;
+static ID g_motion_task_id = 0;
+static ID g_motion_msgbuf_id = 0;
+static void *g_motion_task_stack = NULL;
 
 /* Hardware edge counters: a PWM slice in "B pin rising edge" mode counts
  * one encoder channel in hardware; the task only reads the counter. The
@@ -102,7 +103,8 @@ static void *motion_task_stack = NULL;
 #define PAD_DRIVE_4MA             (1u << 4)
 #define PAD_PUE                   (1u << 3)
 #define PAD_SCHMITT               (1u << 1)
-#define ENC_PAD_CFG               (PAD_IE | PAD_DRIVE_4MA | PAD_PUE | PAD_SCHMITT)
+#define ENC_PAD_CFG               (PAD_IE | PAD_DRIVE_4MA | PAD_PUE \
+                                   | PAD_SCHMITT)
 
 #if ((ENC_HW_LEFT_PIN & 1) == 0) || ((ENC_HW_RIGHT_PIN & 1) == 0) \
     || ((ENC_HW_RIGHT_B_PIN & 1) == 0)
@@ -132,7 +134,8 @@ static crit_lock_t g_odom_lock;
 #define MOTOR_PWM_FREQ_HZ         20000u
 #define MOTOR_PWM_TOP             ((SYSCLK * 1000000u / MOTOR_PWM_FREQ_HZ) - 1u)
 #define MOTOR_DUTY_MAX_X10        1000
-#define MOTOR_RAMP_STEP_X10       5     /* 0.5 % per loop, 0-100 % in ~200 loops */
+/* 0.5 % per loop, 0-100 % in ~200 loops */
+#define MOTOR_RAMP_STEP_X10       5
 
 static int16_t g_applied_left_x10 = 0;
 static int16_t g_applied_right_x10 = 0;
@@ -189,7 +192,7 @@ typedef struct {
     int16_t duty_x10;      /* PI output */
 } wheel_pi_t;
 
-static bool g_closed_loop = false;
+static bool g_b_closed_loop = false;
 static wheel_pi_t g_pi_left;
 static wheel_pi_t g_pi_right;
 static uint32_t g_last_pi_ms = 0u;
@@ -223,7 +226,7 @@ static void motion_checks(uint32_t dt_ms);
 #define TRACE_LEN                 300u  /* 6 s at 20 ms */
 static motion_trace_t g_trace[TRACE_LEN];
 static volatile uint32_t g_trace_n = 0u;
-static volatile bool g_trace_on = false;
+static volatile bool g_b_trace_on = false;
 static uint32_t g_trace_t0_ms = 0u;
 
 /* Speed state */
@@ -380,7 +383,7 @@ motor_ramp(int16_t applied_x10, int16_t target_x10)
 static void
 motor_ramp_update(void)
 {
-    if (g_closed_loop)
+    if (g_b_closed_loop)
     {
         g_applied_left_x10 = g_target_left_x10;
         g_applied_right_x10 = g_target_right_x10;
@@ -388,7 +391,8 @@ motor_ramp_update(void)
     else
     {
         g_applied_left_x10 = motor_ramp(g_applied_left_x10, g_target_left_x10);
-        g_applied_right_x10 = motor_ramp(g_applied_right_x10, g_target_right_x10);
+        g_applied_right_x10 = motor_ramp(g_applied_right_x10,
+                                         g_target_right_x10);
     }
 
     motor_pwm_apply(MOTOR_LEFT_FWD, g_applied_left_x10);
@@ -451,7 +455,8 @@ pi_step(wheel_pi_t *p_pi, int32_t count_now, uint32_t dt_ms,
     {
         p_pi->integ_x10 += (err * PID_KI_X1000) / 1000L;
     }
-    p_pi->integ_x10 = clamp_i32(p_pi->integ_x10, -PID_I_LIMIT_X10, PID_I_LIMIT_X10);
+    p_pi->integ_x10 = clamp_i32(p_pi->integ_x10, -PID_I_LIMIT_X10,
+                                PID_I_LIMIT_X10);
 
     out = (p_pi->setpoint_eps * 100L) / ff_eps_per_pct_x10
         + (err * PID_KP_X1000) / 1000L
@@ -477,9 +482,9 @@ trace_record(uint32_t now_ms)
 {
     motion_trace_t *p_t;
 
-    if ((!g_trace_on) || (g_trace_n >= TRACE_LEN))
+    if ((!g_b_trace_on) || (g_trace_n >= TRACE_LEN))
     {
-        g_trace_on = false;
+        g_b_trace_on = false;
         return;
     }
 
@@ -593,7 +598,8 @@ encoder_right_check(uint32_t d_a)
     uint32_t want;
     int32_t delta;
 
-    ctr = (uint16_t)in_w(PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_RIGHT_B_PIN), PWM_CHx_CTR));
+    ctr = (uint16_t)in_w(PWM_SLICE_REG(PWM_SLICE_OF(ENC_HW_RIGHT_B_PIN),
+                                       PWM_CHx_CTR));
     g_rb_edges += (uint32_t)(uint16_t)(ctr - g_hw_rb_last_ctr);
     g_hw_rb_last_ctr = ctr;
     g_ra_raw_edges += d_a;
@@ -672,12 +678,12 @@ motion_apply_stop(void)
 {
     motor_cmd_t junk;
 
-    while (tk_rcv_mbf(motion_msgbuf_id, &junk, TMO_POL) > 0)
+    while (tk_rcv_mbf(g_motion_msgbuf_id, &junk, TMO_POL) > 0)
     {
         ;
     }
 
-    if (g_closed_loop)
+    if (g_b_closed_loop)
     {
         g_pi_left.target_eps = 0;
         g_pi_right.target_eps = 0;
@@ -695,7 +701,7 @@ static void
 motion_fault_stop(uint8_t bits)
 {
     fault_set(bits);
-    g_closed_loop = false;
+    g_b_closed_loop = false;
     g_target_left_x10 = 0;
     g_target_right_x10 = 0;
 }
@@ -709,14 +715,14 @@ below_pct(int32_t meas, int32_t setpoint, int32_t pct)
 static void
 motion_checks(uint32_t dt_ms)
 {
-    bool settled;
+    bool b_settled;
 
-    settled = g_closed_loop
+    b_settled = g_b_closed_loop
         && (0 != g_pi_left.target_eps) && (0 != g_pi_right.target_eps)
         && (g_pi_left.setpoint_eps == g_pi_left.target_eps)
         && (g_pi_right.setpoint_eps == g_pi_right.target_eps);
 
-    if (!settled)
+    if (!b_settled)
     {
         g_settled_ms = 0u;
     }
@@ -725,7 +731,7 @@ motion_checks(uint32_t dt_ms)
         g_settled_ms += dt_ms;
     }
 
-    if ((0u != g_hump_mask) && g_closed_loop
+    if ((0u != g_hump_mask) && g_b_closed_loop
         && ((0 != g_pi_left.target_eps) || (0 != g_pi_right.target_eps)))
     {
         g_hump_ms += dt_ms;
@@ -741,7 +747,7 @@ motion_checks(uint32_t dt_ms)
         g_hump_ms = 0u;
     }
 
-    if ((!settled) || (g_settled_ms < PULLAWAY_MASK_MS) || (0u != g_hump_mask))
+    if ((!b_settled) || (g_settled_ms < PULLAWAY_MASK_MS) || (0u != g_hump_mask))
     {
         g_stall_ms = 0u;
         g_enc_l_silent_ms = 0u;
@@ -765,7 +771,8 @@ motion_checks(uint32_t dt_ms)
      * encoder, or a jammed wheel). The PI would otherwise run it flat out. */
     if ((0 == g_pi_left.meas_eps)
         && (abs_i32(g_pi_left.duty_x10) >= ENC_FAULT_DUTY_X10)
-        && (!below_pct(g_pi_right.meas_eps, g_pi_right.setpoint_eps, ENC_FAULT_OTHER_PCT)))
+        && (!below_pct(g_pi_right.meas_eps, g_pi_right.setpoint_eps,
+                       ENC_FAULT_OTHER_PCT)))
     {
         g_enc_l_silent_ms += dt_ms;
     }
@@ -776,7 +783,8 @@ motion_checks(uint32_t dt_ms)
 
     if ((0 == g_pi_right.meas_eps)
         && (abs_i32(g_pi_right.duty_x10) >= ENC_FAULT_DUTY_X10)
-        && (!below_pct(g_pi_left.meas_eps, g_pi_left.setpoint_eps, ENC_FAULT_OTHER_PCT)))
+        && (!below_pct(g_pi_left.meas_eps, g_pi_left.setpoint_eps,
+                       ENC_FAULT_OTHER_PCT)))
     {
         g_enc_r_silent_ms += dt_ms;
     }
@@ -823,7 +831,8 @@ motion_task_main(INT stacd, void *exinf)
     encoder_hw_init();
 
     /* Before the loop starts, so this one print cannot stretch a period */
-    tm_printf((UB *)"[MOTION] Task started: %u ms loop, 20 kHz PWM, HW edge counters "
+    tm_printf((UB *)"[MOTION] Task started: %u ms loop, 20 kHz PWM, HW edge "
+                    "counters "
               "L=GP%u R=GP%u, %ld um/edge\n", TASK_PERIOD_MS,
               ENC_HW_LEFT_PIN, ENC_HW_RIGHT_PIN, UM_PER_EDGE);
 
@@ -846,7 +855,7 @@ motion_task_main(INT stacd, void *exinf)
             motion_apply_stop();
         }
 
-        msg_size = tk_rcv_mbf(motion_msgbuf_id, &cmd, TMO_POL);
+        msg_size = tk_rcv_mbf(g_motion_msgbuf_id, &cmd, TMO_POL);
         if (((INT)sizeof(cmd) == msg_size)
             && ((0u == (fault_get() & FAULT_MOTION_MASK))
                 || ((0 == cmd.left_speed) && (0 == cmd.right_speed))))
@@ -854,29 +863,33 @@ motion_task_main(INT stacd, void *exinf)
             /* While a motion fault is latched only zero commands pass */
             if (0u != cmd.closed_loop)
             {
-                if (!g_closed_loop)
+                if (!g_b_closed_loop)
                 {
                     tk_get_tim(&now);
                     g_last_pi_ms = now.lo;
                     pi_reset(&g_pi_left, g_hw_left_count);
                     pi_reset(&g_pi_right, g_hw_right_count);
-                    g_closed_loop = true;
+                    g_b_closed_loop = true;
                 }
 
                 g_pi_left.target_eps = mm_s_to_eps(
-                    clamp_i32(cmd.left_speed, -PID_MAX_SPEED_MM_S, PID_MAX_SPEED_MM_S));
+                    clamp_i32(cmd.left_speed, -PID_MAX_SPEED_MM_S,
+                              PID_MAX_SPEED_MM_S));
                 g_pi_right.target_eps = mm_s_to_eps(
-                    clamp_i32(cmd.right_speed, -PID_MAX_SPEED_MM_S, PID_MAX_SPEED_MM_S));
+                    clamp_i32(cmd.right_speed, -PID_MAX_SPEED_MM_S,
+                              PID_MAX_SPEED_MM_S));
             }
             else
             {
-                g_closed_loop = false;
-                g_target_left_x10 = (int16_t)(clamp_i32(cmd.left_speed, -100, 100) * 10);
-                g_target_right_x10 = (int16_t)(clamp_i32(cmd.right_speed, -100, 100) * 10);
+                g_b_closed_loop = false;
+                g_target_left_x10 =
+                    (int16_t)(clamp_i32(cmd.left_speed, -100, 100) * 10);
+                g_target_right_x10 =
+                    (int16_t)(clamp_i32(cmd.right_speed, -100, 100) * 10);
             }
         }
 
-        if (g_closed_loop)
+        if (g_b_closed_loop)
         {
             tk_get_tim(&now);
             pi_update(now.lo);
@@ -896,7 +909,8 @@ motion_task_main(INT stacd, void *exinf)
             if ((now.lo - rate_t0_ms) >= LOOP_RATE_WINDOW_MS)
             {
                 g_loop_rate = (rate_loops * 1000u) / (now.lo - rate_t0_ms);
-                g_busy_us_per_s = (g_busy_acc_us * 1000u) / (now.lo - rate_t0_ms);
+                g_busy_us_per_s = (g_busy_acc_us * 1000u)
+                                  / (now.lo - rate_t0_ms);
                 g_busy_max_us = g_busy_pass_max_us;
                 g_busy_acc_us = 0u;
                 g_busy_pass_max_us = 0u;
@@ -929,7 +943,7 @@ motion_task_create(void)
     T_CMBF cmbf;
     ER err;
 
-    if ((motion_task_id > 0) || (motion_msgbuf_id > 0))
+    if ((g_motion_task_id > 0) || (g_motion_msgbuf_id > 0))
     {
         return E_OBJ;
     }
@@ -938,23 +952,24 @@ motion_task_create(void)
     cmbf.maxmsz = (INT)sizeof(motor_cmd_t);
     cmbf.bufsz = (INT)(sizeof(motor_cmd_t) * MOTION_MSGBUF_DEPTH);
 
-    motion_msgbuf_id = tk_cre_mbf(&cmbf);
-    if (motion_msgbuf_id <= 0)
+    g_motion_msgbuf_id = tk_cre_mbf(&cmbf);
+    if (g_motion_msgbuf_id <= 0)
     {
-        tm_printf((UB *)"[MOTION] tk_cre_mbf failed: %d\n", motion_msgbuf_id);
-        return motion_msgbuf_id;
+        tm_printf((UB *)"[MOTION] tk_cre_mbf failed: %d\n", g_motion_msgbuf_id);
+        return g_motion_msgbuf_id;
     }
 
-    motion_task_stack = Kmalloc(MOTION_STACK_SIZE);
-    if (NULL == motion_task_stack)
+    g_motion_task_stack = Kmalloc(MOTION_STACK_SIZE);
+    if (NULL == g_motion_task_stack)
     {
-        tk_del_mbf(motion_msgbuf_id);
-        motion_msgbuf_id = 0;
+        tk_del_mbf(g_motion_msgbuf_id);
+        g_motion_msgbuf_id = 0;
         return E_NOMEM;
     }
     {
-        /* Paint the stack so motion_stack_used() can find the high-water mark */
-        uint32_t *p_w = (uint32_t *)motion_task_stack;
+        /* Paint the stack so motion_stack_used() can find the high-water
+           mark */
+        uint32_t *p_w = (uint32_t *)g_motion_task_stack;
         uint32_t i;
 
         for (i = 0u; i < (MOTION_STACK_SIZE / 4u); i++)
@@ -967,29 +982,29 @@ motion_task_create(void)
     ctsk.task = motion_task_main;
     ctsk.itskpri = 5;
     ctsk.stksz = MOTION_STACK_SIZE;
-    ctsk.bufptr = motion_task_stack;
+    ctsk.bufptr = g_motion_task_stack;
 
-    motion_task_id = tk_cre_tsk(&ctsk);
-    if (motion_task_id <= 0)
+    g_motion_task_id = tk_cre_tsk(&ctsk);
+    if (g_motion_task_id <= 0)
     {
-        tm_printf((UB *)"[MOTION] tk_cre_tsk failed: %d\n", motion_task_id);
-        Kfree(motion_task_stack);
-        motion_task_stack = NULL;
-        tk_del_mbf(motion_msgbuf_id);
-        motion_msgbuf_id = 0;
-        return motion_task_id;
+        tm_printf((UB *)"[MOTION] tk_cre_tsk failed: %d\n", g_motion_task_id);
+        Kfree(g_motion_task_stack);
+        g_motion_task_stack = NULL;
+        tk_del_mbf(g_motion_msgbuf_id);
+        g_motion_msgbuf_id = 0;
+        return g_motion_task_id;
     }
 
-    err = tk_sta_tsk(motion_task_id, 0);
+    err = tk_sta_tsk(g_motion_task_id, 0);
     if (E_OK != err)
     {
         tm_printf((UB *)"[MOTION] tk_sta_tsk failed: %d\n", err);
-        tk_del_tsk(motion_task_id);
-        motion_task_id = 0;
-        Kfree(motion_task_stack);
-        motion_task_stack = NULL;
-        tk_del_mbf(motion_msgbuf_id);
-        motion_msgbuf_id = 0;
+        tk_del_tsk(g_motion_task_id);
+        g_motion_task_id = 0;
+        Kfree(g_motion_task_stack);
+        g_motion_task_stack = NULL;
+        tk_del_mbf(g_motion_msgbuf_id);
+        g_motion_msgbuf_id = 0;
         return err;
     }
 
@@ -1005,7 +1020,7 @@ motion_send_cmd(int16_t left, int16_t right, uint8_t closed_loop)
     motor_cmd_t cmd;
     ER err;
 
-    if (motion_msgbuf_id <= 0)
+    if (g_motion_msgbuf_id <= 0)
     {
         return E_NOEXS;
     }
@@ -1014,7 +1029,7 @@ motion_send_cmd(int16_t left, int16_t right, uint8_t closed_loop)
     cmd.right_speed = right;
     cmd.closed_loop = closed_loop;
 
-    err = tk_snd_mbf(motion_msgbuf_id, &cmd, (INT)sizeof(cmd), TMO_FEVR);
+    err = tk_snd_mbf(g_motion_msgbuf_id, &cmd, (INT)sizeof(cmd), TMO_FEVR);
     if (E_OK != err)
     {
         tm_printf((UB *)"[MOTOR] tk_snd_mbf failed: %d\n", err);
@@ -1042,9 +1057,9 @@ motion_stop(void)
 }
 
 void
-motion_set_hump_mask(bool on_hump)
+motion_set_hump_mask(bool b_on_hump)
 {
-    g_hump_mask = on_hump ? 1u : 0u;
+    g_hump_mask = b_on_hump ? 1u : 0u;
 }
 
 uint32_t
@@ -1069,7 +1084,7 @@ motion_get_cpu(uint32_t *p_busy_us_per_s, uint32_t *p_max_pass_us)
 uint32_t
 motion_stack_used(void)
 {
-    const uint32_t *p_w = (const uint32_t *)motion_task_stack;
+    const uint32_t *p_w = (const uint32_t *)g_motion_task_stack;
     uint32_t untouched = 0u;
 
     if (NULL == p_w)
@@ -1078,7 +1093,8 @@ motion_stack_used(void)
     }
     /* The stack grows down from the top of the buffer, so the painted
      * words left at the bottom were never used */
-    while ((untouched < (MOTION_STACK_SIZE / 4u)) && (STACK_FILL_WORD == p_w[untouched]))
+    while ((untouched < (MOTION_STACK_SIZE / 4u))
+           && (STACK_FILL_WORD == p_w[untouched]))
     {
         untouched++;
     }
@@ -1094,7 +1110,7 @@ motion_stack_size(void)
 bool
 motion_is_steady(void)
 {
-    return g_closed_loop
+    return g_b_closed_loop
         && (0 != g_pi_left.target_eps) && (0 != g_pi_right.target_eps)
         && (g_pi_left.setpoint_eps == g_pi_left.target_eps)
         && (g_pi_right.setpoint_eps == g_pi_right.target_eps);
@@ -1108,7 +1124,7 @@ motion_trace_start(void)
     tk_get_tim(&now);
     g_trace_n = 0u;
     g_trace_t0_ms = now.lo;
-    g_trace_on = true;
+    g_b_trace_on = true;
 }
 
 void
@@ -1117,7 +1133,7 @@ motion_trace_dump(void)
     uint32_t i;
     motion_trace_t *p_t;
 
-    g_trace_on = false;
+    g_b_trace_on = false;
 
     tm_printf((UB *)"[TRACE] t_ms,sp_l,meas_l,duty_l,sp_r,meas_r,duty_r"
               "  (speeds in edges/s, duty in tenths of a percent)\n");
@@ -1272,7 +1288,8 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
         return E_PAR;
     }
 
-    v_mm_s = clamp_i32((int32_t)speed_mm_s, MOVE_MIN_SPEED_MM_S, PID_MAX_SPEED_MM_S);
+    v_mm_s = clamp_i32((int32_t)speed_mm_s, MOVE_MIN_SPEED_MM_S,
+                       PID_MAX_SPEED_MM_S);
     v_eps = mm_s_to_eps(v_mm_s);
     target_edges = ((int32_t)distance_cm * 10L * 1000L) / UM_PER_EDGE;
 
@@ -1304,7 +1321,8 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
         return err;
     }
 
-    /* Wait until the wheels have stopped, or give up after MOVE_SETTLE_MAX_MS */
+    /* Wait until the wheels have stopped, or give up after
+       MOVE_SETTLE_MAX_MS */
     last_progress = average_progress_counts();
     still_ms = 0u;
     waited_ms = 0u;
@@ -1330,7 +1348,8 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
  * encoders: angle = (right - left) / 2 x um/edge / (pi x track). Brakes
  * early by the distance the car coasts after the stop command, which
  * scales with speed: ~1.5 deg at 60 mm/s, ~1 deg at 40 mm/s (scan turns,
- * 2026-10-22), so 2.5 cdeg per mm/s. Then waits for the wheels to settle. Returns the
+ * 2026-10-22), so 2.5 cdeg per mm/s. Then waits for the wheels to settle.
+ * Returns the
  * angle actually turned, or 0 if a motion fault, STOP from another task
  * or the timeout ended it early (the angle so far is still returned).
  */

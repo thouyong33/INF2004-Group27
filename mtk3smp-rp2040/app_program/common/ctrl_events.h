@@ -21,14 +21,20 @@
 #define EVT_OBSTACLE         2u   /**< val = sensor reading, mm */
 #define EVT_LINE_END         3u   /**< arg = LINE_END_* */
 #define EVT_RAMP_ON          4u   /**< controller: on the one-sided ramp */
-#define EVT_RAMP_OFF         5u   /**< controller: val = height, mm (0 if unknown) */
+/* *< controller: val = height, mm (0 if unknown) */
+#define EVT_RAMP_OFF         5u
 #define EVT_IMPACT           6u   /**< controller: val = jolt, mg */
-#define EVT_JOLT_IGNORED     7u   /**< controller: val = jolt, mg (wheels kept speed) */
+/* *< controller: val = jolt, mg (wheels kept speed) */
+#define EVT_JOLT_IGNORED     7u
 #define EVT_STOP_REQ         8u   /**< someone asked the controller to stop */
-#define EVT_BARCODE          9u   /**< arg = character (0 = no read), val = 1 if reversed */
-#define EVT_JUNCTION         10u  /**< line task: junction arm under C and R, val = mm */
-#define EVT_COMMAND          11u  /**< controller: command done, arg = CTRL_CMD_* */
-#define EVT_OBST_WIDTH       12u  /**< controller: arg = 1 if found, val = width, mm */
+/* *< arg = character (0 = no read), val = 1 if reversed */
+#define EVT_BARCODE          9u
+/* *< line task: junction arm under C and R, val = mm */
+#define EVT_JUNCTION         10u
+/* *< controller: command done, arg = CTRL_CMD_* */
+#define EVT_COMMAND          11u
+/* *< controller: arg = 1 if found, val = width, mm */
+#define EVT_OBST_WIDTH       12u
 
 /** One event, 4 bytes */
 typedef struct {

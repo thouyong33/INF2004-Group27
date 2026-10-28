@@ -72,9 +72,11 @@
 #define CTRL_FLAG_CMD_SHIFT  4u          /**< bits 4-6: pending CTRL_CMD_* */
 
 /** Run options */
-#define CTRL_OPT_OBSTACLE     (1u << 0)  /**< watch for obstacles, stop at one */
+/* *< watch for obstacles, stop at one */
+#define CTRL_OPT_OBSTACLE     (1u << 0)
 #define CTRL_OPT_IMPACT_STOP  (1u << 1)  /**< stop on a confirmed impact */
-#define CTRL_OPT_BARCODE      (1u << 2)  /**< read barcodes, act at the next junction */
+/* *< read barcodes, act at the next junction */
+#define CTRL_OPT_BARCODE      (1u << 2)
 
 /** Snapshot for telemetry and tests, 16 bytes */
 typedef struct {
@@ -86,7 +88,8 @@ typedef struct {
     int16_t heading_cdeg;    /**< encoders, since the run started, left + */
     int16_t roll_cdeg;       /**< from rest, x0.01 deg */
     int16_t obstacle_mm;     /**< last sonar reading, -1 = none */
-    int16_t obstacle_width_mm; /**< width from the scan after a stop, 0 = none */
+    /* *< width from the scan after a stop, 0 = none */
+    int16_t obstacle_width_mm;
     uint8_t max_ramp_mm;     /**< highest ramp (hump) this run, mm */
     uint8_t spare;
 } robot_status_t;

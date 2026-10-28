@@ -34,7 +34,8 @@
 #define HUMP_EXIT_CDEG           (-200)  /* ... back within -2 deg ... */
 #define HUMP_HOLD_MM             15      /* ... for this much travel */
 #define WHEELBASE_MM             80.0f   /* drive axle to castor */
-#define COLL_JOLT_MG             500     /* first guess; see terrain_max_jolt_mg */
+/* first guess; see terrain_max_jolt_mg */
+#define COLL_JOLT_MG             500
 #define SIDE_ENTER_CDEG          250     /* |roll| past 2.5 deg ... */
 #define SIDE_ENTER_MM            20      /* ... for this much travel */
 #define SIDE_EXIT_CDEG           150     /* back within 1.5 deg ... */
@@ -71,7 +72,8 @@ static int32_t g_side_in_since = -1;
 static int32_t g_side_out_since = -1;
 static side_hump_event_t g_side;
 static int16_t g_max_roll = 0;           /* largest |filtered roll| seen */
-static int16_t g_hump_roll_max = 0;      /* largest |filtered roll| in a pitch hump */
+/* largest |filtered roll| in a pitch hump */
+static int16_t g_hump_roll_max = 0;
 static uint32_t g_pitch_dropped = 0u;    /* pitch humps dropped as one-sided */
 
 static terrain_state_t g_state = STATE_LEVEL;
@@ -79,7 +81,7 @@ static int32_t g_below_since = -1;
 static int32_t g_above_since = -1;
 static hump_event_t g_hump;
 
-static bool g_have_prev = false;
+static bool g_b_have_prev = false;
 static int16_t g_prev_ax = 0;
 static int16_t g_prev_ay = 0;
 static int32_t g_last_coll_mm = -1000000;
@@ -93,7 +95,8 @@ sin_cdeg(int32_t cdeg)
     float x = (float)cdeg * (3.14159265f / 18000.0f);
     float x2 = x * x;
 
-    return x * (1.0f - (x2 / 6.0f) * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
+    return x * (1.0f - (x2 / 6.0f)
+                       * (1.0f - (x2 / 20.0f) * (1.0f - (x2 / 42.0f))));
 }
 
 static int16_t
@@ -215,7 +218,8 @@ side_update(int32_t dist_mm, int16_t fr)
             g_side.end_mm = g_side_out_since;
             g_side.height_mm = (int16_t)(TRACK_MM
                 * sin_cdeg((int32_t)abs16(g_side.plateau_cdeg)) + 0.5f);
-            /* Roll is right-side-down positive: raised right wheel = negative */
+            /* Roll is right-side-down positive: raised right wheel =
+               negative */
             g_side.right_side = (g_side.plateau_cdeg < 0) ? 1u : 0u;
             g_side_state = STATE_LEVEL;
             g_side_in_since = -1;
@@ -238,18 +242,21 @@ side_update(int32_t dist_mm, int16_t fr)
 static bool
 hump_finish(int32_t dist_mm, hump_event_t *p_hump)
 {
-    bool report = (g_hump_roll_max < SIDE_ENTER_CDEG) && (STATE_LEVEL == g_side_state);
+    bool b_report = (g_hump_roll_max < SIDE_ENTER_CDEG)
+        && (STATE_LEVEL == g_side_state);
 
     g_hump.end_mm = dist_mm;
-    g_hump.height_mm = (int16_t)(WHEELBASE_MM * sin_cdeg(-(int32_t)g_hump.plateau_cdeg) + 0.5f);
-    if (report)
+    g_hump.height_mm = (int16_t)(WHEELBASE_MM
+                                 * sin_cdeg(-(int32_t)g_hump.plateau_cdeg)
+                                 + 0.5f);
+    if (b_report)
     {
         *p_hump = g_hump;
     }
     g_state = STATE_LEVEL;
     g_below_since = -1;
     g_above_since = -1;
-    return report;
+    return b_report;
 }
 
 void
@@ -272,7 +279,7 @@ terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg)
     g_state = STATE_LEVEL;
     g_below_since = -1;
     g_above_since = -1;
-    g_have_prev = false;
+    g_b_have_prev = false;
     g_last_coll_mm = -1000000;
     g_max_jolt = 0;
     g_min_pitch = 0;
@@ -280,7 +287,7 @@ terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg)
 
 uint32_t
 terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
-               const imu_raw_t *p_cal, bool steady,
+               const imu_raw_t *p_cal, bool b_steady,
                hump_event_t *p_hump, collision_event_t *p_coll)
 {
     uint32_t events = 0u;
@@ -290,25 +297,29 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
     int32_t from_mm;
     int16_t jolt;
 
-    if ((NULL == p_att) || (NULL == p_cal) || (NULL == p_hump) || (NULL == p_coll))
+    if ((NULL == p_att) || (NULL == p_cal) || (NULL == p_hump)
+        || (NULL == p_coll))
     {
         return 0u;
     }
 
     /* Causal moving averages of pitch and roll, relative to rest */
-    fp = (int16_t)(filt_push(g_pitch_ring, &g_pitch_n, p_att->pitch_cdeg) - g_rest_pitch);
-    fr = (int16_t)(filt_push(g_roll_ring, &g_roll_n, p_att->roll_cdeg) - g_rest_roll);
+    fp = (int16_t)(filt_push(g_pitch_ring, &g_pitch_n,
+                             p_att->pitch_cdeg) - g_rest_pitch);
+    fr = (int16_t)(filt_push(g_roll_ring, &g_roll_n,
+                             p_att->roll_cdeg) - g_rest_roll);
 
     /* ---- One-sided hump (roll) ---- */
     events |= side_update(dist_mm, fr);
 
-    if (steady && (fp < g_min_pitch))
+    if (b_steady && (fp < g_min_pitch))
     {
         g_min_pitch = fp;
     }
 
     /* ---- Hump ---- */
-    if (window_push(&g_pwin, dist_mm, fp, &mean, &from_mm) && (STATE_IN_HUMP == g_state)
+    if (window_push(&g_pwin, dist_mm, fp, &mean, &from_mm)
+        && (STATE_IN_HUMP == g_state)
         && (mean < g_hump.plateau_cdeg))
     {
         g_hump.plateau_cdeg = mean;
@@ -317,7 +328,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
 
     if (STATE_LEVEL == g_state)
     {
-        if (steady && (fp < HUMP_ENTER_CDEG))
+        if (b_steady && (fp < HUMP_ENTER_CDEG))
         {
             if (g_below_since < 0)
             {
@@ -345,7 +356,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
             g_hump_roll_max = abs16(fr);
         }
 
-        if (!steady)
+        if (!b_steady)
         {
             /* Braking or a speed change: tilt is no longer trustworthy,
                so close the hump with what has been seen so far. */
@@ -383,7 +394,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
     }
 
     /* ---- Collision: a sharp jump in horizontal acceleration ---- */
-    if (g_have_prev)
+    if (g_b_have_prev)
     {
         jolt = abs16((int16_t)(p_cal->ax - g_prev_ax));
         if (abs16((int16_t)(p_cal->ay - g_prev_ay)) > jolt)
@@ -394,7 +405,8 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
         {
             g_max_jolt = jolt;
         }
-        if ((jolt >= COLL_JOLT_MG) && ((dist_mm - g_last_coll_mm) >= COLL_HOLDOFF_MM))
+        if ((jolt >= COLL_JOLT_MG)
+            && ((dist_mm - g_last_coll_mm) >= COLL_HOLDOFF_MM))
         {
             p_coll->dist_mm = dist_mm;
             p_coll->jolt_mg = jolt;
@@ -404,7 +416,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
     }
     g_prev_ax = p_cal->ax;
     g_prev_ay = p_cal->ay;
-    g_have_prev = true;
+    g_b_have_prev = true;
 
     return events;
 }

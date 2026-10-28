@@ -59,7 +59,8 @@ LOCAL UW safe_drive_until_fault(INT v, UW limit_ms)
     UW t0 = safe_now_ms();
 
     motion_set_velocity((int16_t)v, (int16_t)v);
-    while(((safe_now_ms() - t0) < limit_ms) && (0u == (fault_get() & FAULT_MOTION_MASK))) {
+    while(((safe_now_ms() - t0) < limit_ms)
+          && (0u == (fault_get() & FAULT_MOTION_MASK))) {
         tk_dly_tsk(5);
     }
     return safe_now_ms() - t0;
@@ -69,7 +70,8 @@ LOCAL void safe_report_fault(UW ms)
 {
     UB f = fault_get();
 
-    tm_printf((UB *)"[SAFE]   faults 0x%x after %d ms:%s%s%s%s\n", (INT)f, (INT)ms,
+    tm_printf((UB *)"[SAFE]   faults 0x%x after %d ms:%s%s%s%s\n", (INT)f,
+              (INT)ms,
               (0u != (f & FAULT_MOTOR_STALL)) ? " MOTOR_STALL" : "",
               (0u != (f & FAULT_ENC_LEFT)) ? " ENC_LEFT" : "",
               (0u != (f & FAULT_ENC_RIGHT)) ? " ENC_RIGHT" : "",
@@ -83,7 +85,8 @@ void motion_test_safety(void)
     INT i, l_mm_s, r_mm_s;
     UW t0, ms;
 
-    tm_printf((UB *)"\n[SAFE] Motion safety and timing test. Car LIFTED, wheels free.\n");
+    tm_printf((UB *)"\n[SAFE] Motion safety and timing test. Car LIFTED, "
+                    "wheels free.\n");
 
     /* A: loop rate and speed error at three speeds */
     safe_wait_key("Part A: timing and PI error at 150/300/500 mm/s.");
@@ -95,9 +98,12 @@ void motion_test_safety(void)
         (void)motion_get_encoder_diag(&l1, &r1);
         motion_set_velocity(0, 0);
         tk_dly_tsk(800);
-        l_mm_s = (INT)(((l1.hw_count - l0.hw_count) * SWEEP_UM_PER_EDGE) / 1000);
-        r_mm_s = (INT)(((r1.hw_count - r0.hw_count) * SWEEP_UM_PER_EDGE) / 1000);
-        tm_printf((UB *)"[SAFE]   %d mm/s: L %d R %d mm/s (error L %d R %d %%), loop %d passes/s\n",
+        l_mm_s = (INT)(((l1.hw_count - l0.hw_count) * SWEEP_UM_PER_EDGE)
+                       / 1000);
+        r_mm_s = (INT)(((r1.hw_count - r0.hw_count) * SWEEP_UM_PER_EDGE)
+                       / 1000);
+        tm_printf((UB *)"[SAFE]   %d mm/s: L %d R %d mm/s (error L %d R %d "
+                        "%%), loop %d passes/s\n",
                   speeds[i], l_mm_s, r_mm_s,
                   ((l_mm_s - speeds[i]) * 100) / speeds[i],
                   ((r_mm_s - speeds[i]) * 100) / speeds[i],
@@ -141,7 +147,8 @@ void motion_test_safety(void)
     fault_clear(FAULT_MOTION_MASK);
 
     /* E: no false trips while running free */
-    safe_wait_key("Part E: 10 s free running at 300 mm/s, hands off (expect no trip).");
+    safe_wait_key("Part E: 10 s free running at 300 mm/s, hands off (expect no "
+                  "trip).");
     ms = safe_drive_until_fault(300, 10000u);
     motion_set_velocity(0, 0);
     safe_report_fault(ms);
@@ -163,7 +170,8 @@ LOCAL void cpu_report(const char *name)
     tm_printf((UB *)"[CPU] %s: %d passes/s, busy %d us/s = %d.%d%d %% CPU, "
               "longest pass %d us, %d us per pass on average\n", name,
               (INT)motion_loop_rate(), (INT)busy, (INT)(busy / 10000u),
-              (INT)((busy / 1000u) % 10u), (INT)((busy / 100u) % 10u), (INT)max_pass,
+              (INT)((busy / 1000u) % 10u), (INT)((busy / 100u) % 10u),
+                  (INT)max_pass,
               (motion_loop_rate() > 0u) ? (INT)(busy / motion_loop_rate()) : 0);
 }
 
@@ -172,8 +180,10 @@ void motion_test_cpu(void)
     static const INT speeds[3] = { 150, 300, 500 };
     INT i;
 
-    ultrasonic_init();              /* starts the 1 MHz timer the counters use */
-    tm_printf((UB *)"\n[CPU] Motion task CPU and stack. Car LIFTED. Starting in 3 s.\n");
+    /* starts the 1 MHz timer the counters use */
+    ultrasonic_init();
+    tm_printf((UB *)"\n[CPU] Motion task CPU and stack. Car LIFTED. Starting "
+                    "in 3 s.\n");
     tk_dly_tsk(3000);
 
     cpu_report("idle (stopped)");
@@ -228,12 +238,15 @@ LOCAL void motion_pi_steps(const char *name, const int16_t *steps, INT n)
 
     for(i = 0; i < n; i++) {
         /* edges over PI_MEASURE_MS -> mm/s at 322 um/edge */
-        l_mm_s = (INT)(((l1[i].hw_count - l0[i].hw_count) * 1000 / PI_MEASURE_MS)
+        l_mm_s = (INT)(((l1[i].hw_count - l0[i].hw_count) * 1000
+                        / PI_MEASURE_MS)
                        * SWEEP_UM_PER_EDGE / 1000);
-        r_mm_s = (INT)(((r1[i].hw_count - r0[i].hw_count) * 1000 / PI_MEASURE_MS)
+        r_mm_s = (INT)(((r1[i].hw_count - r0[i].hw_count) * 1000
+                        / PI_MEASURE_MS)
                        * SWEEP_UM_PER_EDGE / 1000);
         diff_pct = (l_mm_s != 0) ? ((r_mm_s - l_mm_s) * 100 / l_mm_s) : 0;
-        tm_printf((UB *)"[PI] %s target=%4d mm/s  L=%4d  R=%4d mm/s  R-L=%d%%\n",
+        tm_printf((UB *)"[PI] %s target=%4d mm/s  L=%4d  R=%4d mm/s  "
+                        "R-L=%d%%\n",
                   name, (INT)steps[i], l_mm_s, r_mm_s, diff_pct);
     }
 }
@@ -264,7 +277,8 @@ void motion_test_hand(void)
     tm_printf((UB *)"\n[TEST] Hand-turn test: motors OFF\n");
     tm_printf((UB *)"[TEST] Mark each wheel. Turn it 10 full turns FORWARD,"
               " note cnt, then 10 turns BACK. Reset to zero the counters.\n");
-    tm_printf((UB *)"[TEST] Right wheel: A = GP15 as counted, B = GP17, fixed = taken off"
+    tm_printf((UB *)"[TEST] Right wheel: A = GP15 as counted, B = GP17, fixed "
+                    "= taken off"
               " A beyond B + 1 (expected ~6340 for 10 turns).\n");
 
     motion_reset_odometry();

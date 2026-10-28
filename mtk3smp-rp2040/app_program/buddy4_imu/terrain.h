@@ -70,7 +70,7 @@ void terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg);
  *         (for TERRAIN_EVT_SIDE_HUMP read it with terrain_last_side_hump)
  */
 uint32_t terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
-                        const imu_raw_t *p_cal, bool steady,
+                        const imu_raw_t *p_cal, bool b_steady,
                         hump_event_t *p_hump, collision_event_t *p_coll);
 
 /** @brief True while inside a hump: nose-down stretch or one-sided roll. */

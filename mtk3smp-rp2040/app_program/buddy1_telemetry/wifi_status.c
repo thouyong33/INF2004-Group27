@@ -76,7 +76,8 @@ LOCAL void wifi_status_task(INT stacd, void *exinf)
         if(st.link_up != last_link) {
             last_link = st.link_up;
             if(st.link_up) {
-                tm_printf((UB *)"[wifi] link UP rssi=%d mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                tm_printf((UB *)"[wifi] link UP rssi=%d "
+                                "mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
                           st.link_rssi, st.mac[0], st.mac[1],
                           st.mac[2], st.mac[3], st.mac[4], st.mac[5]);
                 /* The address is reported by its own transition

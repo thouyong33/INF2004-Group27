@@ -62,7 +62,7 @@ obstacle_task_main(INT stacd, void *exinf)
     uint32_t echo_us;
     uint32_t dead = 0u;
     uint8_t hist = 0u;
-    bool near;
+    bool b_near;
     ER er;
 
     (void)stacd;
@@ -98,11 +98,11 @@ obstacle_task_main(INT stacd, void *exinf)
         }
 
         er = ultrasonic_read_us_max(&echo_us, OBS_ECHO_MAX_US);
-        near = false;
+        b_near = false;
         if (E_OK == er)
         {
             g_last_mm = (int16_t)ultrasonic_us_to_mm(echo_us);
-            near = (g_last_mm > 0) && (g_last_mm <= OBS_STOP_MM);
+            b_near = (g_last_mm > 0) && (g_last_mm <= OBS_STOP_MM);
             dead = 0u;
             if (0u != (fault_get() & FAULT_NO_ECHO))
             {
@@ -125,7 +125,7 @@ obstacle_task_main(INT stacd, void *exinf)
             }
         }
 
-        hist = (uint8_t)(((hist << 1) | (near ? 1u : 0u)) & OBS_HIST_MASK);
+        hist = (uint8_t)(((hist << 1) | (b_near ? 1u : 0u)) & OBS_HIST_MASK);
         /* Tell the controller the moment the stop rule is first met */
         if ((popcount3(hist) >= 2u) && (popcount3(g_near_hist) < 2u))
         {
@@ -140,7 +140,8 @@ obstacle_task_main(INT stacd, void *exinf)
             obstacle_trace_t *p_t = &g_trace[g_trace_n % OBS_TRACE_LEN];
 
             (void)motion_get_encoder_diag(&l, &r);
-            p_t->d_mm = (int16_t)((((l.hw_count + r.hw_count) / 2) * UM_PER_EDGE) / 1000);
+            p_t->d_mm = (int16_t)((((l.hw_count + r.hw_count) / 2)
+                                   * UM_PER_EDGE) / 1000);
             p_t->mm = (E_OK == er) ? g_last_mm : ((E_IO == er) ? -2 : -1);
             p_t->hist = hist;
             g_trace_n++;
@@ -200,13 +201,13 @@ obstacle_task_create(void)
 }
 
 void
-obstacle_watch(bool on)
+obstacle_watch(bool b_on)
 {
     if (g_scan_flg <= 0)
     {
         return;
     }
-    if (on)
+    if (b_on)
     {
         g_near_hist = 0u;
         g_reset_req = 1u;
@@ -294,7 +295,8 @@ obstacle_scan_wait(uint32_t timeout_ms, obstacle_profile_t *p_prof)
         return E_NOEXS;
     }
 
-    er = tk_wai_flg(g_scan_flg, OBS_FLG_DONE, TWF_ORW, &flgptn, (TMO)timeout_ms);
+    er = tk_wai_flg(g_scan_flg, OBS_FLG_DONE, TWF_ORW, &flgptn,
+                    (TMO)timeout_ms);
     if (E_TMOUT == er)
     {
         /* Overran: stop the wheels, raise the fault, and wait for the scan

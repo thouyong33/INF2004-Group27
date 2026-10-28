@@ -32,7 +32,8 @@
 #include "blink.h"
 
 #define BLINK_TASK_PRI       10u
-#define BLINK_STACK_SIZE     4096u   /* as in the port: SMP kernel calls run deep */
+/* as in the port: SMP kernel calls run deep */
+#define BLINK_STACK_SIZE     4096u
 #define BLINK_LONG_ON_MS     600u
 #define BLINK_LONG_OFF_MS    300u
 #define BLINK_SHORT_ON_MS    150u

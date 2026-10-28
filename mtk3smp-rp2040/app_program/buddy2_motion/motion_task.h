@@ -108,7 +108,7 @@ void motion_stop(void);
  * Driving with the mask on for more than 4 s raises FAULT_MOTOR_STALL
  * (a car stuck on the ramp with a wheel spinning).
  */
-void motion_set_hump_mask(bool on_hump);
+void motion_set_hump_mask(bool b_on_hump);
 
 /**
  * @brief Passes of the 1 ms motion loop per second, over the last second.
