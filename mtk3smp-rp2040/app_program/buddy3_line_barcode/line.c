@@ -26,6 +26,7 @@
 #define LINE_KP_MM_S         20
 #define LINE_KI_MM_S         2
 #define LINE_TRIM_MAX_MM_S   60      /* one side's steering cap */
+#define LINE_CORR_MAX_MM_S   120     /* the hard-right case (line under R) */
 #define LINE_SLEW_MM_S       15      /* max steering change per period */
 #define LINE_JUNCTION_MM     30      /* drive straight this far over an arm */
 /* C and R both black this far before it counts as a junction: a cross arm
@@ -37,6 +38,16 @@
  * test ramp, 27 Oct) for 100 mm or more. The junction is reported when the
  * black ends, from where it began. */
 #define LINE_JUNC_MAX_MM     35
+/* Line under the right IR alone (centre white): the car overshot the line
+ * to the left, a hard right brings it back. This is the weave's normal
+ * recovery (without it, ctrl_course_v14 lost the line and searched on
+ * nearly every run). A black ramp beside the line reads the same, so the
+ * hard right only lasts while R's black stretch is arm-sized and stops
+ * once the heading is LINE_R_DEV_MAX_CDEG right of the line's direction
+ * (v13: it turned 13 deg right onto the ramp). Past that it counts as
+ * "centre on the white" or straight. */
+#define LINE_R_ONLY_MAX_MM   35
+#define LINE_R_DEV_MAX_CDEG  500
 /* centre white this far (steering left): lost */
 #define LINE_LOST_MM         40
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
@@ -374,16 +385,14 @@ line_task_main(INT stacd, void *exinf)
              * right edge, so each reading has one meaning:
              *   C R
              *   1 0  centre on the line   -> steer right, toward the edge
-             *   0 x  centre on the white  -> steer left, toward the edge
+             *   0 0  centre on the white  -> steer left, toward the edge
+             *   0 1  line under the right spot (car overshot left) -> hard
+             *        right, limited by LINE_R_ONLY_MAX_MM and
+             *        LINE_R_DEV_MAX_CDEG (a black ramp beside the line)
              *   1 1  black under both: a junction arm (the right spot is
              *        20 mm out over white on a plain line) -> straight on,
              *        unless R has been black longer than an arm (a ramp
-             *        beside the line) -> as 1 0
-             * The right IR never steers on its own: a black ramp close to
-             * the line kept it black, the old "0 1 = car far left, hard
-             * right" turned the car onto the ramp within 35 mm and it then
-             * followed the ramp's edge (ctrl_course_v11/v13, 27-28 Oct). A
-             * car that really is far left loses the line and searches. */
+             *        beside the line) -> as 1 0 */
             if (d < straight_until)
             {
                 off = 0;
@@ -410,6 +419,13 @@ line_task_main(INT stacd, void *exinf)
             else if (b_c_on)
             {
                 off = -1;
+                white_since = -1;
+            }
+            else if (b_r_on && ((d - r_since) <= LINE_R_ONLY_MAX_MM))
+            {
+                off = (heading_cdeg() > (line_dir - LINE_R_DEV_MAX_CDEG))
+                      ? -2 : 0;
+                last_side = -1;
                 white_since = -1;
             }
             else
@@ -477,7 +493,10 @@ line_task_main(INT stacd, void *exinf)
                 {
                     target = LINE_TRIM_MAX_MM_S;
                 }
-                target = (off < 0) ? -target : target;
+                target = (off < 0) ? -(target * ((off < -1) ? 2 : 1))
+                                   : target;
+                target = (target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S
+                                                        : target;
             }
             /* Slew-limit the steering so it never jerks */
             corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
