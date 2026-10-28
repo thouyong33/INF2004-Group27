@@ -30,7 +30,7 @@
 /** arg = character (0 = no read), val = 1 if reversed */
 #define EVT_BARCODE          9u
 /** line task: junction arm under C and R, val = mm */
-#define EVT_JUNCTION         10u
+#define EVT_JUNCTION         10u  /* arg 0 = right IR, 1 = left IR */
 /** controller: command done, arg = CTRL_CMD_* */
 #define EVT_COMMAND          11u
 /** controller: arg = 1 if found, val = width, mm */

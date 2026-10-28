@@ -28,6 +28,16 @@
 #define BCS_LEAD             32
 #define BCS_QUIET_STEPS      ((BCS_QUIET_MM * 1000) / UM_PER_EDGE)
 #define BCS_RESET_STEPS      300     /* a drop this big = odometry was reset */
+/* A cross arm under the left IR reads as one bar 18 mm wide. When the
+ * car crosses pointing a few degrees left, the right IR runs from the arm
+ * straight onto the main line and the line task never reports the
+ * junction (ctrl_course_v15 runs 5-6), so the arm seen here reports it
+ * too: EVT_JUNCTION arg 1, val = where the right IR meets the arm (the
+ * left IR sits LEFT_IR_AHEAD_MM ahead of it, user 28 Oct), in the line
+ * task's distance. */
+#define ARM_MIN_MM           10
+#define ARM_MAX_MM           35
+#define LEFT_IR_AHEAD_MM     20
 
 /* Distance travelled AT THE LEFT IR, not at the car's centre. While line
  * following the car yaws +/-0.5..2 rad/s, and the left IR sits ~80 mm left
@@ -59,6 +69,21 @@ steps_now(void)
     return ((l.hw_count * BCS_W_LEFT) + (r.hw_count * BCS_W_RIGHT)) / 4096L;
 }
 
+/* Where the right IR meets the arm whose bar (w steps) just ended a read
+ * (BCS_QUIET_STEPS of white after it), as the line task's distance (the
+ * mean of both wheels, mm) */
+static int32_t
+arm_start_mm(uint16_t w)
+{
+    enc_diag_t l, r;
+    int32_t now_mm;
+
+    (void)motion_get_encoder_diag(&l, &r);
+    now_mm = (((l.hw_count + r.hw_count) / 2) * UM_PER_EDGE) / 1000;
+    return now_mm - ((((int32_t)w + BCS_QUIET_STEPS) * UM_PER_EDGE) / 1000)
+           + LEFT_IR_AHEAD_MM;
+}
+
 static void
 finish(uint32_t n)
 {
@@ -76,6 +101,12 @@ finish(uint32_t n)
             g_last_el[i] = g_el[i];
         }
         g_last_n = ne;
+    }
+    if ((!b_ok) && (1u == ne) && (0u != g_el[0].bar)
+        && (g_el[0].w >= (uint16_t)((ARM_MIN_MM * 1000) / UM_PER_EDGE))
+        && (g_el[0].w <= (uint16_t)((ARM_MAX_MM * 1000) / UM_PER_EDGE)))
+    {
+        ctrl_evt_post(EVT_JUNCTION, 1u, (int16_t)arm_start_mm(g_el[0].w));
     }
     if (b_ok)
     {

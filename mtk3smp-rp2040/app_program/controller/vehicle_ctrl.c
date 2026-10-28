@@ -61,6 +61,8 @@
 #define CTRL_TURN_MM_S       60
 #define CTRL_TRIM_MM_S       30
 #define CTRL_TRIM_CDEG       60      /* re-turn if a turn misses by more */
+/* Both IRs report a cross: the second report within this is the same one */
+#define CTRL_JUNC_SAME_MM    60
 
 #define UM_PER_EDGE          328L
 #define TRACK_MM             114L
@@ -227,7 +229,9 @@ line_wind_down(void)
     }
 }
 
-/* Re-queue what arrived while the controller was busy, minus line ends */
+/* Re-queue what arrived while the controller was busy, minus line ends
+ * and junctions (the other IR's report of the cross just turned at, in
+ * the distance before the line task restarted) */
 static void
 requeue_events(void)
 {
@@ -237,7 +241,7 @@ requeue_events(void)
 
     while ((n < 8u) && (E_OK == ctrl_evt_wait(&evt[n], TMO_POL)))
     {
-        if (EVT_LINE_END != evt[n].type)
+        if ((EVT_LINE_END != evt[n].type) && (EVT_JUNCTION != evt[n].type))
         {
             n++;
         }
@@ -381,6 +385,7 @@ ctrl_task_main(INT stacd, void *exinf)
     bool b_imu_ok;
     bool b_on_ramp;
     bool b_jolt_pending;
+    int32_t junc_last;
     TMO wait;
 
     (void)stacd;
@@ -429,6 +434,7 @@ ctrl_task_main(INT stacd, void *exinf)
         b_on_ramp = false;
         ramp_h = 0;
         b_jolt_pending = false;
+        junc_last = -10000;
         imu_fail = 0u;
         ring_i = 0u;
         ring_n = 0u;
@@ -496,6 +502,13 @@ ctrl_task_main(INT stacd, void *exinf)
                     break;
                 case EVT_JUNCTION:
                     log_evt(evt.type, evt.arg, evt.val, d);
+                    if (((evt.val > junc_last) ? (evt.val - junc_last)
+                                               : (junc_last - evt.val))
+                        < CTRL_JUNC_SAME_MM)
+                    {
+                        break;      /* the other IR saw the same cross */
+                    }
+                    junc_last = evt.val;
                     if (CTRL_CMD_STRAIGHT == cmd)
                     {
                         /* The line task already drives straight over it */
@@ -526,6 +539,7 @@ ctrl_task_main(INT stacd, void *exinf)
                         else
                         {
                             (void)line_follow_start(g_speed, g_after_mm);
+                            junc_last = -10000;
                             if (0u != (opts & CTRL_OPT_BARCODE))
                             {
                                 barcode_scan_enable(true);

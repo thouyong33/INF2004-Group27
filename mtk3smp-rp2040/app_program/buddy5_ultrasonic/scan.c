@@ -49,8 +49,12 @@
  * readings off the face tolerated (stray ~300 mm echoes interleave with
  * it), then scaled by WIDTH_CAL_X100. A flat face is a mirror to the
  * sonar, so the seen span is mostly beam: estimates spread about +/-4 cm
- * (9 cm face 70-102 mm, 15.5 cm face 118-193 mm after scaling). */
-#define WIDTH_GATE_MM            30
+ * (9 cm face 70-102 mm, 15.5 cm face 118-193 mm after scaling).
+ * Gate 30 -> 40 mm (28 Oct): the course run now creeps in to ~190 mm
+ * before scanning, and that close a 15 cm face's outer readings come back
+ * 30-40 mm beyond its middle (15 cm face read 84 mm at +30; replayed at
+ * +40: 9 cm 84 mm, 15 cm 170 mm). The floor echo (~290 mm) stays clear. */
+#define WIDTH_GATE_MM            40
 #define WIDTH_GAP_ALLOW          3
 #define WIDTH_CAL_X100           120
 

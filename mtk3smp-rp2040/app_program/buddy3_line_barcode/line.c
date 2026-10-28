@@ -175,7 +175,11 @@ search_turn(int32_t to_cdeg)
         (void)motion_set_velocity(SEARCH_MM_S, -SEARCH_MM_S);
     }
 
+    /* ...and stop as soon as the ramp hold starts: a search that began
+     * at the ramp's foot kept turning with a wheel on it until the hump
+     * mask limit raised a stall (ctrl_course_v15 run 2) */
     while ((waited < SEARCH_TIMEOUT_MS) && (0u == g_stop_req)
+           && (0u == g_hold)
            && (0u == (fault_get() & FAULT_MOTION_MASK)))
     {
         bits = ir_read();
@@ -205,7 +209,8 @@ search_turn(int32_t to_cdeg)
 static bool
 search_window(int32_t dir, int32_t half, int32_t side)
 {
-    return search_turn(dir + (side * half)) || search_turn(dir - (side * half));
+    return search_turn(dir + (side * half))
+           || ((0u == g_hold) && search_turn(dir - (side * half)));
 }
 
 static void
@@ -350,7 +355,8 @@ line_task_main(INT stacd, void *exinf)
                     motion_stop();
                     tk_dly_tsk(200u);
                     trace(d, 0, 0, bits, LINE_TR_SEARCH);
-                    if (search_window(hold_dir, SEARCH_RAMP_CDEG, 1))
+                    if (search_window(hold_dir, SEARCH_RAMP_CDEG, 1)
+                        || (0u != g_hold))
                     {
                         g_recoveries++;
                         corr = 0;
@@ -441,7 +447,8 @@ line_task_main(INT stacd, void *exinf)
                     motion_stop();
                     tk_dly_tsk(200u);
                     trace(d, 0, 0, bits, LINE_TR_SEARCH);
-                    if (search_window(line_dir, SEARCH_HALF_CDEG, last_side))
+                    if (search_window(line_dir, SEARCH_HALF_CDEG, last_side)
+                        || (0u != g_hold))
                     {
                         g_recoveries++;
                         prev_d = dist_mm();
