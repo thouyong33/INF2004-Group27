@@ -363,6 +363,21 @@ creep_to_scan_range(void)
 #define PROBE_PINGS          3       /* median of */
 #define PROBE_PING_MS        65u
 #define PROBE_SETTLE_MS      150u
+/* The echo runs on past each edge (the beam still clips the face near the
+ * corner): 9 runs on 9 / 15 / 23 cm faces read 17 mm wide per edge on
+ * average (28 Oct, ctrl_course_v18); with it taken off, 8 of 9 widths
+ * were within +/-2 cm, the worst 3.2 cm under */
+#define PROBE_EDGE_OVER_MM   17
+
+/* Drive past on the left (the car's right side faces the obstacle) */
+#define AVOID_HALF_R_MM      70      /* centre to the right wheel's outside */
+#define AVOID_HALF_L_MM      85      /* centre to the left IR bracket */
+#define AVOID_SENSOR_AHEAD_MM 70     /* sonar ahead of the axle */
+#define AVOID_MARGIN_MM      40      /* beyond the width estimate's error */
+/* not measurable from the front: assumed */
+#define AVOID_DEPTH_MM       200
+#define AVOID_MM_S           100
+#define AVOID_AFTER_MM       300     /* follow this far after rejoining */
 
 static ctrl_probe_pt_t g_probe[CTRL_PROBE_MAX];
 static volatile uint32_t g_probe_n = 0u;
@@ -382,17 +397,19 @@ probe_turn_to(int32_t target_cdeg)
     }
 }
 
-/* Drive straight forward mm and stop; returns the distance driven */
+/* Drive straight forward mm at mm_s and stop; returns the distance */
 static int32_t
-probe_drive(int32_t mm)
+probe_drive(int32_t mm, int16_t mm_s)
 {
     int32_t d0;
     uint32_t waited = 0u;
+    uint32_t limit_ms;
 
+    limit_ms = (uint32_t)((mm * 1000) / mm_s) + CTRL_JUNC_FWD_MS;
     d0 = dist_mm();
-    (void)motion_set_velocity(PROBE_DRIVE_MM_S, PROBE_DRIVE_MM_S);
+    (void)motion_set_velocity(mm_s, mm_s);
     while (((dist_mm() - d0) < (mm - PROBE_BRAKE_MM))
-           && (waited < CTRL_JUNC_FWD_MS)
+           && (waited < limit_ms)
            && (0u == (fault_get() & FAULT_MOTION_MASK)))
     {
         tk_dly_tsk(CTRL_PERIOD_MS);
@@ -464,7 +481,7 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t face_mm, int32_t *p_y,
             return y_on;
         }
         probe_turn_to(dir_cdeg + (side * 9000));
-        moved = probe_drive(PROBE_STEP_MM);
+        moved = probe_drive(PROBE_STEP_MM, PROBE_DRIVE_MM_S);
         *p_y += side * moved;
         probe_turn_to(dir_cdeg);
         tk_dly_tsk(PROBE_SETTLE_MS);
@@ -482,10 +499,13 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t face_mm, int32_t *p_y,
     }
 }
 
-/* Find both edges of the obstacle ahead and log them; the car ends at the
- * left edge, facing the line's direction. Returns the width (0 = failed). */
+/* Find both edges of the obstacle ahead and log them; the car ends just
+ * past the left edge (*p_y, mm left of the start), facing the line's
+ * direction (*p_dir). *p_left is the left edge, *p_face_mm the range.
+ * Returns the width (0 = failed). */
 static int32_t
-probe_obstacle(void)
+probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
+               int32_t *p_face_mm)
 {
     int32_t dir;
     int32_t face_mm;
@@ -508,24 +528,66 @@ probe_obstacle(void)
         return 0;
     }
 
-    right = probe_edge(dir, -1, face_mm, &y, &b_cap_r);
+    right = probe_edge(dir, -1, face_mm, &y, &b_cap_r) + PROBE_EDGE_OVER_MM;
     log_evt(EVT_OBST_EDGE, b_cap_r ? 2u : 0u, (int16_t)right, dist_mm());
 
     /* Back to the start in one move, then on to the left edge */
     if (y < 0)
     {
         probe_turn_to(dir + 9000);
-        moved = probe_drive(-y);
+        moved = probe_drive(-y, PROBE_DRIVE_MM_S);
         y += moved;
         probe_turn_to(dir);
     }
-    left = probe_edge(dir, +1, face_mm, &y, &b_cap_l);
+    left = probe_edge(dir, +1, face_mm, &y, &b_cap_l) - PROBE_EDGE_OVER_MM;
     log_evt(EVT_OBST_EDGE, b_cap_l ? 3u : 1u, (int16_t)left, dist_mm());
 
     g_obst_width = (int16_t)(left - right);
     log_evt(EVT_OBST_WIDTH, (b_cap_r || b_cap_l) ? 2u : 1u, g_obst_width,
             dist_mm());
+    *p_dir = dir;
+    *p_y = y;
+    *p_left = left;
+    *p_face_mm = face_mm;
     return left - right;
+}
+
+/* Probe the obstacle, then go round it on the left and stop back on the
+ * line's position behind it, facing the line's direction:
+ *   out:  sideways to AVOID_HALF_R_MM + AVOID_MARGIN_MM left of its edge
+ *   past: forward to the face, its assumed depth, and far enough that the
+ *         car's widest side clears its back face after the turn
+ *   in:   sideways back to the start's position
+ * Returns false if the probe failed or a motion fault stopped it. */
+static bool
+avoid_obstacle(void)
+{
+    int32_t dir;
+    int32_t y;
+    int32_t left;
+    int32_t face_mm;
+    int32_t out;
+    int32_t past;
+
+    if (0 >= probe_obstacle(&dir, &y, &left, &face_mm))
+    {
+        return false;
+    }
+    out = left + AVOID_HALF_R_MM + AVOID_MARGIN_MM;
+    if (out > y)
+    {
+        probe_turn_to(dir + 9000);
+        y += probe_drive(out - y, AVOID_MM_S);
+    }
+    probe_turn_to(dir);
+    past = face_mm + AVOID_SENSOR_AHEAD_MM + AVOID_DEPTH_MM
+           + AVOID_HALF_L_MM + AVOID_MARGIN_MM;
+    (void)probe_drive(past, AVOID_MM_S);
+    probe_turn_to(dir - 9000);
+    y -= probe_drive(y, AVOID_MM_S);
+    probe_turn_to(dir);
+    log_evt(EVT_OBST_AVOID, 0u, (int16_t)y, dist_mm());
+    return 0u == (fault_get() & FAULT_MOTION_MASK);
 }
 
 uint32_t
@@ -653,7 +715,36 @@ ctrl_task_main(INT stacd, void *exinf)
                 {
                 case EVT_OBSTACLE:
                     log_evt(evt.type, evt.arg, evt.val, d);
-                    if (0u != (opts & CTRL_OPT_OBSTACLE))
+                    if (0u != (opts & CTRL_OPT_AVOID))
+                    {
+                        /* Go round it and carry on along the line */
+                        status_set(CTRL_ST_OBSTACLE, EVT_OBSTACLE, flags, d,
+                                   heading_cdeg(), roll);
+                        barcode_scan_enable(false);
+                        line_wind_down();
+                        obstacle_watch(false);
+                        tk_dly_tsk(300u);
+                        log_evt(EVT_OBST_CREEP, 0u,
+                                (int16_t)creep_to_scan_range(), dist_mm());
+                        if (!avoid_obstacle())
+                        {
+                            state = CTRL_ST_FAULT;
+                            break;
+                        }
+                        obstacle_watch(true);
+                        tk_dly_tsk(CTRL_WATCH_SETTLE_MS);
+                        requeue_events();
+                        (void)line_follow_start(g_speed, AVOID_AFTER_MM);
+                        if (0u != (opts & CTRL_OPT_BARCODE))
+                        {
+                            barcode_scan_enable(true);
+                        }
+                        junc_last = -10000;
+                        ring_n = 0u;
+                        t_sample = now_ms();
+                        d = dist_mm();
+                    }
+                    else if (0u != (opts & CTRL_OPT_OBSTACLE))
                     {
                         line_follow_stop();
                         state = CTRL_ST_OBSTACLE;
@@ -904,7 +995,14 @@ ctrl_task_main(INT stacd, void *exinf)
             tk_dly_tsk(300u);
             log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
                     dist_mm());
-            (void)probe_obstacle();
+            {
+                int32_t dir;
+                int32_t y;
+                int32_t left;
+                int32_t face_mm;
+
+                (void)probe_obstacle(&dir, &y, &left, &face_mm);
+            }
         }
         flags &= (uint8_t)~(CTRL_FLAG_ON_RAMP | CTRL_FLAG_WATCHING);
         status_set(state, EVT_NONE, flags, dist_mm(), heading_cdeg(), roll);

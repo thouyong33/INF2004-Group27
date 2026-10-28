@@ -41,6 +41,9 @@
 /** controller: obstacle edge, val = mm left of the start; arg 0 right,
  * 1 left, 2 / 3 the same but still on the face at the probe's limit */
 #define EVT_OBST_EDGE        14u
+/** controller: went round the obstacle, val = mm left of the start where
+ * it stopped (0 = back on the line's position) */
+#define EVT_OBST_AVOID       15u
 
 /** One event, 4 bytes */
 typedef struct {

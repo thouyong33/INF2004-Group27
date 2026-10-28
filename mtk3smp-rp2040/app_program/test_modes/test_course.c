@@ -55,12 +55,12 @@ LOCAL const char *ctrlt_state(UB s)
 
 LOCAL const char *ctrlt_evt(UB e)
 {
-    static const char *const txt[15] = {
+    static const char *const txt[16] = {
         "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
         "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND",
-        "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE"
+        "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID"
     };
-    return (e < 15u) ? txt[e] : "?";
+    return (e < 16u) ? txt[e] : "?";
 }
 
 LOCAL const char *ctrlt_cmd(UB c)
@@ -98,15 +98,17 @@ void ctrl_test_course(void)
                   " right edge), keep it still, then press\n[CTRL]   l = line "
                   "+ ramp,"
                   "  o = line + obstacle stop,  b = line + barcode command at "
-                  "the cross"
+                  "the cross,\n[CTRL]   a = line + obstacle: measure, go round"
+                  " on the left, rejoin the line"
                   "\n[CTRL]   (any key while running stops it)\n", run);
         console_flush_input();
         do {
             c = console_try_getc();
             tk_dly_tsk(50);
-        } while((c != 'l') && (c != 'o') && (c != 'b'));
+        } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a'));
         opts = (c == 'o') ? CTRL_OPT_OBSTACLE
-               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u);
+               : ((c == 'a') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID)
+               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u));
         tk_dly_tsk(500);
         console_flush_input();
 
