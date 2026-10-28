@@ -25,54 +25,23 @@
 #define CTRLT_SNAP_MS            500
 #define CTRLT_SNAPS              24
 
-LOCAL void ctrlt_print_pts(const char *name, const scan_pt_t *p, INT n)
+/* The obstacle probe's side-steps (sonar position, median reading) */
+LOCAL void ctrlt_print_probe(void)
 {
+    static ctrl_probe_pt_t pts[CTRL_PROBE_MAX];
+    INT n;
     INT i;
 
-    tm_printf((UB *)"[CTRL]   %s (%d readings, cdeg,mm):", name, n);
+    n = (INT)ctrl_probe_get(pts);
+    tm_printf((UB *)"[CTRL]   probe (%d steps, mm left of the start,"
+                    " reading mm):", n);
     for(i = 0; i < n; i++) {
         if((i % 10) == 0) {
             tm_printf((UB *)"\n[CTRL]    ");
         }
-        tm_printf((UB *)" %d,%d", p[i].cdeg, p[i].mm);
+        tm_printf((UB *)" %d,%d", pts[i].y_mm, pts[i].mm);
     }
     tm_printf((UB *)"\n");
-}
-
-/* The obstacle scan in detail, as the width test (mode 33) prints it, plus
-   the right encoder check across the scan */
-LOCAL void ctrlt_print_scan(void)
-{
-    static scan_pt_t pts[SCAN_LOG_MAX];
-    enc_check_t pre, post;
-    obstacle_profile_t prof;
-    INT n;
-
-    ctrl_get_scan_diag(&pre, &post, &prof);
-    tm_printf((UB *)"[CTRL]   right encoder before / after the scan: A raw %d "
-                    "/ %d,"
-              " B %d / %d, fixed %d / %d (A-B over the scan %d)\n",
-              (INT)pre.right_a_raw, (INT)post.right_a_raw, (INT)pre.right_b,
-              (INT)post.right_b, (INT)pre.fixed_edges, (INT)post.fixed_edges,
-              (INT)((post.right_a_raw - pre.right_a_raw)
-                    - (post.right_b - pre.right_b)));
-    if(!prof.found) {
-        tm_printf((UB *)"[CTRL]   scan: nothing found\n");
-        return;
-    }
-    tm_printf((UB *)"[CTRL]   scan: nearest %d mm at %d cdeg; seen from %d to "
-                    "%d cdeg"
-              " (span %d), beam %d -> width %d mm (old rule %d mm)\n",
-                  prof.nearest_mm,
-              prof.nearest_cdeg, prof.right_cdeg, prof.left_cdeg,
-              prof.left_cdeg - prof.right_cdeg, prof.beam_cdeg, prof.width_mm,
-              prof.width_old_mm);
-    n = (INT)scan_get_coarse(pts, SCAN_LOG_MAX);
-    ctrlt_print_pts("coarse sweep right to left", pts, n);
-    n = (INT)scan_get_fine(0u, pts, SCAN_FINE_MAX);
-    ctrlt_print_pts("fine, right edge", pts, n);
-    n = (INT)scan_get_fine(1u, pts, SCAN_FINE_MAX);
-    ctrlt_print_pts("fine, left edge", pts, n);
 }
 
 LOCAL const char *ctrlt_state(UB s)
@@ -86,12 +55,12 @@ LOCAL const char *ctrlt_state(UB s)
 
 LOCAL const char *ctrlt_evt(UB e)
 {
-    static const char *const txt[14] = {
+    static const char *const txt[15] = {
         "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
         "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND",
-        "OBST_WIDTH", "OBST_CREEP"
+        "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE"
     };
-    return (e < 14u) ? txt[e] : "?";
+    return (e < 15u) ? txt[e] : "?";
 }
 
 LOCAL const char *ctrlt_cmd(UB c)
@@ -199,6 +168,12 @@ void ctrl_test_course(void)
                     tm_printf((UB *)"   (scan failed or nothing found: %d)",
                               lg[i].val);
                 }
+            } else if(EVT_OBST_EDGE == lg[i].type) {
+                tm_printf((UB *)"   (%s edge %d mm left of the start%s)",
+                          (0u != (lg[i].arg & 1u)) ? "left" : "right",
+                          lg[i].val,
+                          (lg[i].arg >= 2u) ? ", still on the face at the"
+                                              " limit" : "");
             } else if(EVT_OBST_CREEP == lg[i].type) {
                 tm_printf((UB *)"   (crept in to scan, sonar %d mm)",
                           lg[i].val);
@@ -244,7 +219,7 @@ void ctrl_test_course(void)
                       ctrlt_evt(snaps[i].last_evt));
         }
         if(0u != (opts & CTRL_OPT_OBSTACLE)) {
-            ctrlt_print_scan();
+            ctrlt_print_probe();
         }
         tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose "
                         "gap for o).\n");

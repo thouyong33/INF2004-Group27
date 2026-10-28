@@ -38,6 +38,9 @@
 #define EVT_OBST_WIDTH       12u
 /** controller: crept in before the scan, val = sonar mm (-1 = none) */
 #define EVT_OBST_CREEP       13u
+/** controller: obstacle edge, val = mm left of the start; arg 0 right,
+ * 1 left, 2 / 3 the same but still on the face at the probe's limit */
+#define EVT_OBST_EDGE        14u
 
 /** One event, 4 bytes */
 typedef struct {
