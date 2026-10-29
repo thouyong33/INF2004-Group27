@@ -162,8 +162,7 @@ void ctrl_test_course(void)
         if(c == 'c') {
             tm_printf((UB *)"[CTRL] continuous run started: the serial wire can"
                             " be unplugged now. Press s to stop (or lift the"
-                            " car: the line search fails and it stops).
-");
+                            " car: the line search fails and it stops).\n");
         }
         while(ctrl_running()) {
             for(i = 0; (i < CTRLT_SNAP_MS / 20) && ctrl_running(); i++) {
@@ -182,8 +181,7 @@ void ctrl_test_course(void)
         ctrl_get_status(&st);
         if(c == 'c') {
             /* The log stays in RAM: reconnect the serial wire, then ask */
-            tm_printf((UB *)"[CTRL] run ended; press p to print the log
-");
+            tm_printf((UB *)"[CTRL] run ended; press p to print the log\n");
             do {
                 k = console_try_getc();
                 tk_dly_tsk(50);
