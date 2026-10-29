@@ -37,7 +37,7 @@ LOCAL void ctrlt_print_line_trace(void)
 
     n = (INT)line_trace_get(tr);
     tm_printf((UB *)"[CTRL]   line trace (%d periods; d_mm:heading x0.01:IRs"
-                    " C/R:steer:corr):", n);
+                    " C/R:steer:corr[:f curve turn]):", n);
     for(i = 0; i < n; i++) {
         if((i % 8) == 0) {
             tm_printf((UB *)"\n[CTRL]    ");
@@ -48,6 +48,9 @@ LOCAL void ctrlt_print_line_trace(void)
                       (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 'C' : '-',
                       (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 'R' : '-',
                       (INT)tr[i].off, tr[i].corr);
+            if(0 != tr[i].trim) {
+                tm_printf((UB *)":f%d", tr[i].trim);   /* curve turn */
+            }
         } else {
             tm_printf((UB *)" %d:%d:%c%c:%c", tr[i].d_mm, tr[i].heading_cdeg,
                       (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 'C' : '-',

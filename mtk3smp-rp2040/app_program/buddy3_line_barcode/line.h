@@ -41,7 +41,7 @@
 typedef struct {
     int16_t d_mm;            /**< distance travelled since the start */
     int16_t corr;            /**< wheel speed difference, mm/s, + = left */
-    int16_t trim;            /**< periods steering to the same side */
+    int16_t trim;            /**< curve feed-forward, mm/s, + left */
     uint8_t bits;            /**< IR_BIT_LEFT/CENTRE/RIGHT at this period */
     uint8_t searching;       /**< LINE_TR_FOLLOW / SEARCH / HOLD */
     int16_t heading_cdeg;    /**< encoder heading since the start, left + */

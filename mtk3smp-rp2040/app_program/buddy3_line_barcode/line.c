@@ -61,6 +61,34 @@
  * weave (v29) a swing back from the right can take exactly 60 mm of white
  * and tripped a needless search 1-2 times a run, so 100 mm. */
 #define LINE_LOST_MM         100
+/* Curves (29 Oct). The steering above keeps the car beside the line's
+ * direction averaged over LINE_DIR_MM and widens its aim by only
+ * LINE_BIAS_GROW_CDEG a period: on the circuit's curve mat it turned
+ * ~5 deg per 100 mm, lost the line, and after the search had found
+ * it 20 deg left it steered back to the old straight (c run, v32).
+ * A side held longer than any straight's weave (centre white 18-25
+ * mm, black up to ~45 mm) now starts a curve: a feed-forward turn
+ * (curve_ff, + left) grows LINE_CURVE_GROW_MM_S a period while the
+ * line stays on the curve's outer reading (left curve: centre white;
+ * right curve: centre black, right IR white) and decays
+ * LINE_CURVE_DECAY_MM_S a period otherwise, so it settles where the
+ * two balance. While it is on, the reference direction follows the
+ * car, so the edge steering works around the turn, not against it.
+ * LINE_CURVE_MAX_MM_S a side is a ~14 cm radius at 100 mm/s. */
+#define LINE_CURVE_WHITE_MM  40
+#define LINE_CURVE_BLACK_MM  60
+#define LINE_CURVE_GROW_MM_S 2
+#define LINE_CURVE_DECAY_MM_S 2
+#define LINE_CURVE_MAX_MM_S  40
+/* On a left curve the centre is white while the car turns toward the
+ * line, so "lost" is this much turning, or distance, without finding
+ * it (not LINE_LOST_MM) */
+#define LINE_CURVE_LOST_CDEG 12000
+#define LINE_CURVE_LOST_MM   400
+/* A search that finds the line further than this from the line's
+ * direction found a curve: carry on turning that way (curve_ff at
+ * half) from the found heading, not back to the old straight */
+#define SEARCH_CURVE_CDEG    1000
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
  * toward the side the line was last seen, so a perpendicular junction arm
@@ -271,6 +299,11 @@ line_task_main(INT stacd, void *exinf)
     int32_t line_dir;
     int32_t prev_d;
     int32_t step;
+    int32_t curve_ff;        /* curve feed-forward, mm/s, + left */
+    int32_t black_since;     /* centre black, right white, since */
+    int32_t white_hdg = 0;   /* heading when the centre went white */
+    int32_t found;
+    bool b_lost;
 
     (void)stacd;
     (void)exinf;
@@ -298,6 +331,8 @@ line_task_main(INT stacd, void *exinf)
         line_dir = 0;
         g_line_dir = 0;
         prev_d = 0;
+        curve_ff = 0;
+        black_since = -1;
         base = g_base;
         g_end = LINE_END_NONE;
 
@@ -371,6 +406,7 @@ line_task_main(INT stacd, void *exinf)
                 b_holding = false;
                 b_after_hold = true;
                 run = 0;
+                curve_ff = 0;
                 prev_off = 0;
                 white_since = -1;
                 last_side = 1;
@@ -429,7 +465,15 @@ line_task_main(INT stacd, void *exinf)
              * followed (not while holding or searching) */
             step = d - prev_d;
             step = (step < 0) ? 0 : ((step > LINE_DIR_MM) ? LINE_DIR_MM : step);
-            line_dir += ((heading_cdeg() - line_dir) * step) / LINE_DIR_MM;
+            if (0 != curve_ff)
+            {
+                line_dir = heading_cdeg();
+            }
+            else
+            {
+                line_dir += ((heading_cdeg() - line_dir) * step)
+                            / LINE_DIR_MM;
+            }
             g_line_dir = line_dir;
             prev_d = d;
 
@@ -448,6 +492,17 @@ line_task_main(INT stacd, void *exinf)
              *        20 mm out over white on a plain line) -> straight on,
              *        unless R has been black longer than an arm (a ramp
              *        beside the line) -> as 1 0 */
+            if (b_c_on && !b_r_on)
+            {
+                if (black_since < 0)
+                {
+                    black_since = d;
+                }
+            }
+            else
+            {
+                black_since = -1;
+            }
             if (d < straight_until)
             {
                 off = 0;
@@ -482,6 +537,10 @@ line_task_main(INT stacd, void *exinf)
                       ? -2 : 0;
                 last_side = -1;
                 white_since = -1;
+                if (curve_ff > 0)
+                {
+                    curve_ff = 0;   /* overshot left: the curve is over */
+                }
             }
             else
             {
@@ -489,8 +548,13 @@ line_task_main(INT stacd, void *exinf)
                 if (white_since < 0)
                 {
                     white_since = d;
+                    white_hdg = heading_cdeg();
                 }
-                if ((d - white_since) > LINE_LOST_MM)
+                b_lost = (curve_ff > 0)
+                    ? (((heading_cdeg() - white_hdg) > LINE_CURVE_LOST_CDEG)
+                       || ((d - white_since) > LINE_CURVE_LOST_MM))
+                    : ((d - white_since) > LINE_LOST_MM);
+                if (b_lost)
                 {
                     /* Lost: stop, then look on the spot only (raised mats) */
                     motion_stop();
@@ -503,6 +567,17 @@ line_task_main(INT stacd, void *exinf)
                         g_recoveries++;
                         prev_d = dist_mm();
                         corr = 0;
+                        curve_ff = 0;
+                        found = heading_cdeg() - line_dir;
+                        if ((found > SEARCH_CURVE_CDEG)
+                            || (found < -SEARCH_CURVE_CDEG))
+                        {
+                            curve_ff = (found > 0)
+                                       ? (LINE_CURVE_MAX_MM_S / 2)
+                                       : -(LINE_CURVE_MAX_MM_S / 2);
+                            line_dir = heading_cdeg();
+                            g_line_dir = line_dir;
+                        }
                         run = 0;
                         prev_off = 0;
                         white_since = -1;
@@ -554,7 +629,42 @@ line_task_main(INT stacd, void *exinf)
                 bias = (bias > LINE_BIAS_MAX_CDEG) ? LINE_BIAS_MAX_CDEG : bias;
                 bias = (off < 0) ? -(bias * ((off < -1) ? 2 : 1)) : bias;
             }
-            target = ((line_dir + bias) - heading_cdeg()) / LINE_HDG_GAIN_DIV;
+            /* Curve feed-forward (see LINE_CURVE_WHITE_MM) */
+            if (b_reading || (d < straight_until))
+            {
+                curve_ff = 0;          /* barcodes, arms: straights */
+            }
+            else if ((1 == off) && (white_since >= 0)
+                     && ((curve_ff > 0)
+                         || ((d - white_since) >= LINE_CURVE_WHITE_MM)))
+            {
+                curve_ff += LINE_CURVE_GROW_MM_S;
+            }
+            else if ((-1 == off) && (black_since >= 0)
+                     && ((curve_ff < 0)
+                         || ((d - black_since) >= LINE_CURVE_BLACK_MM)))
+            {
+                curve_ff -= LINE_CURVE_GROW_MM_S;
+            }
+            else if (curve_ff > 0)
+            {
+                curve_ff -= LINE_CURVE_DECAY_MM_S;
+                curve_ff = (curve_ff < 0) ? 0 : curve_ff;
+            }
+            else if (curve_ff < 0)
+            {
+                curve_ff += LINE_CURVE_DECAY_MM_S;
+                curve_ff = (curve_ff > 0) ? 0 : curve_ff;
+            }
+            else
+            {
+                /* on a straight */
+            }
+            curve_ff = (curve_ff > LINE_CURVE_MAX_MM_S) ? LINE_CURVE_MAX_MM_S
+                     : ((curve_ff < -LINE_CURVE_MAX_MM_S)
+                        ? -LINE_CURVE_MAX_MM_S : curve_ff);
+            target = (((line_dir + bias) - heading_cdeg())
+                      / LINE_HDG_GAIN_DIV) + curve_ff;
             lim = (off < -1) ? LINE_CORR_MAX_MM_S : LINE_TRIM_MAX_MM_S;
             target = (target > lim) ? lim : ((target < -lim) ? -lim : target);
             /* Slew-limit the steering so it never jerks */
@@ -564,7 +674,7 @@ line_task_main(INT stacd, void *exinf)
 
             (void)motion_set_velocity((int16_t)(base - corr),
                                       (int16_t)(base + corr));
-            trace(d, corr, run, bits, LINE_TR_FOLLOW, off);
+            trace(d, corr, curve_ff, bits, LINE_TR_FOLLOW, off);
             tk_dly_tsk(LINE_PERIOD_MS);
         }
 
