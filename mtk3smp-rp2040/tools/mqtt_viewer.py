@@ -11,9 +11,11 @@ publishes:
     car27/event    14-byte controller event, one per event
     car27/sys      14-byte timing figures, once a second
 
-and listens on car27/cmd: type a key here and press Enter to send it, the
-same keys as the serial menu (l o b a c r to start a run, s to stop, p to
-print a continuous run's log).
+and listens on car27/cmd for the serial menu's keys (l o b a c r to start
+a run, s to stop, p to print a continuous run's log). Send them from the
+control page this script opens on http://localhost:8080 (live status,
+buttons, events and run timing; tools/mqtt_web.html), or type a key here
+and press Enter.
 
 The byte layouts are in app_program/buddy1_telemetry/tel_source.h. Other
 MQTT clients (MQTT Explorer, a phone app, mosquitto_sub) can connect too
@@ -34,12 +36,16 @@ Windows treats a phone hotspot as a Public network, so allow port 1883 once
 
 import argparse
 import asyncio
+import collections
 import csv
+import json
+import os
 import socket
 import struct
 import sys
 import threading
 import time
+import webbrowser
 
 STATES = ["IDLE", "START", "FOLLOW", "RAMP", "DONE", "OBSTACLE", "IMPACT",
           "FAULT", "TURN"]
@@ -69,6 +75,35 @@ def fault_text(bits):
 
 def stamp():
     return time.strftime("%H:%M:%S")
+
+
+class Hub:
+    """Fans what the viewer prints, and the live status, out to the web
+    page's open feeds. A page opened later gets the recent lines first."""
+
+    def __init__(self):
+        self.queues = set()
+        self.backlog = collections.deque(maxlen=400)
+        self.latest = {}              # last status/sys/car message by type
+
+    def send(self, msg):
+        if msg["t"] == "line":
+            self.backlog.append(msg)
+        else:
+            self.latest[msg["t"]] = msg
+        for q in list(self.queues):
+            if q.qsize() < 1000:
+                q.put_nowait(msg)
+
+
+HUB = Hub()
+
+
+def say(text, kind="info"):
+    """Print a line on the terminal and show it on the web page."""
+    line = "%s  %s" % (stamp(), text)
+    print(line)
+    HUB.send({"t": "line", "kind": kind, "text": line})
 
 
 def local_addresses():
@@ -115,8 +150,9 @@ class Viewer:
     def message(self, topic, payload):
         if topic == "car27/online":
             text = payload.decode(errors="replace")
-            print("%s  car %s" % (stamp(), "ONLINE" if text == "1"
-                                  else "OFFLINE (last will)"))
+            say("car %s" % ("ONLINE" if text == "1"
+                            else "OFFLINE (last will)"), "online")
+            HUB.send({"t": "car", "up": text == "1"})
             self.log(topic, [text])
         elif topic == "car27/status" and len(payload) == 18:
             self.status(struct.unpack(STATUS_FMT, payload))
@@ -127,8 +163,7 @@ class Viewer:
         elif topic == "car27/cmd":
             pass                                  # our own keys
         elif topic.startswith("car27/"):
-            print("%s  %s: %d bytes %s" % (stamp(), topic, len(payload),
-                                           payload.hex()))
+            say("%s: %d bytes %s" % (topic, len(payload), payload.hex()))
 
     def status(self, v):
         (state, faults, last_evt, flags, dist, hdg, roll, obst, width,
@@ -143,6 +178,18 @@ class Viewer:
                         "samples": None}
         elif state not in RUN_STATES and self.run is not None:
             self.run_summary()
+        rate_now = 0.0
+        if now > self.first_status + 1:
+            rate_now = self.status_count / (now - self.first_status)
+        HUB.send({"t": "status", "state": name(STATES, state),
+                  "running": state in RUN_STATES, "dist": dist,
+                  "total_m": total_cm / 100.0, "hdg": hdg / 100.0,
+                  "roll": roll / 100.0, "sonar": obst, "width": width,
+                  "ramp": ramp, "on_ramp": bool(flags & 1),
+                  "imu": bool(flags & 2),
+                  "cmd": name(COMMANDS, (flags >> 4) & 7),
+                  "faults": fault_text(faults), "fault_bits": faults,
+                  "rate": round(rate_now, 1)})
         changed = state != self.last_state
         if not changed and self.every > 0 and now - self.last_print \
                 < self.every:
@@ -153,18 +200,21 @@ class Viewer:
         if now > self.first_status + 1:
             rate = "  %.1f/s" % (self.status_count / (now - self.first_status))
         cmd = (flags >> 4) & 7
-        print("%s  %-8s d=%5d mm total=%5.1f m hdg=%7.2f roll=%6.2f "
-              "sonar=%5s width=%4s ramp=%2d%s%s faults=%s%s"
-              % (stamp(), name(STATES, state), dist, total_cm / 100.0,
-                 hdg / 100.0, roll / 100.0,
-                 "-" if obst < 0 else obst, width if width else "-", ramp,
-                 " RAMP" if flags & 1 else "",
-                 " cmd=" + name(COMMANDS, cmd) if cmd else "",
-                 fault_text(faults), rate))
+        say("%-8s d=%5d mm total=%5.1f m hdg=%7.2f roll=%6.2f "
+            "sonar=%5s width=%4s ramp=%2d%s%s faults=%s%s"
+            % (name(STATES, state), dist, total_cm / 100.0,
+               hdg / 100.0, roll / 100.0,
+               "-" if obst < 0 else obst, width if width else "-", ramp,
+               " RAMP" if flags & 1 else "",
+               " cmd=" + name(COMMANDS, cmd) if cmd else "",
+               fault_text(faults), rate), "status")
 
     def sys(self, v):
         rate, busy, pass_us, samples, gap, drops = v
         self.log("sys", list(v))
+        HUB.send({"t": "sys", "rate": rate, "busy_pct": busy / 10000.0,
+                  "pass": pass_us, "samples": samples, "gap": gap,
+                  "drops": drops})
         r = self.run
         if r is None:
             return
@@ -182,13 +232,13 @@ class Viewer:
         self.run = None
         if r["rate"] is None:
             return
-        print("%s  run timing (Wi-Fi on): motion loop at least %d/s "
-              "(1000 = every 1 ms), longest pass %d us, busy up to %.1f%%; "
-              "controller at least %s samples/s (50 = every 20 ms), longest "
-              "gap %d ms; status drops so far %d"
-              % (stamp(), r["rate"], r["pass"], r["busy"] / 10000.0,
-                 r["samples"] if r["samples"] is not None else "-",
-                 r["gap"], r.get("drops", 0)))
+        say("run timing (Wi-Fi on): motion loop at least %d/s "
+            "(1000 = every 1 ms), longest pass %d us, busy up to %.1f%%; "
+            "controller at least %s samples/s (50 = every 20 ms), longest "
+            "gap %d ms; status drops so far %d"
+            % (r["rate"], r["pass"], r["busy"] / 10000.0,
+               r["samples"] if r["samples"] is not None else "-",
+               r["gap"], r.get("drops", 0)), "timing")
 
     def event(self, v):
         t_ms, d_mm, etype, arg, val, idx = v
@@ -202,9 +252,9 @@ class Viewer:
             extra = "  %s done" % name(COMMANDS, arg)
         elif etype == 1:                                 # FAULT
             extra = "  " + fault_text(arg)
-        print("%s  event #%d at %.1f s, %d mm: %s arg=%d val=%d%s"
-              % (stamp(), idx, t_ms / 1000.0, d_mm, name(EVENTS, etype),
-                 arg, val, extra))
+        say("event #%d at %.1f s, %d mm: %s arg=%d val=%d%s"
+            % (idx, t_ms / 1000.0, d_mm, name(EVENTS, etype), arg, val,
+               extra), "fault" if etype == 1 else "event")
 
 
 class Broker:
@@ -228,11 +278,13 @@ class Broker:
         return any(s.client_id == "car27" for s in self.sessions)
 
     def key(self, ch):
+        """Send one menu key to the car; returns whether it went."""
         if not self.car_connected():
-            print("%s  car not connected: '%s' not sent" % (stamp(), ch))
-            return
-        print("%s  -> sent '%s' to the car" % (stamp(), ch))
+            say("car not connected: '%s' not sent" % ch, "warn")
+            return False
+        say("-> sent '%s' to the car" % ch, "key")
         self.route("car27/cmd", ch.encode(), False)
+        return True
 
     def route(self, topic, payload, retain, sender=None):
         if retain:
@@ -305,9 +357,11 @@ class Session:
             wt, i = self.string(body, i)
             wm, i = self.string(body, i)
             self.will = (wt.decode(), wm, bool(flags & 0x20))
-        print("%s  [broker] %s connected from %s (MQTT level %d, "
-              "keep-alive %d s)" % (stamp(), self.client_id, self.peer[0],
-                                    level, self.keepalive))
+        if self.client_id == "car27":
+            HUB.send({"t": "car", "up": True})
+        say("[broker] %s connected from %s (MQTT level %d, keep-alive %d s)"
+            % (self.client_id, self.peer[0], level, self.keepalive),
+            "broker")
         self.send(0x20, b"\x00\x00")
 
     def publish(self, head, body):
@@ -362,25 +416,117 @@ class Session:
                     break
                 await self.writer.drain()
         except asyncio.TimeoutError:
-            print("%s  [broker] %s silent past its keep-alive"
-                  % (stamp(), self.client_id))
+            say("[broker] %s silent past its keep-alive" % self.client_id,
+                "broker")
         except (asyncio.IncompleteReadError, ConnectionError, OSError,
                 struct.error):
             pass
         finally:
             self.broker.sessions.discard(self)
-            print("%s  [broker] %s %s" % (stamp(), self.client_id,
-                                          "disconnected" if clean
-                                          else "connection lost"))
+            if self.client_id == "car27" and not self.broker.car_connected():
+                HUB.send({"t": "car", "up": False})
+            say("[broker] %s %s" % (self.client_id, "disconnected" if clean
+                                    else "connection lost"), "broker")
             if self.will and not clean:
                 topic, msg, retain = self.will
                 self.broker.route(topic, msg, retain)
             self.writer.close()
 
 
+WEB_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "mqtt_web.html")
+
+
+class Web:
+    """The control page on http://localhost:<web port>: GET / is the page,
+    GET /events a live feed (server-sent events), POST /key sends a key.
+    Bound to 127.0.0.1 only. A key needs the X-Car header, which a page
+    from another site cannot add without a CORS preflight this server never
+    answers, so only our own page can drive the car."""
+
+    def __init__(self, broker):
+        self.broker = broker
+
+    @staticmethod
+    def reply(writer, status, ctype, body):
+        writer.write(("HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: "
+                      "%d\r\nCache-Control: no-store\r\nConnection: close"
+                      "\r\n\r\n" % (status, ctype, len(body))).encode()
+                     + body)
+
+    @staticmethod
+    def event(writer, msg):
+        writer.write(b"data: " + json.dumps(msg).encode() + b"\n\n")
+
+    async def feed(self, writer):
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                     b"Cache-Control: no-store\r\nConnection: keep-alive"
+                     b"\r\n\r\n")
+        q = asyncio.Queue()
+        HUB.queues.add(q)
+        try:
+            for m in list(HUB.backlog) + list(HUB.latest.values()):
+                self.event(writer, m)
+            self.event(writer, {"t": "car",
+                                "up": self.broker.car_connected()})
+            await writer.drain()
+            while True:
+                try:
+                    m = await asyncio.wait_for(q.get(), 15)
+                except asyncio.TimeoutError:
+                    writer.write(b": ping\n\n")         # keeps it open
+                else:
+                    self.event(writer, m)
+                await writer.drain()
+        finally:
+            HUB.queues.discard(q)
+
+    async def handle(self, reader, writer):
+        try:
+            req = await asyncio.wait_for(reader.readline(), 10)
+            parts = req.decode(errors="replace").split()
+            if len(parts) < 2:
+                return
+            method, path = parts[0], parts[1].split("?")[0]
+            headers = {}
+            while True:
+                h = await asyncio.wait_for(reader.readline(), 10)
+                if h in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = h.decode(errors="replace").partition(":")
+                headers[k.strip().lower()] = v.strip()
+            length = int(headers.get("content-length", "0") or 0)
+            body = await reader.readexactly(length) if length else b""
+            if method == "GET" and path == "/":
+                with open(WEB_PAGE, "rb") as f:
+                    self.reply(writer, "200 OK", "text/html; charset=utf-8",
+                               f.read())
+            elif method == "GET" and path == "/events":
+                await self.feed(writer)
+            elif method == "POST" and path == "/key" \
+                    and headers.get("x-car") == "1":
+                ch = body.decode(errors="replace").strip()[:1].lower()
+                ok = bool(ch) and ch in KEYS and self.broker.key(ch)
+                self.reply(writer, "200 OK", "application/json",
+                           json.dumps({"ok": ok}).encode())
+            else:
+                self.reply(writer, "404 Not Found", "text/plain",
+                           b"not found")
+            await writer.drain()
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError,
+                ConnectionError, OSError, ValueError):
+            pass
+        finally:
+            writer.close()
+
+
 async def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--port", type=int, default=1883)
+    ap.add_argument("--web-port", type=int, default=8080,
+                    help="control page on http://localhost:<this>")
+    ap.add_argument("--no-browser", action="store_true",
+                    help="do not open the control page on start")
     ap.add_argument("--every", type=float, default=1.0,
                     help="seconds between status lines (0 = all); a state "
                          "change always prints")
@@ -389,13 +535,19 @@ async def main():
 
     broker = Broker(Viewer(args.every, args.csv))
     server = await asyncio.start_server(broker.handle, "0.0.0.0", args.port)
+    web = await asyncio.start_server(Web(broker).handle, "127.0.0.1",
+                                     args.web_port)
+    page = "http://localhost:%d" % args.web_port
     print("Buddy 1 MQTT broker + viewer")
     print("  this laptop: %s" % ", ".join(local_addresses()))
     print("  put the hotspot one in config/mqtt_config.h "
           "(UTK_MQTT_BROKER_ADDRESS)")
     print("  listening on 0.0.0.0:%d, Ctrl+C to stop" % args.port)
+    print("  control page: %s" % page)
     print("  keys for the car: l o b a c r = start a run, s = stop, "
           "p = print the c-run log (type it, then Enter)\n")
+    if not args.no_browser:
+        webbrowser.open(page)
 
     loop = asyncio.get_running_loop()
 
@@ -412,8 +564,8 @@ async def main():
                 print("  keys: %s" % " ".join(KEYS))
 
     threading.Thread(target=keyboard, daemon=True).start()
-    async with server:
-        await server.serve_forever()
+    async with server, web:
+        await asyncio.gather(server.serve_forever(), web.serve_forever())
 
 
 if __name__ == "__main__":

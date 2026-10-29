@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car 27 Control</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6676;
+    --line: #dde1e8; --accent: #2457c5; --ok: #1f8a4c; --warn: #b26a00;
+    --bad: #c62828; --btn: #eef2fa; --btn-hover: #dfe7f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #9aa3b2;
+      --line: #2c3340; --accent: #7aa2ff; --ok: #4cc27f; --warn: #f0a63a;
+      --bad: #ff6b6b; --btn: #232a36; --btn-hover: #2d3646;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0; }
+  .pill { padding: 3px 10px; border-radius: 999px; font-size: 13px;
+          font-weight: 600; border: 1px solid var(--line); }
+  .pill.up { color: var(--ok); border-color: var(--ok); }
+  .pill.down { color: var(--bad); border-color: var(--bad); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 10px; padding: 14px; }
+  h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .04em; }
+  .state { font-size: 28px; font-weight: 700; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+           margin-top: 10px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  .faults.bad { color: var(--bad); }
+  .buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  button { font: inherit; padding: 12px 8px; border-radius: 8px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--btn);
+           color: var(--text); text-align: left; }
+  button:hover { background: var(--btn-hover); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button b { display: block; font-size: 15px; }
+  button small { color: var(--muted); font-size: 12px; }
+  button.stop { grid-column: 1 / -1; background: var(--bad); color: #fff;
+                border-color: var(--bad); text-align: center; font-size: 20px;
+                font-weight: 700; padding: 16px; }
+  button.stop:disabled { opacity: .6; }
+  #note { margin-top: 8px; min-height: 1.4em; }
+  .log { height: 340px; overflow-y: auto; font: 12.5px/1.5 ui-monospace,
+         Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+  .log div { padding: 1px 0; border-bottom: 1px dashed var(--line); }
+  .k-event { color: var(--accent); }
+  .k-fault, .k-warn { color: var(--bad); }
+  .k-timing { color: var(--ok); font-weight: 600; }
+  .k-key { color: var(--warn); }
+  .k-status { color: var(--muted); }
+  .wide { grid-column: 1 / -1; }
+  label.tog { font-size: 13px; color: var(--muted); }
+  #timing div { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Car 27 control</h1>
+    <span id="car" class="pill down">car offline</span>
+    <span id="feed" class="muted">connecting to the viewer...</span>
+  </header>
+
+  <div class="grid">
+    <section>
+      <h2>Live status</h2>
+      <div class="state" id="state">-</div>
+      <div class="stats">
+        <div class="stat"><b id="dist">-</b><span>distance, mm</span></div>
+        <div class="stat"><b id="total">-</b><span>total, m</span></div>
+        <div class="stat"><b id="hdg">-</b><span>heading, deg</span></div>
+        <div class="stat"><b id="roll">-</b><span>roll, deg</span></div>
+        <div class="stat"><b id="sonar">-</b><span>sonar, mm</span></div>
+        <div class="stat"><b id="width">-</b><span>obstacle width, mm</span></div>
+        <div class="stat"><b id="ramp">-</b><span>highest ramp, mm</span></div>
+        <div class="stat"><b id="cmd">-</b><span>pending command</span></div>
+        <div class="stat"><b id="rate">-</b><span>status / s</span></div>
+      </div>
+      <div class="stat" style="margin-top:8px">
+        <b id="faults" class="faults">-</b><span>faults</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Run</h2>
+      <div class="buttons">
+        <button data-k="l"><b>Line + ramp</b><small>l, stops at 450 mm</small></button>
+        <button data-k="o"><b>Obstacle stop</b><small>o</small></button>
+        <button data-k="a"><b>Obstacle avoid</b><small>a, go round on the left</small></button>
+        <button data-k="b"><b>Barcode command</b><small>b, act at the cross</small></button>
+        <button data-k="r"><b>Barcode read</b><small>r, read only</small></button>
+        <button data-k="c"><b>Continuous course</b><small>c, no limit</small></button>
+        <button data-k="p"><b>Print c-run log</b><small>p, on the serial</small></button>
+        <button class="stop" data-k="s">STOP</button>
+      </div>
+      <div id="note" class="muted">Set the car on the line, then pick a run.</div>
+    </section>
+
+    <section>
+      <h2>Run timing</h2>
+      <div id="timing" class="muted">Shown when a run ends.</div>
+      <h2 style="margin-top:12px">Now</h2>
+      <div id="sys" class="muted">-</div>
+    </section>
+
+    <section>
+      <h2>Events</h2>
+      <div class="log" id="events"></div>
+    </section>
+
+    <section class="wide">
+      <h2>Viewer log
+        <label class="tog"><input type="checkbox" id="showStatus"> show status lines</label>
+      </h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var carUp = false;
+  var running = false;
+
+  function addLine(box, kind, text) {
+    var el = $(box);
+    var atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+    var d = document.createElement("div");
+    d.className = "k-" + kind;
+    d.textContent = text;
+    el.appendChild(d);
+    while (el.childNodes.length > 500) { el.removeChild(el.firstChild); }
+    if (atEnd) { el.scrollTop = el.scrollHeight; }
+  }
+
+  function setCar(up) {
+    carUp = up;
+    $("car").textContent = up ? "car online" : "car offline";
+    $("car").className = "pill " + (up ? "up" : "down");
+    refreshButtons();
+  }
+
+  function refreshButtons() {
+    var btns = document.querySelectorAll("button[data-k]");
+    for (var i = 0; i < btns.length; i++) {
+      var k = btns[i].getAttribute("data-k");
+      var stopKey = (k === "s");
+      var p = (k === "p");
+      btns[i].disabled = !carUp || (stopKey ? !running : (running && !p));
+    }
+  }
+
+  function showStatus(s) {
+    running = s.running;
+    $("state").textContent = s.state;
+    $("dist").textContent = s.dist;
+    $("total").textContent = s.total_m.toFixed(2);
+    $("hdg").textContent = s.hdg.toFixed(2);
+    $("roll").textContent = s.roll.toFixed(2);
+    $("sonar").textContent = s.sonar < 0 ? "-" : s.sonar;
+    $("width").textContent = s.width ? s.width : "-";
+    $("ramp").textContent = s.ramp + (s.on_ramp ? " (on it)" : "");
+    $("cmd").textContent = s.cmd;
+    $("rate").textContent = s.rate ? s.rate.toFixed(1) : "-";
+    $("faults").textContent = s.faults;
+    $("faults").className = "faults" + (s.fault_bits ? " bad" : "");
+    refreshButtons();
+  }
+
+  function showSys(m) {
+    $("sys").textContent = "motion loop " + m.rate + "/s, longest pass " +
+      m.pass + " us, busy " + m.busy_pct.toFixed(1) + "%; controller " +
+      m.samples + " samples/s, longest gap this run " + m.gap +
+      " ms; status drops " + m.drops;
+  }
+
+  function handle(m) {
+    if (m.t === "status") { showStatus(m); }
+    else if (m.t === "sys") { showSys(m); }
+    else if (m.t === "car") { setCar(m.up); }
+    else if (m.t === "line") {
+      if (m.kind === "event" || m.kind === "fault") {
+        addLine("events", m.kind, m.text);
+      }
+      if (m.kind === "timing") {
+        var t = $("timing");
+        if (t.className === "muted") { t.textContent = ""; t.className = ""; }
+        var d = document.createElement("div");
+        d.className = "k-timing";
+        d.textContent = m.text;
+        t.insertBefore(d, t.firstChild);
+      }
+      if (m.kind !== "status" || $("showStatus").checked) {
+        addLine("log", m.kind, m.text);
+      }
+    }
+  }
+
+  function connect() {
+    var es = new EventSource("/events");
+    es.onopen = function () { $("feed").textContent = "viewer connected"; };
+    es.onmessage = function (e) {
+      try { handle(JSON.parse(e.data)); } catch (err) { /* skip bad line */ }
+    };
+    es.onerror = function () {
+      $("feed").textContent = "viewer not reachable, retrying (is mqtt_viewer.py running?)";
+      setCar(false);
+    };
+  }
+
+  function send(k) {
+    $("note").textContent = "sending '" + k + "'...";
+    fetch("/key", { method: "POST", headers: { "X-Car": "1" }, body: k })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        $("note").textContent = j.ok ? "sent '" + k + "' to the car"
+          : "not sent: the car is not connected";
+      })
+      .catch(function () { $("note").textContent = "not sent: viewer not reachable"; });
+  }
+
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-k]");
+    if (b && !b.disabled) { send(b.getAttribute("data-k")); }
+  });
+  refreshButtons();
+  connect();
+})();
+</script>
+</body>
+</html>
