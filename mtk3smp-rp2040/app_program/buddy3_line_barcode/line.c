@@ -76,6 +76,13 @@
 /* steering mm/s = heading x0.01 deg / 20 */
 #define HOLD_GAIN_DIV        20
 #define HOLD_CORR_MAX_MM_S   30
+/* Barcode hold (line_set_straight): the left IR is ~130 mm ahead of the
+ * axle, so the +/-8 deg weave swings it ~+/-18 mm across a 24 mm white gap
+ * and it kept leaving the bars (A4 reads with 19-53 mm "spaces", 29 Oct).
+ * While a read is in progress the car drives straight along the line's
+ * direction instead, then follows on at once (no search: the line is
+ * straight under every barcode). Never longer than this: */
+#define STRAIGHT_MAX_MM      400
 /* Line direction: the encoder heading averaged over ~LINE_DIR_MM of
  * following, so the weave and a knock just before the ramp (the IR
  * bracket hits it first) do not set the direction the ramp is held on */
@@ -93,6 +100,7 @@ static volatile uint8_t g_end = LINE_END_NONE;
 static volatile uint8_t g_stop_req = 0u;
 static volatile uint32_t g_recoveries = 0u;
 static volatile uint8_t g_hold = 0u;
+static volatile uint8_t g_straight = 0u;
 static volatile int32_t g_line_dir = 0;     /* published for the controller */
 
 static line_trace_t g_trace[LINE_TRACE_LEN];
@@ -250,6 +258,9 @@ line_task_main(INT stacd, void *exinf)
     bool b_c_on;
     bool b_r_on;
     bool b_holding;
+    bool b_straight;
+    int32_t str_dir;
+    int32_t str_start;
     int32_t hold_until;
     bool b_after_hold;
     int32_t hold_dir = 0;
@@ -274,6 +285,9 @@ line_task_main(INT stacd, void *exinf)
         both_since = -1;
         r_since = -1;
         b_junc_ok = false;
+        b_straight = false;
+        str_dir = 0;
+        str_start = 0;
         b_holding = false;
         b_after_hold = false;
         hold_until = -1;
@@ -320,6 +334,40 @@ line_task_main(INT stacd, void *exinf)
                 }
                 r_since = -1;
                 b_junc_ok = false;
+            }
+
+            /* Barcode hold: straight along the line's direction while the
+             * barcode task reads (the ramp hold below takes precedence) */
+            if ((0u != g_straight) && (!b_holding)
+                && ((!b_straight) || ((d - str_start) <= STRAIGHT_MAX_MM)))
+            {
+                if (!b_straight)
+                {
+                    b_straight = true;
+                    str_dir = line_dir;
+                    str_start = d;
+                }
+                target = (str_dir - heading_cdeg()) / HOLD_GAIN_DIV;
+                target = (target > HOLD_CORR_MAX_MM_S) ? HOLD_CORR_MAX_MM_S
+                       : ((target < -HOLD_CORR_MAX_MM_S) ? -HOLD_CORR_MAX_MM_S
+                                                          : target);
+                corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
+                      : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S
+                                                          : (target - corr));
+                (void)motion_set_velocity((int16_t)(base - corr),
+                                          (int16_t)(base + corr));
+                prev_d = d;
+                trace(d, corr, 0, bits, LINE_TR_HOLD, LINE_TR_NO_OFF);
+                tk_dly_tsk(LINE_PERIOD_MS);
+                continue;
+            }
+            if (b_straight && (0u == g_straight))
+            {
+                /* Read over: follow on from the edge as before */
+                b_straight = false;
+                run = 0;
+                prev_off = 0;
+                white_since = -1;
             }
 
             /* Ramp hold: drive along the line's direction on the encoders,
@@ -595,6 +643,7 @@ line_follow_start(int16_t base_mm_s, int16_t max_mm)
     g_trace_n = 0u;
     g_end = LINE_END_NONE;
     g_hold = 0u;
+    g_straight = 0u;
     fault_clear(FAULT_LINE_LOST);
     motion_reset_odometry();
     return tk_set_flg(g_line_flg, LINE_FLG_RUN);
@@ -617,6 +666,12 @@ void
 line_set_hold(bool b_hold)
 {
     g_hold = b_hold ? 1u : 0u;
+}
+
+void
+line_set_straight(bool b_on)
+{
+    g_straight = b_on ? 1u : 0u;
 }
 
 uint8_t

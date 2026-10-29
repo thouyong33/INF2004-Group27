@@ -84,6 +84,14 @@ void line_follow_stop(void);
 void line_set_hold(bool b_hold);
 
 /**
+ * @brief Barcode hold: while set, drive straight along the line's direction
+ * (at most 400 mm), then follow on at once. Set by the barcode task from
+ * the first bar of a read until it ends, so the left IR crosses the code
+ * on one straight path. The ramp hold takes precedence.
+ */
+void line_set_straight(bool b_on);
+
+/**
  * @brief The line's direction: the encoder heading averaged over the last
  * ~100 mm followed, x0.01 deg, left positive, since following started.
  */

@@ -13,6 +13,7 @@
 #include "ir_sensor.h"
 #include "barcode.h"
 #include "barcode_scan.h"
+#include "line.h"
 
 /* Lowest of the car's tasks: the ADC poll is short, and a few ms late
  * only repeats one reading over the steps passed meanwhile */
@@ -186,6 +187,7 @@ bcs_task_main(INT stacd, void *exinf)
                 /* Odometry was reset (line following restarted) */
                 last = s;
                 b_capturing = false;
+                line_set_straight(false);
                 lead_n = 0u;
                 continue;
             }
@@ -225,6 +227,7 @@ bcs_task_main(INT stacd, void *exinf)
                         bar_run = 0u;
                         min_bar = 0xFFFFu;
                         cap_start = k;
+                        line_set_straight(true);
                     }
                     else
                     {
@@ -263,6 +266,7 @@ bcs_task_main(INT stacd, void *exinf)
                 }
                 if ((quiet >= quiet_need) || (n >= BCS_LEN))
                 {
+                    line_set_straight(false);
                     finish(n, quiet,
                            (cap_start - last_end) >= ARM_CLEAR_STEPS);
                     last_end = k;
@@ -338,6 +342,7 @@ barcode_scan_enable(bool b_on)
     else
     {
         (void)tk_clr_flg(g_bcs_flg, (UINT)~BCS_FLG_RUN);
+        line_set_straight(false);           /* a read in progress is dropped */
     }
 }
 
