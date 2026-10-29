@@ -48,8 +48,12 @@
  * "centre on the white" or straight. */
 #define LINE_R_ONLY_MAX_MM   35
 #define LINE_R_DEV_MAX_CDEG  500
-/* centre white this far (steering left): lost */
-#define LINE_LOST_MM         40
+/* Centre white this far (steering left): lost. 40 mm was shorter than a
+ * normal swing: after a right swing the left steering only turns the car
+ * back after ~40 mm, so nearly every swing ended in a stop and an on-spot
+ * search, a pause and a fresh, larger swing (ctrl_course_v23 traces, 29
+ * Oct: C white 42 mm with the heading just back to -2 deg each time). */
+#define LINE_LOST_MM         120
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
  * toward the side the line was last seen, so a perpendicular junction arm
