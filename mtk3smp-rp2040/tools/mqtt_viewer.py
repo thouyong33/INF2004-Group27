@@ -9,6 +9,11 @@ publishes:
     car27/online   "1" on connect, "0" (its last will) if it drops off
     car27/status   18-byte status snapshot, 5 Hz
     car27/event    14-byte controller event, one per event
+    car27/sys      14-byte timing figures, once a second
+
+and listens on car27/cmd: type a key here and press Enter to send it, the
+same keys as the serial menu (l o b a c r to start a run, s to stop, p to
+print a continuous run's log).
 
 The byte layouts are in app_program/buddy1_telemetry/tel_source.h. Other
 MQTT clients (MQTT Explorer, a phone app, mosquitto_sub) can connect too
@@ -33,6 +38,7 @@ import csv
 import socket
 import struct
 import sys
+import threading
 import time
 
 STATES = ["IDLE", "START", "FOLLOW", "RAMP", "DONE", "OBSTACLE", "IMPACT",
@@ -47,6 +53,9 @@ COMMANDS = ["none", "left", "right", "straight", "U-turn"]
 
 STATUS_FMT = "<BBBBhhhhhBBH"      # 18 bytes
 EVENT_FMT = "<IiBBhH"             # 14 bytes
+SYS_FMT = "<HIHHHH"               # 14 bytes
+RUN_STATES = (1, 2, 3, 5, 8)      # START FOLLOW RAMP OBSTACLE TURN
+KEYS = "lobacrsp"
 
 
 def name(table, i):
@@ -90,6 +99,7 @@ class Viewer:
         self.last_state = None
         self.status_count = 0
         self.first_status = None
+        self.run = None               # timing seen during the current run
         self.writer = None
         if csv_path:
             self.file = open(csv_path, "w", newline="")
@@ -112,6 +122,10 @@ class Viewer:
             self.status(struct.unpack(STATUS_FMT, payload))
         elif topic == "car27/event" and len(payload) == 14:
             self.event(struct.unpack(EVENT_FMT, payload))
+        elif topic == "car27/sys" and len(payload) == 14:
+            self.sys(struct.unpack(SYS_FMT, payload))
+        elif topic == "car27/cmd":
+            pass                                  # our own keys
         elif topic.startswith("car27/"):
             print("%s  %s: %d bytes %s" % (stamp(), topic, len(payload),
                                            payload.hex()))
@@ -124,6 +138,11 @@ class Viewer:
         if self.first_status is None:
             self.first_status = now
         self.log("status", list(v))
+        if state in RUN_STATES and self.run is None:
+            self.run = {"rate": None, "pass": 0, "busy": 0, "gap": 0,
+                        "samples": None}
+        elif state not in RUN_STATES and self.run is not None:
+            self.run_summary()
         changed = state != self.last_state
         if not changed and self.every > 0 and now - self.last_print \
                 < self.every:
@@ -142,6 +161,34 @@ class Viewer:
                  " RAMP" if flags & 1 else "",
                  " cmd=" + name(COMMANDS, cmd) if cmd else "",
                  fault_text(faults), rate))
+
+    def sys(self, v):
+        rate, busy, pass_us, samples, gap, drops = v
+        self.log("sys", list(v))
+        r = self.run
+        if r is None:
+            return
+        r["rate"] = rate if r["rate"] is None else min(r["rate"], rate)
+        r["pass"] = max(r["pass"], pass_us)
+        r["busy"] = max(r["busy"], busy)
+        r["gap"] = max(r["gap"], gap)
+        if samples:                       # 0 in the second the run starts
+            r["samples"] = samples if r["samples"] is None \
+                else min(r["samples"], samples)
+        r["drops"] = drops
+
+    def run_summary(self):
+        r = self.run
+        self.run = None
+        if r["rate"] is None:
+            return
+        print("%s  run timing (Wi-Fi on): motion loop at least %d/s "
+              "(1000 = every 1 ms), longest pass %d us, busy up to %.1f%%; "
+              "controller at least %s samples/s (50 = every 20 ms), longest "
+              "gap %d ms; status drops so far %d"
+              % (stamp(), r["rate"], r["pass"], r["busy"] / 10000.0,
+                 r["samples"] if r["samples"] is not None else "-",
+                 r["gap"], r.get("drops", 0)))
 
     def event(self, v):
         t_ms, d_mm, etype, arg, val, idx = v
@@ -176,6 +223,16 @@ class Broker:
             if i >= len(t) or (part != "+" and part != t[i]):
                 return False
         return len(f) == len(t)
+
+    def car_connected(self):
+        return any(s.client_id == "car27" for s in self.sessions)
+
+    def key(self, ch):
+        if not self.car_connected():
+            print("%s  car not connected: '%s' not sent" % (stamp(), ch))
+            return
+        print("%s  -> sent '%s' to the car" % (stamp(), ch))
+        self.route("car27/cmd", ch.encode(), False)
 
     def route(self, topic, payload, retain, sender=None):
         if retain:
@@ -336,7 +393,25 @@ async def main():
     print("  this laptop: %s" % ", ".join(local_addresses()))
     print("  put the hotspot one in config/mqtt_config.h "
           "(UTK_MQTT_BROKER_ADDRESS)")
-    print("  listening on 0.0.0.0:%d, Ctrl+C to stop\n" % args.port)
+    print("  listening on 0.0.0.0:%d, Ctrl+C to stop" % args.port)
+    print("  keys for the car: l o b a c r = start a run, s = stop, "
+          "p = print the c-run log (type it, then Enter)\n")
+
+    loop = asyncio.get_running_loop()
+
+    def keyboard():
+        while True:
+            try:
+                line = input()
+            except (EOFError, OSError):
+                return
+            ch = line.strip()[:1].lower()
+            if ch in KEYS and ch:
+                loop.call_soon_threadsafe(broker.key, ch)
+            elif ch:
+                print("  keys: %s" % " ".join(KEYS))
+
+    threading.Thread(target=keyboard, daemon=True).start()
     async with server:
         await server.serve_forever()
 

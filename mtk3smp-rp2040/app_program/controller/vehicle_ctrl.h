@@ -141,6 +141,14 @@ void ctrl_get_status(robot_status_t *p_st);
 /** @brief Copy the run's latest events (oldest first); returns the count. */
 uint32_t ctrl_log_get(ctrl_log_t *p_out);
 
+/** @brief Sensor samples taken while following (every CTRL_PERIOD_MS,
+ * 20 ms), counted since boot: the rate is the change per second. */
+uint32_t ctrl_sample_count(void);
+
+/** @brief Longest gap between two samples this run, ms (timing
+ * evidence: 20 means the controller never fell behind). */
+uint32_t ctrl_sample_gap_max_ms(void);
+
 /** @brief Events logged this run so far, overwritten ones included. */
 uint32_t ctrl_log_count(void);
 

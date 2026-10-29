@@ -14,6 +14,12 @@
  * Event, TEL_EVENT_LEN bytes (ctrl_log_t):
  *   0 t_ms (uint32), 4 d_mm (int32), 8 type, 9 arg, 10 val (int16),
  *   12 index in the run (uint16)
+ * System, TEL_SYS_LEN bytes, once a second (timing evidence):
+ *   0 motion loops in the last second (uint16, 1000 = on time),
+ *   2 motion busy us per second (uint32), 6 its longest pass, us (uint16),
+ *   8 controller samples in the last second (uint16, 50 while following),
+ *   10 its longest sample gap this run, ms (uint16),
+ *   12 status publishes dropped since boot (uint16)
  */
 
 #ifndef BUDDY1_TEL_SOURCE_H
@@ -25,6 +31,7 @@
 #define TEL_STATUS_LEN    18u
 #define TEL_EVENT_LEN     14u
 #define TEL_EVENT_KEPT    64u   /**< = CTRL_LOG_LEN */
+#define TEL_SYS_LEN       14u
 
 /** @brief Pack the controller's status snapshot. */
 void tel_status_pack(uint8_t p_out[TEL_STATUS_LEN]);
@@ -35,5 +42,13 @@ uint32_t tel_event_count(void);
 /** @brief Pack event idx of this run; false if not available (not logged
  * yet, or overwritten in the rolling log). */
 bool tel_event_pack(uint32_t idx, uint8_t p_out[TEL_EVENT_LEN]);
+
+/** @brief Pack the timing figures; call once a second (the controller's
+ * rate is the change in its sample count since the last call). */
+void tel_sys_pack(uint8_t p_out[TEL_SYS_LEN], uint32_t drops);
+
+/** @brief Raise (true) or clear FAULT_WIFI_LOSS. The car drives on: the
+ * controller only logs this fault. */
+void tel_wifi_loss(bool b_lost);
 
 #endif /* BUDDY1_TEL_SOURCE_H */

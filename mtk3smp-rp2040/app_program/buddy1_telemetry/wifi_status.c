@@ -134,6 +134,9 @@ LOCAL void wifi_status_task(INT stacd, void *exinf)
                           " every 2 s; sent status=%u events=%u"
                           " drops=%u\n", mq.last_result,
                           mq.status_sent, mq.events_sent, mq.drops);
+            } else if(mq.connects != 0U) {
+                tm_printf((UB *)"[mqtt] Wi-Fi lost: rejoining the hotspot"
+                          " every 5 s, the car drives on\n");
             } else {
                 /* no address yet: the [wifi] lines say why */
             }

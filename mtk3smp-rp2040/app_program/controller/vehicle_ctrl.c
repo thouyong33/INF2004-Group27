@@ -75,7 +75,7 @@ static volatile uint8_t g_running = 0u;
 static volatile int16_t g_after_mm = 0;
 static bool g_b_imu_ok = false;
 
-static robot_status_t g_status;
+static robot_status_t g_status = { .obstacle_mm = -1 };  /* no ping */
 static int16_t g_obst_width = 0;
 static uint8_t g_max_ramp = 0u;
 static crit_lock_t g_status_lock;
@@ -85,6 +85,8 @@ static volatile uint32_t g_log_n = 0u;      /* events logged this run */
 static int32_t g_dist_base = 0;             /* run distance before this
                                                following segment, mm */
 static uint32_t g_t0 = 0u;
+static volatile uint32_t g_samples = 0u;   /* sensor samples, ever */
+static volatile uint32_t g_gap_max_ms = 0u;   /* longest, this run */
 
 static uint32_t
 now_ms(void)
@@ -710,6 +712,7 @@ ctrl_task_main(INT stacd, void *exinf)
         opts = g_opts;
         g_t0 = now_ms();
         g_log_n = 0u;
+        g_gap_max_ms = 0u;
         while (E_OK == ctrl_evt_wait(&evt, TMO_POL))
         {
             /* stale events from the last run */
@@ -918,6 +921,11 @@ ctrl_task_main(INT stacd, void *exinf)
             {
                 continue;
             }
+            if ((t - t_sample) > g_gap_max_ms)
+            {
+                g_gap_max_ms = t - t_sample;
+            }
+            g_samples++;
             t_sample = t;
             d = dist_mm();
             hdg = heading_cdeg();
@@ -1226,6 +1234,18 @@ ctrl_log_get(ctrl_log_t *p_out)
         p_out[i - first] = g_log[i % CTRL_LOG_LEN];
     }
     return n - first;
+}
+
+uint32_t
+ctrl_sample_count(void)
+{
+    return g_samples;
+}
+
+uint32_t
+ctrl_sample_gap_max_ms(void)
+{
+    return g_gap_max_ms;
 }
 
 uint32_t

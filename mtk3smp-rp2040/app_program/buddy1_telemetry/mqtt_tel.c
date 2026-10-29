@@ -6,7 +6,13 @@
  * cyw43_utk_app_poll() is called on each of its 2 ms polls, and lwIP's
  * callbacks come from inside that same poll. Publishing is QoS 0: a lost
  * status is replaced by the next one 200 ms later. An event that does not
- * fit the output buffer stays queued and goes on a later poll.
+ * fit the output buffer stays queued and goes on a later poll, so events
+ * logged while the broker is away are sent when it is back (the latest
+ * TEL_EVENT_KEPT of them).
+ *
+ * Keys typed on the laptop arrive on car27/cmd and go into the console
+ * input (remote_keys.h). Once connected, losing the broker for longer
+ * than MQTT_TEL_LOSS_MS raises FAULT_WIFI_LOSS; reconnecting clears it.
  */
 
 #if TM_WIFI_MQTT
@@ -24,15 +30,20 @@
 #include "mqtt_config.h"
 #include "buddy1_telemetry/mqtt_tel.h"
 #include "buddy1_telemetry/tel_source.h"
+#include "common/remote_keys.h"
 
 #define MQTT_TEL_STATUS_MS     200u    /* 5 Hz */
+#define MQTT_TEL_SYS_MS        1000u
 #define MQTT_TEL_RETRY_MS      2000u
+#define MQTT_TEL_LOSS_MS       3000u   /* broker gone this long: fault */
 #define MQTT_TEL_KEEPALIVE_S   10u
 #define MQTT_TEL_EVT_PER_POLL  4u
 
 #define MQTT_TEL_TOPIC_ONLINE  "car27/online"
 #define MQTT_TEL_TOPIC_STATUS  "car27/status"
 #define MQTT_TEL_TOPIC_EVENT   "car27/event"
+#define MQTT_TEL_TOPIC_SYS     "car27/sys"
+#define MQTT_TEL_TOPIC_CMD     "car27/cmd"
 
 void cyw43_utk_app_poll(struct netif *p_netif);
 
@@ -52,11 +63,39 @@ static mqtt_client_t *gp_client = NULL;
 static ip_addr_t g_broker;
 static bool g_b_have_broker = false;
 static bool g_b_tried = false;
+static bool g_b_was_up = false;       /* connected at least once */
+static bool g_b_loss = false;         /* FAULT_WIFI_LOSS raised */
 static uint32_t g_try_ms = 0u;
+static uint32_t g_down_ms = 0u;       /* when the connection was lost */
 static uint32_t g_status_ms = 0u;
+static uint32_t g_sys_ms = 0u;
 static uint32_t g_evt_next = 0u;      /* next event index of the run */
 static volatile mqtt_tel_info_t g_info = { MQTT_TEL_ST_NO_IP, 0, 0u, 0u,
                                            0u, 0u };
+
+static void
+on_cmd_topic(void *p_arg, const char *p_topic, u32_t tot_len)
+{
+    (void)p_arg;
+    (void)p_topic;                    /* car27/cmd is the only subscription */
+    (void)tot_len;
+}
+
+static void
+on_cmd_data(void *p_arg, const u8_t *p_data, u16_t len, u8_t flags)
+{
+    u16_t i;
+
+    (void)p_arg;
+    (void)flags;
+    for (i = 0u; i < len; i++)
+    {
+        if ((p_data[i] >= (u8_t)'a') && (p_data[i] <= (u8_t)'z'))
+        {
+            console_inject(p_data[i]);
+        }
+    }
+}
 
 static void
 on_connection(mqtt_client_t *p_client, void *p_arg,
@@ -68,14 +107,37 @@ on_connection(mqtt_client_t *p_client, void *p_arg,
     {
         g_info.state = MQTT_TEL_ST_UP;
         g_info.connects++;
+        g_b_was_up = true;
+        if (g_b_loss)
+        {
+            g_b_loss = false;
+            tel_wifi_loss(false);
+        }
         (void)mqtt_publish(p_client, MQTT_TEL_TOPIC_ONLINE, "1", 1u, 0u, 1u,
                            NULL, NULL);
+        mqtt_set_inpub_callback(p_client, on_cmd_topic, on_cmd_data, NULL);
+        (void)mqtt_subscribe(p_client, MQTT_TEL_TOPIC_CMD, 0u, NULL, NULL);
     }
     else
     {
         /* refused, timed out or dropped: try again after the pause */
+        if (MQTT_TEL_ST_UP == g_info.state)
+        {
+            g_down_ms = sys_now();
+        }
         g_info.state = MQTT_TEL_ST_RETRY;
         g_try_ms = sys_now();
+    }
+}
+
+static void
+check_loss(uint32_t now)
+{
+    if (g_b_was_up && !g_b_loss && (MQTT_TEL_ST_UP != g_info.state)
+        && ((now - g_down_ms) >= MQTT_TEL_LOSS_MS))
+    {
+        g_b_loss = true;
+        tel_wifi_loss(true);          /* logged; the car drives on */
     }
 }
 
@@ -113,7 +175,10 @@ publish_status(uint32_t now)
     {
         return;
     }
-    g_status_ms = now;
+    /* keep to the 200 ms grid (a poll's lateness is not added each time)
+       unless far behind, e.g. after a reconnect */
+    g_status_ms = ((now - g_status_ms) < (2u * MQTT_TEL_STATUS_MS))
+                  ? (g_status_ms + MQTT_TEL_STATUS_MS) : now;
     tel_status_pack(buf);
     if (ERR_OK == mqtt_publish(gp_client, MQTT_TEL_TOPIC_STATUS, buf,
                                (u16_t)TEL_STATUS_LEN, 0u, 0u, NULL, NULL))
@@ -124,6 +189,21 @@ publish_status(uint32_t now)
     {
         g_info.drops++;
     }
+}
+
+static void
+publish_sys(uint32_t now)
+{
+    uint8_t buf[TEL_SYS_LEN];
+
+    if ((now - g_sys_ms) < MQTT_TEL_SYS_MS)
+    {
+        return;
+    }
+    g_sys_ms = now;
+    tel_sys_pack(buf, g_info.drops);
+    (void)mqtt_publish(gp_client, MQTT_TEL_TOPIC_SYS, buf,
+                       (u16_t)TEL_SYS_LEN, 0u, 0u, NULL, NULL);
 }
 
 static void
@@ -164,13 +244,18 @@ cyw43_utk_app_poll(struct netif *p_netif)
 {
     uint32_t now = sys_now();
 
+    check_loss(now);
     if (!netif_is_up(p_netif) || !netif_is_link_up(p_netif)
         || ip4_addr_isany_val(*netif_ip4_addr(p_netif)))
     {
-        if (MQTT_TEL_ST_UP != g_info.state)
+        if (MQTT_TEL_ST_UP == g_info.state)
         {
-            g_info.state = MQTT_TEL_ST_NO_IP;
+            /* link gone: close now rather than wait out the keep-alive
+               (the broker then sends the last will) */
+            mqtt_disconnect(gp_client);
+            g_down_ms = now;
         }
+        g_info.state = MQTT_TEL_ST_NO_IP;
         return;
     }
     if (NULL == gp_client)
@@ -191,6 +276,7 @@ cyw43_utk_app_poll(struct netif *p_netif)
         return;
     }
     publish_status(now);
+    publish_sys(now);
     publish_events();
 }
 

@@ -8,6 +8,8 @@
  */
 
 #include "controller/vehicle_ctrl.h"
+#include "buddy2_motion/motion_task.h"
+#include "common/faults.h"
 #include "buddy1_telemetry/tel_source.h"
 
 static void
@@ -66,4 +68,35 @@ tel_event_pack(uint32_t idx, uint8_t p_out[TEL_EVENT_LEN])
     put16(&p_out[10], (uint16_t)e.val);
     put16(&p_out[12], (uint16_t)idx);
     return true;
+}
+
+void
+tel_sys_pack(uint8_t p_out[TEL_SYS_LEN], uint32_t drops)
+{
+    static uint32_t s_prev_samples = 0u;
+    uint32_t samples = ctrl_sample_count();
+    uint32_t busy = 0u;
+    uint32_t pass = 0u;
+
+    motion_get_cpu(&busy, &pass);
+    put16(&p_out[0], (uint16_t)motion_loop_rate());
+    put32(&p_out[2], busy);
+    put16(&p_out[6], (uint16_t)pass);
+    put16(&p_out[8], (uint16_t)(samples - s_prev_samples));
+    put16(&p_out[10], (uint16_t)ctrl_sample_gap_max_ms());
+    put16(&p_out[12], (uint16_t)drops);
+    s_prev_samples = samples;
+}
+
+void
+tel_wifi_loss(bool b_lost)
+{
+    if (b_lost)
+    {
+        fault_set(FAULT_WIFI_LOSS);
+    }
+    else
+    {
+        fault_clear(FAULT_WIFI_LOSS);
+    }
 }

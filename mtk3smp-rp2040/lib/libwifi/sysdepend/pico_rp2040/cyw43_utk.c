@@ -47,6 +47,9 @@ extern void cyw43_utk_app_poll(struct netif *netif);
 #define CYW43_JOIN_TIMEOUT_US 30000000ULL
 #define CYW43_DHCP_TIMEOUT_US 30000000ULL
 #define CYW43_DNS_TIMEOUT_US  30000000ULL
+/* Buddy 1: a lost link is rejoined at this interval (the firmware does
+ * not rejoin by itself once the hotspot has gone). */
+#define CYW43_REJOIN_US        5000000ULL
 
 #if TM_WIFI_JOIN
 #include "wifi_credentials.h"
@@ -458,6 +461,9 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #if TM_WIFI_JOIN
     uint64_t join_started_us = 0;
 #endif
+#if TM_WIFI_JOIN && TM_WIFI_MQTT
+    uint64_t lost_us = 0;
+#endif
 
     (void)stacd;
     (void)exinf;
@@ -603,6 +609,27 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
                 mp_memory_barrir();
                 radio_status.join_complete = 1;
             }
+        }
+#endif
+#if TM_WIFI_JOIN && TM_WIFI_MQTT
+        /* Rejoin after the first join: the car drives out of range or
+         * the hotspot restarts. lwIP renews the DHCP lease when the
+         * link comes back up. */
+        if(radio_status.join_complete && !radio_status.link_up) {
+            uint64_t now = time_us_64();
+
+            if(lost_us == 0) {
+                lost_us = now;
+            } else if(now - lost_us >= CYW43_REJOIN_US) {
+                lost_us = now;
+                (void)cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+                radio_status.join_request_result = cyw43_wifi_join(
+                        &cyw43_state, sizeof(wifi_ssid) - 1, wifi_ssid,
+                        sizeof(wifi_password) - 1, wifi_password,
+                        UTK_WIFI_AUTH, NULL, CYW43_CHANNEL_NONE);
+            }
+        } else {
+            lost_us = 0;
         }
 #endif
         status_publish_end();

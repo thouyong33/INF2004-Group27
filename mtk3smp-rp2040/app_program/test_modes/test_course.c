@@ -110,6 +110,7 @@ void ctrl_test_course(void)
     static bc_elem_t bel[BC_MAX_ELEMS];
     robot_status_t st;
     INT run, c, n, i, k, ns;
+    uint32_t rate, rate_min, pass, pass_max;
     UB opts;
     ER er;
 
@@ -159,6 +160,8 @@ void ctrl_test_course(void)
             continue;
         }
         ns = 0;
+        rate_min = 0xFFFFFFFFu;
+        pass_max = 0u;
         if(c == 'c') {
             tm_printf((UB *)"[CTRL] continuous run started: the serial wire can"
                             " be unplugged now. Press s to stop (or lift the"
@@ -173,6 +176,11 @@ void ctrl_test_course(void)
                     ctrl_stop();
                 }
                 tk_dly_tsk(20);
+                /* timing evidence: worst motion second of the run */
+                rate = motion_loop_rate();
+                motion_get_cpu(NULL, &pass);
+                rate_min = (rate < rate_min) ? rate : rate_min;
+                pass_max = (pass > pass_max) ? pass : pass_max;
             }
             /* rolling: the latest CTRLT_SNAPS are printed */
             ctrl_get_status(&snaps[ns % CTRLT_SNAPS]);
@@ -206,6 +214,11 @@ void ctrl_test_course(void)
                       st.obstacle_width_mm);
         }
         tm_printf((UB *)"\n");
+        tm_printf((UB *)"[CTRL]   TIMING: motion loop at least %u/s"
+                  " (1000 = every 1 ms), longest pass %u us;"
+                  " controller longest sample gap %u ms (period 20)\n",
+                  (UINT)rate_min, (UINT)pass_max,
+                  (UINT)ctrl_sample_gap_max_ms());
         n = (INT)ctrl_log_get(lg);
         tm_printf((UB *)"[CTRL]   events (t_ms, d_mm, event, arg, val):\n");
         for(i = 0; i < n; i++) {
