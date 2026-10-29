@@ -18,13 +18,21 @@
 #define LINE_FLG_RUN         (1u << 0)
 
 #define LINE_PERIOD_MS       20u     /* = the PI period */
-/* Right-edge following gains. The first runs (40 + 6/period trim, then
- * 25 + 1/period) swung or weaved; now the steering starts at LINE_KP and
- * grows by LINE_KI per period while it stays on one side (curves), capped
- * at LINE_SIDE_MAX, and restarts whenever the side changes. A 15 cm radius
- * curve at 100 mm/s needs ~75 mm/s between the wheels, i.e. ~38 each way. */
-#define LINE_KP_MM_S         20
-#define LINE_KI_MM_S         2
+/* Right-edge following by heading (29 Oct). Steering straight from the
+ * IR reading (a wheel speed difference starting at 20 mm/s and growing 2
+ * per period on one side) turned back late at every side change: each
+ * swing grew (-23 then +13..+20 deg, ctrl_course_v25) and the car left
+ * the mat; the old 40 mm lost-line stop had been damping it. Now each
+ * reading picks a target heading just to one side of the line's direction
+ * (line_dir, the heading averaged over LINE_DIR_MM): C black -> right of
+ * it, C white -> left, by LINE_BIAS_CDEG, growing LINE_BIAS_GROW_CDEG a
+ * period while on the same side (curves) up to LINE_BIAS_MAX_CDEG. The
+ * wheel difference is the heading error / LINE_HDG_GAIN_DIV: at a side
+ * change the error flips at once, so the car turns back at once. */
+#define LINE_BIAS_CDEG       300
+#define LINE_BIAS_GROW_CDEG  15
+#define LINE_BIAS_MAX_CDEG   4500
+#define LINE_HDG_GAIN_DIV    15      /* mm/s per 0.15 deg of heading error */
 #define LINE_TRIM_MAX_MM_S   60      /* one side's steering cap */
 #define LINE_CORR_MAX_MM_S   120     /* the hard-right case (line under R) */
 #define LINE_SLEW_MM_S       15      /* max steering change per period */
@@ -49,11 +57,9 @@
 #define LINE_R_ONLY_MAX_MM   35
 #define LINE_R_DEV_MAX_CDEG  500
 /* Centre white this far (steering left): lost. 40 mm was shorter than a
- * normal swing: after a right swing the left steering only turns the car
- * back after ~40 mm, so nearly every swing ended in a stop and an on-spot
- * search, a pause and a fresh, larger swing (ctrl_course_v23 traces, 29
- * Oct: C white 42 mm with the heading just back to -2 deg each time). */
-#define LINE_LOST_MM         120
+ * swing under the old steering (ctrl_course_v23); with heading steering
+ * the swings are short, so 60 mm leaves room without driving far blind. */
+#define LINE_LOST_MM         60
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
  * toward the side the line was last seen, so a perpendicular junction arm
@@ -239,6 +245,8 @@ line_task_main(INT stacd, void *exinf)
     int32_t r_since;
     bool b_junc_ok;
     int32_t target;
+    int32_t bias;
+    int32_t lim;
     bool b_c_on;
     bool b_r_on;
     bool b_holding;
@@ -490,9 +498,9 @@ line_task_main(INT stacd, void *exinf)
                 last_side = 1;           /* default: the line is to the left */
             }
 
-            /* Steering grows the longer it stays on one side (for curves)
-             * and restarts small whenever the side changes, so it can never
-             * keep pushing the wrong way */
+            /* Target heading beside the line's direction (see LINE_BIAS):
+             * the bias grows the longer it stays on one side (curves) and
+             * restarts small whenever the side changes */
             if (off != prev_off)
             {
                 run = 0;
@@ -500,21 +508,18 @@ line_task_main(INT stacd, void *exinf)
             prev_off = off;
             if (0 == off)
             {
-                target = 0;
+                bias = 0;
             }
             else
             {
                 run++;
-                target = LINE_KP_MM_S + (run * LINE_KI_MM_S);
-                if (target > LINE_TRIM_MAX_MM_S)
-                {
-                    target = LINE_TRIM_MAX_MM_S;
-                }
-                target = (off < 0) ? -(target * ((off < -1) ? 2 : 1))
-                                   : target;
-                target = (target < -LINE_CORR_MAX_MM_S) ? -LINE_CORR_MAX_MM_S
-                                                        : target;
+                bias = LINE_BIAS_CDEG + (run * LINE_BIAS_GROW_CDEG);
+                bias = (bias > LINE_BIAS_MAX_CDEG) ? LINE_BIAS_MAX_CDEG : bias;
+                bias = (off < 0) ? -(bias * ((off < -1) ? 2 : 1)) : bias;
             }
+            target = ((line_dir + bias) - heading_cdeg()) / LINE_HDG_GAIN_DIV;
+            lim = (off < -1) ? LINE_CORR_MAX_MM_S : LINE_TRIM_MAX_MM_S;
+            target = (target > lim) ? lim : ((target < -lim) ? -lim : target);
             /* Slew-limit the steering so it never jerks */
             corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
                   : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S
