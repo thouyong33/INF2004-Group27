@@ -1,352 +1,401 @@
-# Change Requirement 1: minimum-bit data — evidence log
+# Evidence log: final implementation
 
-Measurements for the Week 13 submission: RAM before/after, message sizes
-before/after, and correctness/timing. Sizes come from `arm-none-eabi-size`
-on the uniprocessor build (`make`, `mtk3pico_smp0_uart.elf`) with
-`MOTION_TEST_MODE = DEMO_ROAM` (the integrated Buddy 2 + 4 + 5 program), so
-every row compares the same application.
+INF2004 Group 27 robot car on micro T-Kernel 3.0 (RP2040, Robo Pico).
+This log justifies the final implementation of each subsystem with test
+evidence. Per the professor's note (29 Oct), it does not compare the
+original design with the revised one; earlier steps appear only where a
+design choice needs its reason.
 
-## Baseline (before any change), commit e8358aa
+- **Code:** `mtk3smp-rp2040/app_program`, branch `thouyong`, which matches
+  `main` as of 27 Oct. Commits are quoted for each result.
+- **Builds:** the course test (mode 31, `CTRL_TEST_COURSE`) is the
+  default. The test UF2s are in `tests/full_auto/` (`ctrl_course_vNN`)
+  and `tests/ir_test/` (`barcode_drive_vNN`).
+- **Course test keys:**
+  - `l`: line and ramp
+  - `o`: obstacle stop and measurement
+  - `a`: obstacle measure, go round and rejoin
+  - `b`: barcode, then the command at the junction
+  - `r`: barcode read only
+  - `c`: continuous course, everything on with no distance limit
+- **Test space:** two 30.5 cm mats (straight and cross), 100 mm/s,
+  450 mm per run, unless stated otherwise.
 
-| Image | text | data | bss |
+## 1. Summary
+
+| Subsystem | Final design | Key evidence | Status |
 |---|---|---|---|
-| Whole firmware (DEMO_ROAM) | 57782 | 52 | 14744 |
-| motion_task.o | 3860 | 2 | 4376 |
+| Motion (Buddy 2) | PI speed control on hardware edge counters; 2 ms loop; right encoder cross-checked against its B channel; stall and encoder faults | PI within 2 % at 150/300/500 mm/s; STOP in 350–386 ms; faults trip and no false trips | Done |
+| Line following (Buddy 3) | right-edge following by heading; junction = both IRs black for 6–35 mm, from either side | 3/3 bare-mat runs and 2/2 more on v29; cross found in every run | Done |
+| Barcode (Buddy 3) | Code 39, ratio decoding at any 1:3 scale; A–Z command table; gentle following while reading | 5/5 decoded on v29 (A4 'A' ×3, 50% 'A', 50% 'Z'); commands at the cross 8/8 correct | Done (final letter mapping awaited) |
+| Ramp (Buddy 4) | height from roll over a 30 mm plateau, h = 114 mm × sin(roll); straight hold on the ramp | small ramp (10 mm) read 11–12 mm; tall ramp (24 mm) read 23–26 mm | Done |
+| Obstacle (Buddy 5) | stop at 300 mm, creep to 200 mm, side-step to both edges, width = left − right; go round on the left and rejoin | every stop ≥ 5 cm (about 13 cm after the creep); width ±3 cm typical over 13 runs; 4/4 clean drive-pasts | Done |
+| Controller | event-driven task; ramp, barcode and obstacle sequences; continuous course mode; rolling log and scenario reports | each sequence tested on its own; continuous mode built, not yet run | First lab run due |
 
-Message and shared-data sizes (`sizeof`, bytes):
+## 2. Motion (Buddy 2)
 
-| Type | Used for | Bytes |
-|---|---|---|
-| `motor_cmd_t` | motion command queue message | 6 |
-| `odometry_t` | odometry snapshot to other tasks | 24 |
-| `enc_diag_t` | encoder snapshot | 28 |
-| `motion_trace_t` | PI trace entry (test only) | 14 |
-| `imu_raw_t` | IMU sample | 12 |
-| `imu_attitude_t` | pitch/roll/heading | 6 |
-| `hump_event_t` | hump report | 16 |
-| `collision_event_t` | impact report | 8 |
-| `obstacle_profile_t` | obstacle scan result | 18 |
+### Design
 
-Timing baseline: motion loop 995–996 passes/s (7 Oct, Appendix L13); PI
-steps within 1 % of target (7 Oct, L1).
+- **Motors and encoders:** TB6612FNG motors on PWM slices 4/5. Encoder
+  edges are counted by PWM-slice hardware: left on GP19, right A on GP15,
+  right B on GP17 (slice 0). 0.328 mm per edge, 114 mm track.
+- **Control loop:** the motion task runs every 2 ms and the PI speed loop
+  every 20 ms. The task keeps the odometry, under a lock shared with
+  readers.
+- **Safety:** STOP is checked every pass and discards queued commands. A
+  stall or one-encoder fault raises a bit in the shared fault byte
+  (`common/faults.h`) and stops the wheels. The checks are masked while
+  pulling away and while on the ramp. A ramp mask held for more than 4 s
+  while driving raises `FAULT_MOTOR_STALL`.
+- **Right encoder cross-check (27 Oct):** after the car had been off for
+  1–2 h, the right A channel counted extra edges. On every pass the right
+  count now follows A but never exceeds B + 1 edge, and the PI uses the
+  corrected count. The pads are set with a Schmitt trigger and pull-up.
 
-## Phase 1: Buddy 2 cleanup and safety (Tribunal 1 decisions)
-
-Not the bit-packing yet; it removes dead data first so the packing only
-touches the final structures.
-
-- Polled quadrature decoder removed (hardware edge counters replaced it):
-  `enc_diag_t` 28 → 8 bytes.
-- No printing in the motion loop (`[ODOM]`, `[MOTOR]` gone).
-- Shared fault bitmask: 7 faults in one byte (`common/faults.h`), set and
-  cleared inside a critical section (`common/critical.h`: DI/EI, plus a
-  spinlock on an SMP build).
-- STOP is a one-byte flag checked every pass; queued commands are discarded.
-- Odometry and encoder snapshots read under the same lock the motion task
-  writes them with.
-
-| Image | text | data | bss |
-|---|---|---|---|
-| Whole firmware (DEMO_ROAM) | 57010 | 52 | 14732 |
-| motion_task.o | 3576 | 2 | 4360 |
-
-Most of motion_task.o's bss is the 300-entry PI trace (4200 bytes, test
-only); it will be compiled out of the final build in the packing phase.
-
-Timing/correctness after phase 1 (`MOTION_TEST_SAFETY`, car lifted,
-21 Oct):
-
-| Check | Result |
-|---|---|
-| PI at 150 / 300 / 500 mm/s | L 148 / 298 / 498, R 147 / 300 / 498 mm/s (within 2 %) |
-| Motion loop rate | 500 passes/s (see note) |
-| STOP at 300 mm/s, 3 commands queued | wheels still after 386 ms; queued commands discarded |
-| Both wheels held | MOTOR_STALL raised, wheels stopped |
-| Left wheel held | ENC_LEFT raised, wheels stopped |
-| 10 s free running at 300 mm/s | no fault |
-
-See "Finding: the motion loop runs every 2 ms, not 1 ms" below for the
-loop rate.
-
-Motion task CPU and RAM (`MOTION_TEST_CPU`, lifted, 21 Oct): 0.20 % CPU
-stopped, 0.33 % driving at 150/300/500 mm/s (about 6 us per pass, longest
-13 us), not counting kernel task switches; stack high-water 296 of 4096
-bytes.
-
-## Finding: the motion loop runs every 2 ms, not 1 ms
-
-**Decision (21 Oct): keep the 2 ms loop. No code change; the documents
-are corrected.** Change type for the Tribunal 1 change log: *Clarified /
-no change*.
-
-### What was claimed
-
-The Week 6 design and Tribunal 1 (change log row "Hardware PWM-slice edge
-counters with a 1 ms Motion loop", risk R1, and the "All tasks" subsystem
-test) describe a **1 ms motion loop** and quote **995–996 polls per
-second** (Appendix L1a and L13, 7 Oct) as evidence, with a pass mark of
-"990 per second or more".
-
-### How the finding came about
-
-1. Phase 1 (commit 7eff2d7) added a direct timing measurement to the
-   motion task: it counts loop passes and divides by the elapsed kernel
-   time once per second (`motion_loop_rate()`).
-2. The `MOTION_TEST_SAFETY` run (21 Oct, car lifted) reported
-   **500 passes/s** at 150, 300 and 500 mm/s, half of the quoted figure.
-3. A second, independent measurement (`MOTION_TEST_CPU`, commit 2c58b80)
-   timed each pass with the 1 MHz hardware timer: again **500 passes/s**,
-   about 6 µs of work per pass, so the loop is not running late; it
-   sleeps for 2 ms each time.
-4. The loop code was compared with the 7 Oct version (commit c45861c):
-   unchanged (`TASK_PERIOD_MS 1`, `tk_dly_tsk(TASK_PERIOD_MS)` at the end
-   of each pass, 1 ms kernel tick `CNF_TIMER_PERIOD 1`). So the rate had
-   not changed since 7 Oct; the old figure had to be re-read.
-
-### Why the loop period is 2 ms
-
-A pass is one trip round the motion task's `while (1)` loop: read the
-encoder counters, check STOP, take at most one command, run the PI every
-20 ms, update the PWM, then `tk_dly_tsk(1)`.
-
-`tk_dly_tsk()` guarantees *at least* the requested delay. The kernel adds
-one tick to every relative timeout so a wait can never be cut short by a
-tick that is already part-way through
-(`kernel/tkernel/timer.c`, `knl_timer_insert_reltim()`:
-`event->time = current_time + tmout + TIMER_PERIOD`). With a 1 ms tick,
-`tk_dly_tsk(1)` therefore wakes on the second tick: one pass every 2 ms,
-500 passes per second.
-
-### Why the 1 ms figure was wrong
-
-The 7 Oct fixed-time test (`motion_fixed_time_runs()` in commit c45861c)
-did, for each run:
-
-```
-motion_reset_odometry();      // polls counter = 0
-motion_set_speed(...);
-tk_dly_tsk(FIXED_RUN_MS);     // 1000 ms run
-motion_set_speed(0, 0);
-tk_dly_tsk(FIXED_SETTLE_MS);  // 1000 ms settle
-motion_print_encoder_diag(label);   // prints polls=995
-```
-
-The polls counter therefore covered the **1 s run plus the 1 s settle,
-about 2 s**, so `polls=995` meant ~995 passes in 2 s, i.e. ~500 per
-second. It was read as "per second" because the test was described as
-"1 s runs" and the loop constant is named `TASK_PERIOD_MS 1`. That
-reading went into the Week 6 design figures and was repeated at
-Tribunal 1 without a direct per-second measurement. The figure was
-consistent with the code all along; only its interpretation was wrong.
-
-### Why it does not matter for control, and why we keep 2 ms
-
-- The PI speed loop runs every 20 ms, ten passes apart either way.
-- The encoders are counted by PWM-slice hardware, so the loop rate does
-  not affect how many edges are seen.
-- STOP latency is at most one pass (2 ms), small next to the ~380 ms
-  braking ramp from 300 mm/s (`MOTION_TEST_SAFETY` part B: 386 ms).
-- A true 1 ms loop (a 1 ms cyclic handler waking the task) would roughly
-  double the motion task's CPU (0.33 % → ~0.7 %, plus ~1000 task switches
-  per second) for no control benefit.
-
-### Corrections to the Tribunal 1 documents
-
-| Item | Was | Now |
-|---|---|---|
-| Change log, "edge counters with a 1 ms Motion loop" | 1 ms loop; polls 995–996/s (L1a, L13) | 2 ms loop, 500 passes/s; L1a/L13 counts span 1 s run + 1 s settle |
-| R1 mitigation / all-tasks test pass mark | polls counter 990/s or more | loop rate 495 passes/s or more (`motion_loop_rate()`) |
-| Evidence | L1a, L13 | `MOTION_TEST_SAFETY` and `MOTION_TEST_CPU` logs (21 Oct), commit c45861c test code, kernel `timer.c` |
-
-## Buddy 4: one-sided hump (course test), 21 Oct
-
-Course test (user, 21 Oct): the 1.0 cm or 2.4 cm ramp under the **right
-wheel only**; success = the car rides it, stays straight and still
-follows the line afterwards. No full-width hump on the course.
-
-**Method change.** With one wheel raised, the car rolls rather than
-pitches, so the hump is now measured from roll: height =
-114 mm (track) × sin(roll). Roll is smoothed (7-sample mean, ~0.14 s);
-a side hump starts when |roll| stays past 2.5° for 20 mm and ends when it
-is back within 1.5° for 15 mm; the height uses the most-tilted 30 mm
-mean (`terrain.c`, commits 54af32f, 020259b). The pitch detector's report
-of the same ramp is dropped when the car rolled during it. While on the
-hump, `motion_set_hump_mask()` masks the stall/encoder checks.
-
-**Why not the compass for heading hold.** One-sided ramp log
-(`IMU_TEST_RAMP_ROLL`, e0abadd): on flat floor the compass reported a
-48° turn over 50 cm while the encoders showed 1.5°; the field changes
-with position on this floor, so a compass heading hold would steer the
-car off course.
-
-**Results** (`IMU_TEST_SIDE_HUMP`, 50 cm at 150 mm/s):
-
-| Run | Ramp | Detected | Height | Sideways offset |
-|---|---|---|---|---|
-| A | flat | none | – | – |
-| B | 1.0 cm | right | 12 mm | – |
-| C | 2.4 cm | right | 27 mm | – |
-| 1–6 | 2.4 cm | right (6/6) | 23, 23, 25, 26, 26, 26 mm | 19, 8, 9, 8, 0 mm (5 measured) |
-
-Flat-floor baseline (`MOTION_TEST_STRAIGHT`, 5 × 50 cm): 14, 7, 0, 7,
-2 mm right; tyre difference about 0.5 %, within setup error, no trim
-applied. Hand-turn check: L 6320, R 6327 edges / 10 turns.
-
-**Impact confirmation on the ramp.** Ramp and IR-bracket jolts reached
-1659 mg, above the 500 mg jolt threshold, but the wheels never dropped
-below 81 % of the command, so every one was correctly ignored by the
-wheel-slowdown rule (IMPACT = jolt plus wheels below 60 % within
-250 ms). The only "would count" cases were at the commanded stop and the
-pull-away, where the wheels slow because they are told to; the
-controller therefore confirms impacts only while `motion_is_steady()`.
-
-**Open (hardware).** The IR bracket strikes the 2.4 cm ramp and the left
-IR arm drags on the descent, steering the car by a varying amount
-(offsets 0–19 mm). Software cannot see or correct this; a smooth skid on
-the IR mount is the proposed fix. Line following (Buddy 3) corrects the
-remaining heading after the ramp.
-
-## Buddy 5: obstacle stop distance (watch task), 21–22 Oct
-
-Decision implemented (Tribunal 1): stop when 2 of the last 3 pings read
-≤ 300 mm from the sensor face; one missed echo no longer clears the
-count; 300 mm/s while watching (`obstacle.c`, commits 5d99d66, b5677e6).
-Course requirement: stop with ≥ 5 cm between the nose (IR tip) and the
-block.
-
-`OBST_TEST_STOP`, 300 mm/s, per-ping trace (22 Oct):
-
-| Run | Target | Reading at trigger | Braking | Reading at rest | Nose gap |
-|---|---|---|---|---|---|
-| 1 | box (flat face) | 247 mm | 65 mm | 185 mm | 12.7 cm |
-| 2 | box | 271 mm | 64 mm | 221 mm | 15.0 cm |
-| 3 | box | 265 mm | 62 mm | 221 mm | 15.0 cm |
-| 4 | box | 283 mm | 65 mm | 208 mm | 14.6 cm |
-| 5 | box | 277 mm | 66 mm | 201 mm | 14.3 cm |
-| 6 | round bottle | 259 mm | 67 mm | (lost) | 10.6 cm |
-| 7 | round bottle | 230 mm | 63 mm | 172 mm | 9.8 cm |
-
-- With a flat face the readings fall smoothly, ~20 mm per ping; the
-  first near ping is the first reading ≤ 300 mm and the stop triggers on
-  the next one. Braking from 300 mm/s is 62–67 mm.
-- The sensor face sits about 6 cm behind the nose (reading at rest minus
-  nose gap: 58–71 mm).
-- A round bottle reflects only a thin strip: near the end the trace
-  shows readings jumping to 372–450 mm (the beam passing it and finding
-  something further away), and readings just above 300 mm delay the
-  trigger. An earlier bottle run (21 Oct) triggered at 191 mm and stopped
-  5.9 cm from the nose; that was the bottle, not a code fault.
-- Result: 7/7 runs meet the ≥ 5 cm requirement (minimum 9.8 cm, bottle);
-  flat-faced box 12.7–15.0 cm. The 300 mm threshold is kept.
-
-## Course scenario: one-sided ramp while line following, 24 Oct
-
-Pass condition (user, 24 Oct): ride up and down the 2.4 cm ramp under the
-right wheel while driving straight; the line need not be followed on the
-ramp; after the ramp the car must find the line and carry on following it.
-Test mode `LINE_TEST_RAMP` (30), 100 mm/s, 450 mm, straight + cross mats.
-
-| Version | Change | Result |
-|---|---|---|
-| v1 (12a26aa) | line following throughout, hump mask fed by the roll detector | 4/6 ramp runs completed but with on-spot searches; run 6 took a cross arm; run 7 stuck (bracket dug in, a wheel spinning, the mask hid the stall: faults 0x0) |
-| v2 (eecfde0) | line task holds straight on the encoders while on the hump (tilted, the right IR reads false black), resumes 50 mm after; hump mask held > 4 s while driving = `FAULT_MOTOR_STALL` | wheel-only ramp 2/2 pass; bracket-first 0/2 (the strike, before the ramp is detected, set the held heading; the pickup took a cross arm) |
-| v3 (bf8381a) | hold the line's direction (encoder heading averaged over 100 mm of following); after the hold search on the spot only within ±45° of it; normal searches within ±60° | **4/4 pass** (2 bracket-first, 2 wheel-only) + flat control: no searches, faults 0x0, ramp detected once RIGHT 23–26 mm (actual 24), centre off the line ≤ 10 mm after the ramp |
-
-Known hardware issue: the left IR bracket digs into the mat when the car
-rolls on the ramp and the left IR reads black around and after the ramp.
-A smooth skid / stiffer bracket is planned (materials after 28 Oct).
-
-## Vehicle controller task, 24 Oct (commit 1ccd72c, `CTRL_TEST_COURSE` 31)
-
-Controller task (pri 6) with `ctrl_evt_mbf` (16 × 4-byte events; obstacle,
-line end and every new fault bit are posted, never blocking) and a 12-byte
-`robot_status` snapshot read under a lock every 500 ms by the test (as
-Buddy 1's telemetry will). The controller samples the IMU every 20 ms and is
-the only caller of the hump mask and the line task's ramp hold.
-
-| Run | Option | Result |
-|---|---|---|
-| 1 | line, flat | DONE at 451 mm, faults 0x0, no ramp events |
-| 2 | line + ramp, bracket hits first | RAMP_ON 164 mm, RAMP_OFF 349 mm, 26 mm; bracket jolt 608 mg ignored (wheels kept 85 %); DONE 450 mm, faults 0x0 |
-| 3 | line + ramp, wheel only | RAMP_ON 156 mm, RAMP_OFF 351 mm, 24 mm; DONE 450 mm, faults 0x0 |
-| 4 | line + obstacle | OBSTACLE at sensor 290 mm, stopped |
-| 5 | line + obstacle | OBSTACLE at sensor 298 mm; nose gap 22.5 cm (≥ 5 cm) |
-
-No events dropped. Impacts are logged only for now (the one bracket jolt
-scored 85 % wheel speed, well above the 60 % impact threshold).
-
-## Buddy 3: barcode reader (slit-taped left IR, driven scans), 24 Oct
-
-Left IR covered with black PVC tape (one layer blocks IR completely:
-3140 mV whatever is underneath) with a ~2 mm slit parallel to the bars;
-AO on GP27 sampled once per encoder step (0.33 mm) while the car drives
-itself at 50 mm/s (`BARCODE_TEST_DRIVE` 32). Normal room light.
-
-| Decoder | Threshold | Valid passes decoded | Wrong decodes |
-|---|---|---|---|
-| trial (midpoint of white/black) | ~1000–1600 mV | 0/8 | 0 |
-| v2 (barcode.c, ab948c8) | white + 100 mV | 6/10 | 0 |
-| v3 (f7a8855) | white + 60 mV | **10/10** (5 × A, 5 × A-reversed) | 0 |
-
-The threshold for v3 was chosen by replaying all 18 earlier logged passes
-through the decoder on the PC (17/18 decoded, none wrong). Z samples with
-v3: 6/6 (3 × Z reversed read REVERSED, 3 × Z read forward). The A samples
-had been labelled the wrong way round (user read them backwards); the
-decoder's direction was right. Command mapping: forward read = letter
-(A left, Z straight), reversed read = "reversed" (A right, Z U-turn); thin bars read ~1.5–2.5 mm and wide ~7–8.5 mm
-(printed 3/9 mm), spaces ~3.5–4.5 / ~9.5–11 mm.
-
-## Barcode command at the junction (controller, line following), 26 Oct
-
-`CTRL_TEST_COURSE` 31, key `b`, `ctrl_course_v4` (fixed 60/30 mV threshold,
-distance measured at the left IR). Left IR raised to ~8 mm with a 1 mm slit.
-
-| Barcode | Runs | Read | Command at the cross | Turned (encoders) |
-|---|---|---|---|---|
-| A | 2 | 2/2 A forward | LEFT 2/2 | 89.8°, 89.9° |
-| A reversed | 3 | 2/3 A reversed | RIGHT 2/2 | −90.0°, −90.3° |
-| Z | 2 | 2/2 Z forward | STRAIGHT 2/2 | — |
-| Z reversed | 2 | 2/2 Z reversed | U-TURN 2/2 | 180.0°, 180.0° |
-
-8/9 read, every read and every command correct; the miss merged bars (the
-narrow spaces stay 200–330 mV with the 1 mm slit), fixed in v5 by a
-contrast-scaled threshold (replay 20/21). Driven scans at this setup with
-`barcode_drive_v4`: Z 3/3. Junction found at 276–298 mm in every run.
-Final heading after a turn varied 75–96° because the car turned 90° from
-its mid-weave heading (up to 14° off the line); v6 turns from the line's
-averaged direction instead.
-
-## Final checks, 26 Oct (`ctrl_course_v7`, junction confirm 6 mm, turn from line direction)
-
-- **Barcode → junction:** 4/5 read (the miss: paper not held flat), every
-  command correct; final headings −87.4°, −88.4°, +90.3°, +91.2° (within
-  ~3° of square; before the line-direction fix: 75–96°). No false junctions
-  (junctions only at the cross, 268–297 mm). The read depends on the slit:
-  ~1 mm works at ~8–9 mm height, ~2 mm does not.
-- **Tall ramp with the nylon screw-head skid** (~2 mm clear, left IR LEDs
-  ~9 mm): 4/4 DONE at 450 mm, faults 0x0, ramp detected once 25–26 mm;
-  heading held within ±4° on the ramp in 3 runs; run 6 yawed ~50° and found
-  the line again with an on-spot search (~5 s) before finishing. Bracket
-  strikes logged as "jolt ignored" (745–778 mg, wheels kept 85 %).
-- **Impacts stay log-only** (user decision, 26 Oct): the IR bracket strikes
-  the ramp edge, and the course has no scenario that needs an impact stop.
-- Buddy 3 and the ramp scenario are complete; barcode command mapping and
-  curves are to be confirmed on 28 Oct.
-
-## Right encoder over-count fix, 27 Oct (commits 172b736, 0a313c3, 2f05d8a)
-
-The right encoder's A channel (GP15) again counted extra edges after the
-car had been off for 1–2 h (hand test A 6921 against 6340 expected). Fix:
-encoder pads set explicitly (Schmitt trigger, pull-up), and the right B
-channel (GP17, already wired) counted on the spare PWM slice 0; every 2 ms
-pass the right count follows A but never exceeds B + 1 edge, and the PI
-uses the corrected count.
+### Evidence
 
 | Test | Result |
 |---|---|
-| Hand turn, 10 turns (fault active: A raw 6587) | B 6365, corrected right count 6366 |
-| Lifted safety test | PI 150/300/500 mm/s within 2 % (500: L 498, R 498); STOP 350 ms; MOTOR_STALL and ENC_LEFT trip; no false trip in 10 s |
-| Controller, small (black) ramp ×2, tall ramp ×1 | all DONE at 450 mm, faults 0x0, ramp 11/11/25 mm; no false junctions over the black ramp (junction now needs the right IR black for 6–35 mm) |
+| Lifted, `MOTION_TEST_SAFETY` (21 and 27 Oct) | PI at 150/300/500 mm/s within 2 % (500: L 498, R 498); STOP with 3 commands queued: wheels still in 350–386 ms, queue discarded; both wheels held → `MOTOR_STALL`; left held → `ENC_LEFT`; no false trip in 10 s |
+| Hand turn, 10 turns, fault active (27 Oct) | A raw 6587, B 6365, corrected right count 6366 (expected about 6340) |
+| `MOTION_TEST_CPU` (21 Oct) | 0.33 % CPU while driving (about 6 µs per pass, longest 13 µs); stack high-water 296 of 4096 B |
+| Encoder cross-check during obstacle side-steps (28 Oct) | A − B over each probe 0 to ±3 edges |
 
-The hardware cause is still present; the software now hides it, and the
-hand test's "fixed" figure shows when it is active.
+### The loop period is 2 ms, not 1 ms
+
+The early design quoted a 1 ms loop (995 polls/s). That count actually
+spanned a 1 s run plus a 1 s settle. `tk_dly_tsk(1)` also waits one extra
+kernel tick (`knl_timer_insert_reltim()` adds `TIMER_PERIOD`), so the loop
+runs at 500 passes/s. Two independent measurements confirmed this
+(`motion_loop_rate()` and the 1 MHz timer in `MOTION_TEST_CPU`).
+
+The 2 ms loop is kept because:
+- the PI runs every 20 ms either way;
+- edges are counted in hardware, so no edge is missed;
+- STOP latency is one pass (2 ms) against about 380 ms of braking;
+- a true 1 ms loop would double the task's CPU for no gain.
+
+The pass mark for the all-tasks test is 495 passes/s or more.
+
+## 3. Line following and junctions (Buddy 3)
+
+### Design
+
+- **IRs:** centre GP4, right GP26 (20 mm right of the centre IR), left
+  GP6 (digital) and GP27 (analog, for the barcode).
+- **Right-edge following by heading** (v26, 29 Oct). The centre IR rides
+  the line's right edge, and each reading picks a target heading beside
+  the line's direction (`line_dir`, the encoder heading averaged over
+  100 mm):
+  - centre black: aim 2° right of the line's direction;
+  - centre white: aim 2° left;
+  - the aim grows by 0.08° per 20 ms while the car stays on the same side
+    (for curves), up to 45°.
+
+  The wheel speed difference is the heading error / 15 (mm/s), capped at
+  60 and slew-limited.
+- **Right IR alone black:** the car has overshot left, so it turns hard
+  right. This lasts only while the right IR's black stretch is arm-sized
+  (≤ 35 mm), and only until the car points more than 5° right of the
+  line's direction. A black ramp beside the line can therefore no longer
+  pull the car onto it.
+- **Lost line:** the centre IR white for 100 mm triggers an on-spot search
+  within ±60° of the line's direction. A search counts as successful only
+  when the centre IR sees black.
+- **Junctions:**
+  - Right side: the centre and right IR are both black for ≥ 6 mm, and
+    the right IR's black stretch ends within 35 mm. A black ramp keeps the
+    right IR black for 100 mm or more, so it is not taken as a junction.
+  - Left side: the barcode reader sees one 10–35 mm bar with no other read
+    in the 30 mm before it. The report is shifted by the left IR's 20 mm
+    lead.
+  - The first report wins, and a second report within 60 mm is the same
+    junction. With no command pending, the junction is crossed straight.
+
+### Why heading steering (the decision)
+
+The earlier steering set the wheel speed difference directly from the IR
+reading. It started at 20 mm/s and grew by 2 per period on one side.
+
+- With the lost-line limit at 40 mm, the v23 traces showed a stop and
+  search on nearly every swing: the car only turned back after about
+  40 mm of white.
+- Raising the limit to 120 mm (v25) let each swing grow (−23°, then +13°
+  to +20°) until the car left the mat.
+
+With heading steering, the correction reverses the moment the IR changes
+side.
+
+| Build | Bare-mat `l` runs | Weave | On-spot searches |
+|---|---|---|---|
+| v23 (old steering, lost at 40 mm) | 4 | about ±15°, with a stop at every swing | 4–5 per run |
+| v25 (old steering, lost at 120 mm) | 3 | grew to ±20°; 0/3 finished (left the mat) | — |
+| v26 (heading steering) | 3/3 finished | about ±8° | 1 per run, at a known weak spot on the test mat |
+| v29 (smaller aim) | 2/2 finished | about ±5° | 1–2 per run (limit 60 mm, raised to 100 mm in v30) |
+
+The cross was detected and crossed straight in every v26/v29 run
+(271–309 mm).
+
+**Sensor setting check:** on a plain straight, the centre and right IR
+must never read black together. If they do, the trimmer is too sensitive,
+and the car takes the line itself for a junction arm. Check by sliding the
+car slowly across the line (29 Oct).
+
+## 4. Barcode (Buddy 3)
+
+### Design
+
+- **Sensor:** the left IR, with its analog output (GP27) slit-taped
+  (about 1 mm slit) at about 9 mm above the mat. It now sits 65 mm left of
+  the car's centreline (bracket moved on 29 Oct). The bars lie 42–203 mm
+  left of the centre IR: 18 mm of line, a 24 mm gap, then bars 161 mm long
+  at every scale. Before the move, the IR sat only about 8 mm inside the
+  bars.
+- **Sampling:** one sample per encoder step (0.33 mm), measured at the
+  left IR, which corrects for the car's yaw. The white level is tracked.
+  A bar starts 60 mV above white.
+- **When a read ends:** after 4× the narrowest bar of white, at least
+  22 mm and at most 30 mm. That is more than the widest space of any
+  expected scale (A4: 18 mm). The buffer holds about 360 mm, so a
+  3-character A4 code (282 mm) fits.
+- **Decoding:** Code 39, read in both directions. Wide and narrow are told
+  apart by ratio (wide ≥ 1.8× narrowest), so any 1:3 scale decodes.
+- **Reading mode:** from the first bar until the read ends, the car keeps
+  following the edge with a fixed ±1° aim. Its heading then stays within
+  about ±2°, so the left IR crosses the bars on a steady path.
+- **Commands:** a 26-letter table, forward and reversed. A = left,
+  A-reversed = right, Z = straight, Z-reversed = U-turn; the other letters
+  carry no command until the final mapping is given. The command is
+  carried out at the next junction, turning on the spot from the line's
+  direction.
+
+### Evidence
+
+| Test | Result |
+|---|---|
+| Driven scans, 50% sample (`barcode_drive`, 24 Oct) | 10/10 A / A-reversed, 6/6 Z / Z-reversed; no wrong decode |
+| Command at the cross (v4–v7, 26 Oct) | 8/9 read; every read and command correct; turns 87.4–91.2° (from the line's direction); U-turn 180.0° |
+| Command at the cross (v16, 28 Oct) | every `b` run decoded and turned correctly; junctions from both sides |
+| A4 'A', blind straight hold (v27) | 3/4; the miss cut the code at its first wide space (fixed: at least 22 mm of white) |
+| **v29, reading mode and the moved IR** | **5/5**: A4 'A' ×3 forward, 50% 'A', 50% 'Z'; barcode placed near and far from the start |
+
+**Why reading mode (the decision):** the left IR is about 130 mm ahead of
+the axle. A ±8° weave therefore swings it about ±18 mm sideways, and A4
+reads broke up, with "spaces" of 19–53 mm. A blind straight hold fixed the
+heading but kept whatever sideways offset the car had at the first bar.
+Gentle following keeps both the heading and the sideways position.
+
+## 5. Ramp height (Buddy 4)
+
+### Design
+
+- **What is measured:** the LSM303D (I2C1, GP2/3) is sampled by the
+  controller every 20 ms. With one wheel on the ramp, the car rolls rather
+  than pitches.
+- **Detection:** a ramp starts when the smoothed roll stays past 2.5° for
+  20 mm, and ends within 1.5° for 15 mm.
+- **Height:** h = 114 mm × sin(roll), using the most tilted 30 mm mean.
+  The pivot is the left-wheel-to-castor line, and the formula holds for
+  the measured geometry. The lowest height it can detect is about 5 mm
+  (flat-floor noise 1.8–2.5°).
+- **On the ramp:**
+  - the line task drives straight along the line's direction (the
+    tilted IR reads false black);
+  - the motion faults are masked;
+  - an on-spot search stops at once;
+  - 50 mm after the ramp, following resumes, with a search within ±45° if
+    needed.
+- **Report:** the highest ramp of a run is reported (`max_ramp_mm`).
+- **Impacts:** logged only (user decision, 26 Oct). A jolt over 500 mg
+  counts only if the wheels then drop below 60 % within 250 ms, at a
+  steady speed and off the ramp. IR-bracket strikes on the ramp (up to
+  1659 mg) were all correctly ignored.
+- **Compass:** not used for heading. On this floor it reported a 48° turn
+  over 50 cm while the encoders showed 1.5°.
+
+### Evidence
+
+| Ramp | Result |
+|---|---|
+| Small practice ramp, 10 mm (the final demo height) | 11–12 mm in every clean run (v11–v16, 27–28 Oct) |
+| Tall ramp, 24 mm | 23–26 mm, 6/6 (21 Oct); 25–26 mm with the skid (26 Oct) |
+| Flat floor | no ramp detected |
+
+The professor (27 Oct) set the final ramp at about the small practice
+ramp's height, and the tall ramp can be disregarded. The small ramp clears
+without the skid.
+
+## 6. Obstacle (Buddy 5)
+
+### Design
+
+1. **Detect and stop:** while following, the ultrasonic sensor (GP7/28,
+   about 60 mm behind the nose) pings every 65 ms. The car stops when 2 of
+   the last 3 pings read ≤ 300 mm. Speed is capped at 300 mm/s while
+   watching.
+2. **Square up and creep in:** the car turns to the line's direction, then
+   creeps at 40 mm/s until the sensor reads 200 mm (at most 150 mm of
+   creep, so the nose gap stays ≥ 8 cm even if every ping is lost).
+3. **Measure:** the car side-steps in 25 mm steps (turn 90°, drive, turn
+   back, median of 3 pings).
+   - Right side first, until 2 readings in a row are off the face.
+   - A reading counts as the face if it is no more than 25 mm beyond the
+     median of the face readings so far; a nearer reading always counts.
+   - Then back to the start in one move, and the same to the left.
+   - Each edge is the midpoint between the last on-face step and the first
+     off-face step, less 17 mm (calibrated).
+   - Width = left edge − right edge, measured on the wheels. The range
+     stays about 190 mm, clear of the floor echo at about 290 mm.
+4. **Go round** (on the left):
+   - side-step until the car's right side clears the left edge by 40 mm
+     (planning for at least 100 mm of width);
+   - drive past the face, an assumed 200 mm depth, and the car's 90 mm
+     left half-width plus the margin;
+   - side-step back to the line's position and carry on following.
+
+### Why side-stepping (the decision)
+
+- **Turning scan rejected.** A flat face echoes only when the sonar points
+  at it squarely, and the sonar barely moves sideways as the car turns on
+  the spot. So the angle over which a face was seen did not grow with
+  width:
+
+  | Face | Angle seen |
+  |---|---|
+  | 9 cm | 47–52° |
+  | 15 cm | 50–56° |
+  | 23 cm | 49–57° |
+
+  (v17, 28 Oct)
+- **Side-stepping measures the edges geometrically.** The echo disappears
+  when the sonar passes the edge.
+- **First calibration (v18):** the raw edges read about 17 mm wide per
+  edge, because the beam still clips the corner. Over 9 runs: 9 cm 128 ×3,
+  15 cm 178/205/153, 23 cm 254/257/281 mm.
+
+### Evidence (v20, 13 runs, 28 Oct)
+
+| Face | Width read (mm) | Error |
+|---|---|---|
+| 9 cm | 71, 93, 95, 122, 95 | −19 to +32 mm |
+| 15 cm | 120, 120, 147 | −30 to −3 mm |
+| 23 cm (rounded corners) | 226, 249, 225, 272, 301 | −5 to +71 mm |
+
+- **Accuracy:** mean error +7 mm, typically ±3 cm. The worst under-read
+  is −3 cm, which the 40 mm margin covers. Over-reads (worst +7 cm, where
+  the corner echo ran on along the side) only cost clearance.
+- **Stops:** every stop met the ≥ 5 cm nose gap. The trigger read
+  279–300 mm, and the creep ended at 191–198 mm (nose gap about 13 cm).
+- **Drive past (`a` runs, v20):** 4/4 cleared the box with no contact.
+  The car ended 6–7 mm from the line's position.
+- **Time:** measuring took about 43 s (9 cm), 51 s (15 cm) and 71 s
+  (23 cm); the drive past took 17–18 s.
+- **Stop at full watching speed** (`OBST_TEST_STOP`, 300 mm/s, 22 Oct):
+  the car braked in 62–67 mm and stopped 12.7–15.0 cm from a flat box and
+  9.8–10.6 cm from a round bottle. 7/7 runs were ≥ 5 cm.
+
+## 7. Vehicle controller and continuous course
+
+### Design
+
+- **Task and events:** the controller (priority 6, below motion) is the
+  only task that decides what the car does. The buddy tasks post 4-byte
+  events to `ctrl_evt_mbf`, which never blocks: obstacle, line end,
+  barcode, junction, and every new fault bit.
+- **Each 20 ms the controller:**
+  - samples the IMU and runs the ramp detector;
+  - owns the ramp hold and the hump mask;
+  - keeps the pending barcode command for the next junction;
+  - runs the obstacle sequence.
+- **Continuous course mode** (`c`, v22): no distance limit. After a
+  junction turn, or once round an obstacle, line following restarts. A
+  junction with no command is crossed straight. The run ends only on a
+  stop request (later Buddy 1), a stopping fault, or a failed line search.
+- **Status:** `robot_status` (18 B) is copied under a lock for telemetry
+  every 500 ms: state, faults, last event, flags, distances, heading,
+  roll, sonar, width, highest ramp and total distance in cm.
+- **Rolling log:** the event log keeps the latest 64 events, with 32-bit
+  time and run distance.
+- **One-off scenario reports:**
+  - ramp: `RAMP_OFF` (height);
+  - barcode: `BARCODE` then `COMMAND` (letter, direction, turn);
+  - obstacle: `OBSTACLE`, `OBST_CREEP`, `OBST_EDGE` ×2, `OBST_WIDTH`, then
+    `OBST_DONE` (result, time).
+
+### Evidence
+
+- Each sequence on its own: see sections 3–6. No events were dropped in
+  any logged run.
+- **Continuous course:** built and pushed (v22, then v30). It needs the
+  lab circuit and has not been run yet.
+- **Cycle time estimate** for one ramp, one barcode and a ~20 cm obstacle
+  on 9 mats:
+  - normally about 2 min: 31 s of following, 5–6.5 s of turn, about 85 s
+    for the obstacle;
+  - worst case about 3 min.
+
+  The demo allows 10 min.
+
+## 8. Code structure and Barr-C (28 Oct, commits ab86df2, b510d3b)
+
+- **Structure:**
+  - `app_main.c` is start-up only (63 lines, from 5,273): the health LED,
+    the Wi-Fi status task on a Wi-Fi build, the motion task, then the
+    selected test mode.
+  - The 9 test modes in use are in `test_modes/`, with their numbers
+    unchanged.
+  - The port's demo pipeline and 24 retired modes were removed; they
+    remain in git history.
+- **Barr-C fixes:**
+  - every line ≤ 80 columns;
+  - Boolean variables `b_` (globals `g_b_`), file-scope statics `g_`;
+  - `/* */` comments and `u` suffixes in `pin_defs.h`.
+- **Remaining kernel types:** `INT`/`UINT`/`UB` stay only where
+  µT-Kernel's own signatures need them.
+- **Verification:** the course build compiled to a byte-identical binary
+  before and after the Barr-C pass. All test modes build with
+  `-Wall -Wextra` and no warnings.
+
+## 9. Change Requirement 1: minimum-bit data (to do, Week 13)
+
+Required: every shared or sent field uses only the bits its range needs.
+This covers:
+- faults as one bitmask (already 7 bits in one byte);
+- `robot_status`, the events, the task/ISR data and the MQTT payload
+  (Buddy 1);
+- safe read-modify-write on packed shared data (`common/critical.h`).
+
+Loop-internal arithmetic stays at full width.
+
+Reference figures, measured before any packing, are kept so the packing
+can be shown. The professor's 29 Oct note drops only the original-vs-
+revised design comparison.
+
+| Item | Bytes now |
+|---|---|
+| `robot_status_t` | 18 |
+| `ctrl_evt_t` (event message) | 4 |
+| `ctrl_log_t` (log entry, test) | 12 |
+| `motor_cmd_t` (motion command) | 6 |
+| Firmware, course build v29 (text / data / bss) | 74702 / 44 / 31128 |
+
+Big bss items that are test-only and will be compiled out of the final
+build:
+- the PI trace (4200 B);
+- the line trace (5.6 kB);
+- the status snapshots in the test mode.
+
+## 10. Known limits and open items
+
+- **Obstacle width:**
+  - About ±3 cm on flat faces. Rounded corners over-read, which is safe.
+  - The depth is assumed to be 200 mm.
+  - Only the left side is used to go round.
+- **Line following:** tested on straights and the cross; curves on the
+  lab circuit are still to be tested.
+- **Barcode:**
+  - the final letter mapping is awaited (the table is ready);
+  - the IR height needs about 9 mm ± 0.5 mm, because the bars blur at
+    10 mm.
+- **Continuous course:** first lab run pending.
+- **CR1 packing and Buddy 1 telemetry:** to do.
