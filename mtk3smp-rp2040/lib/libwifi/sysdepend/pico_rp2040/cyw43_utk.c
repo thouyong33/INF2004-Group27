@@ -34,6 +34,11 @@
 #if TM_WIFI_STATIC
 #include "network_config.h"
 #endif
+#if TM_WIFI_MQTT
+/* The application's network client (Buddy 1 telemetry), called from
+ * this task -- the only lwIP context -- on every poll. */
+extern void cyw43_utk_app_poll(struct netif *netif);
+#endif
 
 #define CYW43_POLL_MS        2
 /* Bounded so a reader can never wedge if the writer is starved; an exhausted
@@ -541,6 +546,9 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
             lwip_utk_tcpbulk_poll(&cyw43_state.netif[CYW43_ITF_STA]);
         }
         update_bulk_status();
+#endif
+#if TM_WIFI_MQTT
+        cyw43_utk_app_poll(&cyw43_state.netif[CYW43_ITF_STA]);
 #endif
 #if TM_WIFI_STATIC || TM_WIFI_DHCP
         lwip_utk_ipv4_poll(&cyw43_state.netif[CYW43_ITF_STA]);

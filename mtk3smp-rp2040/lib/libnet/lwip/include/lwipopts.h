@@ -22,7 +22,7 @@
 #define LWIP_ICMP                       (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_RAW                        (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_UDP                        TM_WIFI_DHCP
-#define LWIP_TCP                        TM_WIFI_TCP
+#define LWIP_TCP                        (TM_WIFI_TCP || TM_WIFI_MQTT)
 /* The altcp shim is only needed by application protocols written against it
  * Nothing in this tree uses it; turn it on here if you add something that
  * does. */
@@ -41,20 +41,21 @@
 #define LWIP_NETIF_EXT_STATUS_CALLBACK  0
 
 #define MEM_ALIGNMENT                   4
-#if TM_WIFI_TCP
+#if TM_WIFI_TCP || TM_WIFI_MQTT
 #define MEM_SIZE                        (12 * 1024)
 #else
 #define MEM_SIZE                        (8 * 1024)
 #endif
 #define MEMP_NUM_PBUF                   16
-#define MEMP_NUM_SYS_TIMEOUT            8
+/* +1 for the MQTT client's cyclic timer */
+#define MEMP_NUM_SYS_TIMEOUT            10
 #define PBUF_POOL_SIZE                  8
 #define PBUF_POOL_BUFSIZE               1600
 
 /* Phase 7 opens exactly one outbound connection and never listens.  The
  * send window stays small on purpose: the gate is stop-and-wait, so a large
  * window would only cost RAM the kernel qualification also needs. */
-#if TM_WIFI_TCP
+#if TM_WIFI_TCP || TM_WIFI_MQTT
 /* Each finished connection lingers in TIME_WAIT for 2MSL while still holding
  * a pool entry, and the cumulative image now opens two connections in
  * sequence (Phase 7, then Phase 8).  Two entries would force lwIP to
@@ -66,6 +67,15 @@
 #define TCP_SND_BUF                     (2 * TCP_MSS)
 #define TCP_WND                         (2 * TCP_MSS)
 #define TCP_LISTEN_BACKLOG              0
+#endif
+
+/* Buddy 1 telemetry: one QoS-0 publisher. The output ring holds the
+ * 5 Hz status plus a burst of events while TCP waits for an ACK; the
+ * broker is on the hotspot, so a lost one is retried after 10 s, not
+ * the default 100 s. */
+#if TM_WIFI_MQTT
+#define MQTT_OUTPUT_RINGBUF_SIZE        1024
+#define MQTT_CONNECT_TIMOUT             10
 #endif
 
 #define LWIP_STATS                      0

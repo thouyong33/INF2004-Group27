@@ -139,6 +139,7 @@ log_evt(uint8_t type, uint8_t arg, int16_t val, int32_t d)
     p_e->type = type;
     p_e->arg = arg;
     p_e->val = val;
+    __asm__ volatile ("" ::: "memory");   /* entry before the count */
     g_log_n++;
 }
 
@@ -1225,4 +1226,25 @@ ctrl_log_get(ctrl_log_t *p_out)
         p_out[i - first] = g_log[i % CTRL_LOG_LEN];
     }
     return n - first;
+}
+
+uint32_t
+ctrl_log_count(void)
+{
+    return g_log_n;
+}
+
+bool
+ctrl_log_at(uint32_t idx, ctrl_log_t *p_out)
+{
+    bool b_ok = false;
+
+    if ((NULL != p_out) && (idx < g_log_n))
+    {
+        *p_out = g_log[idx % CTRL_LOG_LEN];
+        __asm__ volatile ("" ::: "memory");
+        /* still this entry if the writer has not wrapped onto it */
+        b_ok = ((g_log_n - idx) <= CTRL_LOG_LEN);
+    }
+    return b_ok;
 }

@@ -141,6 +141,13 @@ void ctrl_get_status(robot_status_t *p_st);
 /** @brief Copy the run's latest events (oldest first); returns the count. */
 uint32_t ctrl_log_get(ctrl_log_t *p_out);
 
+/** @brief Events logged this run so far, overwritten ones included. */
+uint32_t ctrl_log_count(void);
+
+/** @brief Copy event idx of this run (0 = its first); false if it is not
+ * logged yet or the rolling log has already overwritten it. */
+bool ctrl_log_at(uint32_t idx, ctrl_log_t *p_out);
+
 /** One side-step of the obstacle probe: sideways position, reading */
 typedef struct {
     int16_t y_mm;            /**< sonar's position, mm left of the start */
