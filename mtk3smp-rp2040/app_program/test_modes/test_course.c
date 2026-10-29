@@ -215,7 +215,7 @@ void ctrl_test_course(void)
         }
         tm_printf((UB *)"\n");
         tm_printf((UB *)"[CTRL]   TIMING: motion loop at least %u/s"
-                  " (1000 = every 1 ms), longest pass %u us;"
+                  " (500 = on time, 2 ms loop), longest pass %u us;"
                   " controller longest sample gap %u ms (period 20)\n",
                   (UINT)rate_min, (UINT)pass_max,
                   (UINT)ctrl_sample_gap_max_ms());

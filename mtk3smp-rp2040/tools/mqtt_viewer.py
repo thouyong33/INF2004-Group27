@@ -233,7 +233,7 @@ class Viewer:
         if r["rate"] is None:
             return
         say("run timing (Wi-Fi on): motion loop at least %d/s "
-            "(1000 = every 1 ms), longest pass %d us, busy up to %.1f%%; "
+            "(500 = on time, 2 ms loop), longest pass %d us, busy up to %.1f%%; "
             "controller at least %s samples/s (50 = every 20 ms), longest "
             "gap %d ms; status drops so far %d"
             % (r["rate"], r["pass"], r["busy"] / 10000.0,

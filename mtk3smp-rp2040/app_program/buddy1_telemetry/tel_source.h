@@ -15,7 +15,7 @@
  *   0 t_ms (uint32), 4 d_mm (int32), 8 type, 9 arg, 10 val (int16),
  *   12 index in the run (uint16)
  * System, TEL_SYS_LEN bytes, once a second (timing evidence):
- *   0 motion loops in the last second (uint16, 1000 = on time),
+ *   0 motion loops in the last second (uint16, 500 = on time: 2 ms loop),
  *   2 motion busy us per second (uint32), 6 its longest pass, us (uint16),
  *   8 controller samples in the last second (uint16, 50 while following),
  *   10 its longest sample gap this run, ms (uint16),
