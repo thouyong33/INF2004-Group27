@@ -24,8 +24,11 @@
 
 #include "barcode.h"
 
-/** white after the last bar: code ended */
-#define BCS_QUIET_MM         15
+/** white after the last bar: code ended. More than the widest space of
+ * the largest code expected (A4 scale, 18 mm): the scaled rule below can
+ * not be trusted on the first bar alone, which the IR may clip (A4 run
+ * read its first narrow bar short and cut the code after it, 29 Oct) */
+#define BCS_QUIET_MM         22
 
 /** @brief Set up the ADC and create the (idle) scanning task. */
 ER barcode_scan_create(void);

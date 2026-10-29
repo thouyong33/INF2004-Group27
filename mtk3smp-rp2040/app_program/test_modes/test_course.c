@@ -22,7 +22,7 @@
    bracket's ramp strike has been checked against the rule. */
 #define CTRLT_MM_S               100
 #define CTRLT_MAX_MM             450
-#define CTRLT_READ_MM            900   /* r: room for an A4-scale code */
+#define CTRLT_READ_MM            450   /* r: the 2-mat test space */
 #define CTRLT_SNAP_MS            500
 #define CTRLT_SNAPS              24
 
@@ -134,7 +134,7 @@ void ctrl_test_course(void)
                   "the cross,\n[CTRL]   a = line + obstacle: measure, go round"
                   " on the left, rejoin the line,\n[CTRL]   c = continuous"
                   " course: everything on, no distance limit,\n[CTRL]   r ="
-                  " line + barcode read only (no command, 900 mm)"
+                  " line + barcode read only (no command)"
                   "\n[CTRL]   (any key while running stops it)\n", run);
         console_flush_input();
         do {
