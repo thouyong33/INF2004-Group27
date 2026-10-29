@@ -57,9 +57,10 @@
 #define LINE_R_ONLY_MAX_MM   35
 #define LINE_R_DEV_MAX_CDEG  500
 /* Centre white this far (steering left): lost. 40 mm was shorter than a
- * swing under the old steering (ctrl_course_v23); with heading steering
- * the swings are short, so 60 mm leaves room without driving far blind. */
-#define LINE_LOST_MM         60
+ * swing under the old steering (ctrl_course_v23); with the smaller heading
+ * weave (v29) a swing back from the right can take exactly 60 mm of white
+ * and tripped a needless search 1-2 times a run, so 100 mm. */
+#define LINE_LOST_MM         100
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
  * toward the side the line was last seen, so a perpendicular junction arm
