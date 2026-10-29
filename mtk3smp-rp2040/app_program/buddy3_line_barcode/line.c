@@ -66,17 +66,23 @@
  * LINE_BIAS_GROW_CDEG a period: on the circuit's curve mat it turned
  * ~5 deg per 100 mm, lost the line, and after the search had found
  * it 20 deg left it steered back to the old straight (c run, v32).
- * A side held longer than any straight's weave (centre white 18-25
- * mm, black up to ~45 mm) now starts a curve: a feed-forward turn
- * (curve_ff, + left) grows LINE_CURVE_GROW_MM_S a period while the
- * line stays on the curve's outer reading (left curve: centre white;
- * right curve: centre black, right IR white) and decays
- * LINE_CURVE_DECAY_MM_S a period otherwise, so it settles where the
- * two balance. While it is on, the reference direction follows the
- * car, so the edge steering works around the turn, not against it.
+ * A curve now adds a feed-forward turn (curve_ff, + left) that grows
+ * LINE_CURVE_GROW_MM_S a period while the line is on the curve's
+ * inside and decays LINE_CURVE_DECAY_MM_S a period otherwise, so it
+ * settles where the two balance:
+ *   left curve: starts after LINE_CURVE_WHITE_MM of centre white
+ *     (a straight's weave is 18-25 mm); grows while C is white.
+ *   right curve: starts when the line is still under R alone after
+ *     the car has turned LINE_R_DEV_MAX_CDEG right (that cap used to
+ *     send it straight on, off the curve); grows while C or R alone
+ *     is black. A long C-black start (v33) also fired on straights.
+ * While it is on, the reference direction follows the car and the
+ * bias stays at LINE_BIAS_CDEG (v33 added the growing bias to the
+ * curve turn and overturned right), barcode read mode and junction
+ * arms are ignored (on a left curve the left IR crosses the line and
+ * started a "read" that cancelled the curve, v33 runs 1 and 2).
  * LINE_CURVE_MAX_MM_S a side is a ~14 cm radius at 100 mm/s. */
 #define LINE_CURVE_WHITE_MM  40
-#define LINE_CURVE_BLACK_MM  60
 #define LINE_CURVE_GROW_MM_S 2
 #define LINE_CURVE_DECAY_MM_S 2
 #define LINE_CURVE_MAX_MM_S  40
@@ -300,7 +306,6 @@ line_task_main(INT stacd, void *exinf)
     int32_t prev_d;
     int32_t step;
     int32_t curve_ff;        /* curve feed-forward, mm/s, + left */
-    int32_t black_since;     /* centre black, right white, since */
     int32_t white_hdg = 0;   /* heading when the centre went white */
     int32_t found;
     bool b_lost;
@@ -332,7 +337,6 @@ line_task_main(INT stacd, void *exinf)
         g_line_dir = 0;
         prev_d = 0;
         curve_ff = 0;
-        black_since = -1;
         base = g_base;
         g_end = LINE_END_NONE;
 
@@ -387,7 +391,8 @@ line_task_main(INT stacd, void *exinf)
                 b_straight = false;
                 run = 0;
             }
-            b_reading = b_straight && ((d - str_start) <= STRAIGHT_MAX_MM);
+            b_reading = b_straight && ((d - str_start) <= STRAIGHT_MAX_MM)
+                        && (0 == curve_ff);
 
             /* Ramp hold: drive along the line's direction on the encoders,
              * ignore the IR */
@@ -492,23 +497,13 @@ line_task_main(INT stacd, void *exinf)
              *        20 mm out over white on a plain line) -> straight on,
              *        unless R has been black longer than an arm (a ramp
              *        beside the line) -> as 1 0 */
-            if (b_c_on && !b_r_on)
-            {
-                if (black_since < 0)
-                {
-                    black_since = d;
-                }
-            }
-            else
-            {
-                black_since = -1;
-            }
             if (d < straight_until)
             {
                 off = 0;
                 white_since = -1;
             }
-            else if (b_c_on && b_r_on && ((d - r_since) <= LINE_JUNC_MAX_MM))
+            else if (b_c_on && b_r_on && ((d - r_since) <= LINE_JUNC_MAX_MM)
+                     && (0 == curve_ff))
             {
                 /* Both black: hold straight; once it has lasted
                  * LINE_JUNC_CONFIRM_MM it may be a junction arm (reported
@@ -531,16 +526,26 @@ line_task_main(INT stacd, void *exinf)
                 off = -1;
                 white_since = -1;
             }
-            else if (b_r_on && ((d - r_since) <= LINE_R_ONLY_MAX_MM))
+            else if (b_r_on && (((d - r_since) <= LINE_R_ONLY_MAX_MM)
+                                || (curve_ff < 0)))
             {
-                off = (heading_cdeg() > (line_dir - LINE_R_DEV_MAX_CDEG))
-                      ? -2 : 0;
-                last_side = -1;
-                white_since = -1;
                 if (curve_ff > 0)
                 {
                     curve_ff = 0;   /* overshot left: the curve is over */
                 }
+                else if ((0 == curve_ff) && !b_reading
+                         && (heading_cdeg()
+                             <= (line_dir - LINE_R_DEV_MAX_CDEG)))
+                {
+                    curve_ff = -LINE_CURVE_GROW_MM_S;   /* right curve */
+                }
+                else
+                {
+                    /* weave, or already on a right curve */
+                }
+                off = -2;
+                last_side = -1;
+                white_since = -1;
             }
             else
             {
@@ -622,6 +627,11 @@ line_task_main(INT stacd, void *exinf)
                 bias = (off < 0) ? -(LINE_READ_BIAS_CDEG * ((off < -1) ? 2 : 1))
                                  : LINE_READ_BIAS_CDEG;
             }
+            else if (0 != curve_ff)
+            {
+                bias = (off < 0) ? -(LINE_BIAS_CDEG * ((off < -1) ? 2 : 1))
+                                 : LINE_BIAS_CDEG;
+            }
             else
             {
                 run++;
@@ -640,9 +650,7 @@ line_task_main(INT stacd, void *exinf)
             {
                 curve_ff += LINE_CURVE_GROW_MM_S;
             }
-            else if ((-1 == off) && (black_since >= 0)
-                     && ((curve_ff < 0)
-                         || ((d - black_since) >= LINE_CURVE_BLACK_MM)))
+            else if ((off < 0) && (curve_ff < 0))
             {
                 curve_ff -= LINE_CURVE_GROW_MM_S;
             }
