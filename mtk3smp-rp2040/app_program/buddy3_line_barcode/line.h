@@ -57,7 +57,8 @@ typedef struct {
 ER line_task_create(void);
 
 /**
- * @brief Start following at base_mm_s; stops after max_mm of travel.
+ * @brief Start following at base_mm_s; stops after max_mm of travel
+ * (0 = no limit: the continuous course run).
  * Clears the trace and starts recording.
  */
 ER line_follow_start(int16_t base_mm_s, int16_t max_mm);

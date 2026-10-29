@@ -44,6 +44,9 @@
 /** controller: went round the obstacle, val = mm left of the start where
  * it stopped (0 = back on the line's position) */
 #define EVT_OBST_AVOID       15u
+/** controller: obstacle sequence over (the one-off report), arg 1 = went
+ * round and rejoined the line, 0 = failed; val = time taken, x0.1 s */
+#define EVT_OBST_DONE        16u
 
 /** One event, 4 bytes */
 typedef struct {

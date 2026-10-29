@@ -55,12 +55,12 @@ LOCAL const char *ctrlt_state(UB s)
 
 LOCAL const char *ctrlt_evt(UB e)
 {
-    static const char *const txt[16] = {
+    static const char *const txt[17] = {
         "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
         "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND",
-        "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID"
+        "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID", "OBST_DONE"
     };
-    return (e < 16u) ? txt[e] : "?";
+    return (e < 17u) ? txt[e] : "?";
 }
 
 LOCAL const char *ctrlt_cmd(UB c)
@@ -99,20 +99,24 @@ void ctrl_test_course(void)
                   "+ ramp,"
                   "  o = line + obstacle stop,  b = line + barcode command at "
                   "the cross,\n[CTRL]   a = line + obstacle: measure, go round"
-                  " on the left, rejoin the line"
+                  " on the left, rejoin the line,\n[CTRL]   c = continuous"
+                  " course: everything on, no distance limit"
                   "\n[CTRL]   (any key while running stops it)\n", run);
         console_flush_input();
         do {
             c = console_try_getc();
             tk_dly_tsk(50);
-        } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a'));
+        } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a')
+                && (c != 'c'));
         opts = (c == 'o') ? CTRL_OPT_OBSTACLE
                : ((c == 'a') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID)
-               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u));
+               : ((c == 'c') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID
+                                | CTRL_OPT_BARCODE)
+               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u)));
         tk_dly_tsk(500);
         console_flush_input();
 
-        er = ctrl_run(CTRLT_MM_S, CTRLT_MAX_MM, opts);
+        er = ctrl_run(CTRLT_MM_S, (c == 'c') ? 0 : CTRLT_MAX_MM, opts);
         if(E_OK != er) {
             tm_printf((UB *)"[CTRL] ctrl_run failed: %d\n", er);
             continue;
@@ -125,20 +129,21 @@ void ctrl_test_course(void)
                 }
                 tk_dly_tsk(20);
             }
-            if(ns < CTRLT_SNAPS) {
-                ctrl_get_status(&snaps[ns++]);
-            }
+            /* rolling: the latest CTRLT_SNAPS are printed */
+            ctrl_get_status(&snaps[ns % CTRLT_SNAPS]);
+            ns++;
         }
         ctrl_get_status(&st);
 
         tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
                   " faults 0x%x, events dropped %d\n", run,
-                  (0u != (opts & CTRL_OPT_OBSTACLE)) ? "line + obstacle"
+                  (c == 'c') ? "continuous course"
+                  : (0u != (opts & CTRL_OPT_OBSTACLE)) ? "line + obstacle"
                   : ((0u != (opts & CTRL_OPT_BARCODE)) ? "line + "
                                                          "barcode" : "line + "
                                                                      "ramp"),
                   ctrlt_state(st.state),
-                  st.dist_mm, st.heading_cdeg, (INT)st.faults,
+                  (INT)st.total_cm * 10, st.heading_cdeg, (INT)st.faults,
                       (INT)ctrl_evt_dropped());
         tm_printf((UB *)"[CTRL]   REPORT: highest ramp %d mm",
                   (INT)st.max_ramp_mm);
@@ -151,7 +156,7 @@ void ctrl_test_course(void)
         tm_printf((UB *)"[CTRL]   events (t_ms, d_mm, event, arg, val):\n");
         for(i = 0; i < n; i++) {
             tm_printf((UB *)"[CTRL]     %d, %d, %s, %d, %d", (INT)lg[i].t_ms,
-                      lg[i].d_mm,
+                      (INT)lg[i].d_mm,
                       ctrlt_evt(lg[i].type), (INT)lg[i].arg, lg[i].val);
             if(EVT_BARCODE == lg[i].type) {
                 if(0u != lg[i].arg) {
@@ -176,6 +181,11 @@ void ctrl_test_course(void)
                           lg[i].val,
                           (lg[i].arg >= 2u) ? ", still on the face at the"
                                               " limit" : "");
+            } else if(EVT_OBST_DONE == lg[i].type) {
+                tm_printf((UB *)"   (%s in %d.%d s)",
+                          (0u != lg[i].arg) ? "went round, line rejoined"
+                                            : "FAILED", lg[i].val / 10,
+                          lg[i].val % 10);
             } else if(EVT_OBST_CREEP == lg[i].type) {
                 tm_printf((UB *)"   (crept in to scan, sonar %d mm)",
                           lg[i].val);
@@ -208,7 +218,8 @@ void ctrl_test_course(void)
                         "heading, roll,"
                   " sonar_mm, flags R/I/W, pending command, last event):\n",
                       CTRLT_SNAP_MS);
-        for(i = 0; i < ns; i++) {
+        for(k = (ns > CTRLT_SNAPS) ? (ns - CTRLT_SNAPS) : 0; k < ns; k++) {
+            i = k % CTRLT_SNAPS;
             tm_printf((UB *)"[CTRL]     %s, %d, %d, %d, %d, %c%c%c, %s, %s\n",
                       ctrlt_state(snaps[i].state), snaps[i].dist_mm,
                           snaps[i].heading_cdeg,

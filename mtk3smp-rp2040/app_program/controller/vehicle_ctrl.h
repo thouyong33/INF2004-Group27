@@ -11,11 +11,14 @@
  * motion task's hump mask and the line task's ramp hold. It is the only
  * caller of those two, and of line_follow_start/stop during a run.
  *
- * A run follows the line at a set speed until the distance limit, an
- * obstacle (stop with the >= 5 cm gap, then a scan to estimate its width:
- * EVT_OBST_WIDTH and robot_status.obstacle_width_mm), a fault, a lost
- * line, or ctrl_stop(). Avoiding the obstacle comes later. The highest
- * ramp of the run is kept in robot_status.max_ramp_mm.
+ * A run follows the line at a set speed until the distance limit (0 =
+ * none: the continuous course run, every scenario followed by more line
+ * following), an obstacle (stop with the >= 5 cm gap, then a side-step
+ * probe of its width; with CTRL_OPT_AVOID it then goes round and carries
+ * on), a fault, a lost line, or ctrl_stop(). The highest ramp of the run
+ * is kept in robot_status.max_ramp_mm. Each scenario leaves a one-off
+ * report in the event log: RAMP_OFF (height), BARCODE + COMMAND, and
+ * OBSTACLE ... OBST_DONE (stop range, edges, width, result, time).
  *
  * Barcodes (CTRL_OPT_BARCODE): the barcode task reads the left IR while
  * following and posts EVT_BARCODE; the controller keeps the command and
@@ -79,13 +82,15 @@
  * line behind it and carry on */
 #define CTRL_OPT_AVOID        (1u << 3)
 
-/** Snapshot for telemetry and tests, 16 bytes */
+/** Snapshot for telemetry and tests, 18 bytes */
 typedef struct {
     uint8_t state;           /**< CTRL_ST_* */
     uint8_t faults;          /**< FAULT_* bits */
     uint8_t last_evt;        /**< EVT_* last handled or raised */
     uint8_t flags;           /**< CTRL_FLAG_* */
-    int16_t dist_mm;         /**< since the run started */
+    /** since following last (re)started: a turn or an obstacle restarts
+     * it (wraps after 32 m on a long straight) */
+    int16_t dist_mm;
     int16_t heading_cdeg;    /**< encoders, since the run started, left + */
     int16_t roll_cdeg;       /**< from rest, x0.01 deg */
     int16_t obstacle_mm;     /**< last sonar reading, -1 = none */
@@ -93,18 +98,20 @@ typedef struct {
     int16_t obstacle_width_mm;
     uint8_t max_ramp_mm;     /**< highest ramp (hump) this run, mm */
     uint8_t spare;
+    uint16_t total_cm;       /**< since the run started, cm (655 m) */
 } robot_status_t;
 
 /** One logged event (tests) */
 typedef struct {
-    uint16_t t_ms;           /**< since the run started */
-    int16_t d_mm;
+    uint32_t t_ms;           /**< since the run started */
+    int32_t d_mm;            /**< total distance since the run started */
     uint8_t type;            /**< EVT_* */
     uint8_t arg;
     int16_t val;
 } ctrl_log_t;
 
-#define CTRL_LOG_LEN         32u
+/** events kept: the latest CTRL_LOG_LEN of the run (rolling) */
+#define CTRL_LOG_LEN         64u
 
 /**
  * @brief Create the event queue, the controller, line and obstacle tasks,
@@ -112,7 +119,8 @@ typedef struct {
  */
 ER ctrl_task_create(void);
 
-/** @brief Start a run (motion faults and the line-lost fault are cleared). */
+/** @brief Start a run (motion faults and the line-lost fault are cleared);
+ * max_mm 0 = no limit (continuous). */
 ER ctrl_run(int16_t speed_mm_s, int16_t max_mm, uint8_t opts);
 
 /** @brief Distance to follow after a junction turn (0 = end the run there). */
@@ -127,7 +135,7 @@ bool ctrl_running(void);
 /** @brief Copy the status snapshot. */
 void ctrl_get_status(robot_status_t *p_st);
 
-/** @brief Copy this run's event log (oldest first); returns the count. */
+/** @brief Copy the run's latest events (oldest first); returns the count. */
 uint32_t ctrl_log_get(ctrl_log_t *p_out);
 
 /** One side-step of the obstacle probe: sideways position, reading */

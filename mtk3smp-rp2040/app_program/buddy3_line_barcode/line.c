@@ -275,7 +275,7 @@ line_task_main(INT stacd, void *exinf)
                 break;
             }
             d = dist_mm();
-            if (d >= g_max_mm)
+            if ((g_max_mm > 0) && (d >= g_max_mm))
             {
                 g_end = LINE_END_DISTANCE;
                 break;

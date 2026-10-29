@@ -81,7 +81,9 @@ static uint8_t g_max_ramp = 0u;
 static crit_lock_t g_status_lock;
 
 static ctrl_log_t g_log[CTRL_LOG_LEN];
-static volatile uint32_t g_log_n = 0u;
+static volatile uint32_t g_log_n = 0u;      /* events logged this run */
+static int32_t g_dist_base = 0;             /* run distance before this
+                                               following segment, mm */
 static uint32_t g_t0 = 0u;
 
 static uint32_t
@@ -131,13 +133,9 @@ log_evt(uint8_t type, uint8_t arg, int16_t val, int32_t d)
 {
     ctrl_log_t *p_e;
 
-    if (g_log_n >= CTRL_LOG_LEN)
-    {
-        return;
-    }
-    p_e = &g_log[g_log_n];
-    p_e->t_ms = (uint16_t)(now_ms() - g_t0);
-    p_e->d_mm = (int16_t)d;
+    p_e = &g_log[g_log_n % CTRL_LOG_LEN];   /* rolling: oldest overwritten */
+    p_e->t_ms = now_ms() - g_t0;
+    p_e->d_mm = g_dist_base + d;
     p_e->type = type;
     p_e->arg = arg;
     p_e->val = val;
@@ -164,6 +162,7 @@ status_set(uint8_t state, uint8_t last_evt, uint8_t flags, int32_t d,
     g_status.obstacle_mm = obstacle_last_mm();
     g_status.obstacle_width_mm = g_obst_width;
     g_status.max_ramp_mm = g_max_ramp;
+    g_status.total_cm = (uint16_t)((g_dist_base + d) / 10);
     CRIT_EXIT(&g_status_lock, sts);
 }
 
@@ -695,6 +694,7 @@ ctrl_task_main(INT stacd, void *exinf)
     bool b_on_ramp;
     bool b_jolt_pending;
     int32_t junc_last;
+    uint32_t t_obst;
     TMO wait;
 
     (void)stacd;
@@ -743,6 +743,8 @@ ctrl_task_main(INT stacd, void *exinf)
         ramp_h = 0;
         b_jolt_pending = false;
         junc_last = -10000;
+        t_obst = 0u;
+        g_dist_base = 0;
         imu_fail = 0u;
         ring_i = 0u;
         ring_n = 0u;
@@ -771,6 +773,7 @@ ctrl_task_main(INT stacd, void *exinf)
                     if (0u != (opts & CTRL_OPT_AVOID))
                     {
                         /* Go round it and carry on along the line */
+                        t_obst = now_ms();
                         status_set(CTRL_ST_OBSTACLE, EVT_OBSTACLE, flags, d,
                                    heading_cdeg(), roll);
                         barcode_scan_enable(false);
@@ -782,13 +785,22 @@ ctrl_task_main(INT stacd, void *exinf)
                                 (int16_t)creep_to_scan_range(), dist_mm());
                         if (!avoid_obstacle())
                         {
+                            log_evt(EVT_OBST_DONE, 0u,
+                                    (int16_t)((now_ms() - t_obst) / 100u),
+                                    dist_mm());
                             state = CTRL_ST_FAULT;
                             break;
                         }
+                        log_evt(EVT_OBST_DONE, 1u,
+                                (int16_t)((now_ms() - t_obst) / 100u),
+                                dist_mm());
                         obstacle_watch(true);
                         tk_dly_tsk(CTRL_WATCH_SETTLE_MS);
                         requeue_events();
-                        (void)line_follow_start(g_speed, AVOID_AFTER_MM);
+                        g_dist_base += dist_mm();
+                        (void)line_follow_start(g_speed,
+                                                (g_max_mm > 0)
+                                                ? AVOID_AFTER_MM : 0);
                         if (0u != (opts & CTRL_OPT_BARCODE))
                         {
                             barcode_scan_enable(true);
@@ -870,13 +882,16 @@ ctrl_task_main(INT stacd, void *exinf)
                         {
                             state = CTRL_ST_FAULT;
                         }
-                        else if (g_after_mm <= 0)
+                        else if ((g_max_mm > 0) && (g_after_mm <= 0))
                         {
                             state = CTRL_ST_DONE;
                         }
                         else
                         {
-                            (void)line_follow_start(g_speed, g_after_mm);
+                            g_dist_base += dist_mm();
+                            (void)line_follow_start(g_speed,
+                                                    (g_max_mm > 0) ? g_after_mm
+                                                                   : 0);
                             junc_last = -10000;
                             if (0u != (opts & CTRL_OPT_BARCODE))
                             {
@@ -1197,14 +1212,16 @@ ctrl_log_get(ctrl_log_t *p_out)
 {
     uint32_t i;
     uint32_t n = g_log_n;
+    uint32_t first;
 
     if (NULL == p_out)
     {
         return 0u;
     }
-    for (i = 0u; i < n; i++)
+    first = (n > CTRL_LOG_LEN) ? (n - CTRL_LOG_LEN) : 0u;
+    for (i = first; i < n; i++)
     {
-        p_out[i] = g_log[i];
+        p_out[i - first] = g_log[i % CTRL_LOG_LEN];
     }
-    return n;
+    return n - first;
 }
