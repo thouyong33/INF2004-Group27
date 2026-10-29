@@ -55,14 +55,16 @@
 #define ARM_CLEAR_STEPS      ((ARM_CLEAR_MM * 1000) / UM_PER_EDGE)
 
 /* Distance travelled AT THE LEFT IR, not at the car's centre. While line
- * following the car yaws +/-0.5..2 rad/s, and the left IR sits ~80 mm left
+ * following the car yaws +/-0.5..2 rad/s, and the left IR sits ~65 mm left
  * of the centreline, so its own speed along the barcode swings by tens of
  * mm/s around the centre's 100 mm/s: bar widths measured with the centre
  * distance came out distorted and no read decoded (line runs, 24 Oct).
  * Along the heading, s_IR = s_centre - theta * 80, theta = (sR - sL) / 114:
- * s_IR = sL * (0.5 + 80/114) + sR * (0.5 - 80/114), weights x4096. */
-#define BCS_W_LEFT           4923L   /* 1.2018 x 4096 */
-#define BCS_W_RIGHT          (-827L) /* -0.2018 x 4096 */
+ * s_IR = sL * (0.5 + 65/114) + sR * (0.5 - 65/114), weights x4096.
+ * 65 mm: the bracket moved out on 29 Oct (was ~50 mm left of the centre IR,
+ * only ~8 mm inside the bars, which start 42 mm left of it) */
+#define BCS_W_LEFT           4383L   /* 1.0702 x 4096 */
+#define BCS_W_RIGHT          (-287L) /* -0.0702 x 4096 */
 
 static ID g_bcs_tsk = 0;
 static ID g_bcs_flg = 0;

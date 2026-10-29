@@ -380,7 +380,8 @@ creep_to_scan_range(void)
 
 /* Drive past on the left (the car's right side faces the obstacle) */
 #define AVOID_HALF_R_MM      70      /* centre to the right wheel's outside */
-#define AVOID_HALF_L_MM      85      /* centre to the left IR bracket */
+/* centre to the left IR bracket: wheel outside (70) + 20 mm, 29 Oct */
+#define AVOID_HALF_L_MM      90
 #define AVOID_SENSOR_AHEAD_MM 70     /* sonar ahead of the axle */
 #define AVOID_MARGIN_MM      40      /* beyond the width estimate's error */
 /* plan for at least this width (course obstacles are 10-20 cm): a low

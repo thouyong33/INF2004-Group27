@@ -29,8 +29,8 @@
  * period while on the same side (curves) up to LINE_BIAS_MAX_CDEG. The
  * wheel difference is the heading error / LINE_HDG_GAIN_DIV: at a side
  * change the error flips at once, so the car turns back at once. */
-#define LINE_BIAS_CDEG       300
-#define LINE_BIAS_GROW_CDEG  15
+#define LINE_BIAS_CDEG       200
+#define LINE_BIAS_GROW_CDEG  8
 #define LINE_BIAS_MAX_CDEG   4500
 #define LINE_HDG_GAIN_DIV    15      /* mm/s per 0.15 deg of heading error */
 #define LINE_TRIM_MAX_MM_S   60      /* one side's steering cap */
@@ -76,13 +76,16 @@
 /* steering mm/s = heading x0.01 deg / 20 */
 #define HOLD_GAIN_DIV        20
 #define HOLD_CORR_MAX_MM_S   30
-/* Barcode hold (line_set_straight): the left IR is ~130 mm ahead of the
- * axle, so the +/-8 deg weave swings it ~+/-18 mm across a 24 mm white gap
- * and it kept leaving the bars (A4 reads with 19-53 mm "spaces", 29 Oct).
- * While a read is in progress the car drives straight along the line's
- * direction instead, then follows on at once (no search: the line is
- * straight under every barcode). Never longer than this: */
+/* Barcode read mode (line_set_straight): the left IR is ~130 mm ahead of
+ * the axle, so the weave swings it sideways (+/-18 mm at +/-8 deg) and it
+ * left the bars (A4 reads with 19-53 mm "spaces", 29 Oct). A blind
+ * straight hold fixed the heading but kept whatever sideways offset the
+ * car had at the first bar (v27/v28). While a read is in progress the car
+ * now keeps following the edge, with a fixed +/-LINE_READ_BIAS_CDEG aim
+ * (no growth): the centre IR stays on the edge and the heading within
+ * ~+/-2 deg. Never longer than this: */
 #define STRAIGHT_MAX_MM      400
+#define LINE_READ_BIAS_CDEG  100
 /* Line direction: the encoder heading averaged over ~LINE_DIR_MM of
  * following, so the weave and a knock just before the ramp (the IR
  * bracket hits it first) do not set the direction the ramp is held on */
@@ -259,7 +262,7 @@ line_task_main(INT stacd, void *exinf)
     bool b_r_on;
     bool b_holding;
     bool b_straight;
-    int32_t str_dir;
+    bool b_reading;
     int32_t str_start;
     int32_t hold_until;
     bool b_after_hold;
@@ -286,7 +289,7 @@ line_task_main(INT stacd, void *exinf)
         r_since = -1;
         b_junc_ok = false;
         b_straight = false;
-        str_dir = 0;
+        b_reading = false;
         str_start = 0;
         b_holding = false;
         b_after_hold = false;
@@ -336,39 +339,19 @@ line_task_main(INT stacd, void *exinf)
                 b_junc_ok = false;
             }
 
-            /* Barcode hold: straight along the line's direction while the
-             * barcode task reads (the ramp hold below takes precedence) */
-            if ((0u != g_straight) && (!b_holding)
-                && ((!b_straight) || ((d - str_start) <= STRAIGHT_MAX_MM)))
+            /* Barcode read mode (see LINE_READ_BIAS_CDEG), at most
+             * STRAIGHT_MAX_MM per read */
+            if ((0u != g_straight) && (!b_straight))
             {
-                if (!b_straight)
-                {
-                    b_straight = true;
-                    str_dir = line_dir;
-                    str_start = d;
-                }
-                target = (str_dir - heading_cdeg()) / HOLD_GAIN_DIV;
-                target = (target > HOLD_CORR_MAX_MM_S) ? HOLD_CORR_MAX_MM_S
-                       : ((target < -HOLD_CORR_MAX_MM_S) ? -HOLD_CORR_MAX_MM_S
-                                                          : target);
-                corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
-                      : ((target < corr - LINE_SLEW_MM_S) ? -LINE_SLEW_MM_S
-                                                          : (target - corr));
-                (void)motion_set_velocity((int16_t)(base - corr),
-                                          (int16_t)(base + corr));
-                prev_d = d;
-                trace(d, corr, 0, bits, LINE_TR_HOLD, LINE_TR_NO_OFF);
-                tk_dly_tsk(LINE_PERIOD_MS);
-                continue;
+                b_straight = true;
+                str_start = d;
             }
-            if (b_straight && (0u == g_straight))
+            else if ((0u == g_straight) && b_straight)
             {
-                /* Read over: follow on from the edge as before */
                 b_straight = false;
                 run = 0;
-                prev_off = 0;
-                white_since = -1;
             }
+            b_reading = b_straight && ((d - str_start) <= STRAIGHT_MAX_MM);
 
             /* Ramp hold: drive along the line's direction on the encoders,
              * ignore the IR */
@@ -557,6 +540,11 @@ line_task_main(INT stacd, void *exinf)
             if (0 == off)
             {
                 bias = 0;
+            }
+            else if (b_reading)
+            {
+                bias = (off < 0) ? -(LINE_READ_BIAS_CDEG * ((off < -1) ? 2 : 1))
+                                 : LINE_READ_BIAS_CDEG;
             }
             else
             {

@@ -84,10 +84,10 @@ void line_follow_stop(void);
 void line_set_hold(bool b_hold);
 
 /**
- * @brief Barcode hold: while set, drive straight along the line's direction
- * (at most 400 mm), then follow on at once. Set by the barcode task from
- * the first bar of a read until it ends, so the left IR crosses the code
- * on one straight path. The ramp hold takes precedence.
+ * @brief Barcode read mode: while set, keep following the edge with a small
+ * fixed aim (+/-1 deg, no growth) so the left IR crosses the code steadily
+ * (at most 400 mm). Set by the barcode task from the first bar of a read
+ * until it ends. The ramp hold takes precedence.
  */
 void line_set_straight(bool b_on);
 
