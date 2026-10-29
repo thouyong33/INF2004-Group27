@@ -25,6 +25,38 @@
 #define CTRLT_SNAP_MS            500
 #define CTRLT_SNAPS              24
 
+/* The line task's 20 ms trace (since following last started, up to 8 s):
+   distance, heading, which IRs saw black, the steering decision, the wheel
+   speed difference; S = an on-spot search (every 200 ms), H = ramp hold */
+LOCAL void ctrlt_print_line_trace(void)
+{
+    static line_trace_t tr[LINE_TRACE_LEN];
+    INT n;
+    INT i;
+
+    n = (INT)line_trace_get(tr);
+    tm_printf((UB *)"[CTRL]   line trace (%d periods; d_mm:heading x0.01:IRs"
+                    " C/R:steer:corr):", n);
+    for(i = 0; i < n; i++) {
+        if((i % 8) == 0) {
+            tm_printf((UB *)"\n[CTRL]    ");
+        }
+        if(LINE_TR_FOLLOW == tr[i].searching) {
+            tm_printf((UB *)" %d:%d:%c%c:%d:%d", tr[i].d_mm,
+                      tr[i].heading_cdeg,
+                      (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 'C' : '-',
+                      (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 'R' : '-',
+                      (INT)tr[i].off, tr[i].corr);
+        } else {
+            tm_printf((UB *)" %d:%d:%c%c:%c", tr[i].d_mm, tr[i].heading_cdeg,
+                      (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 'C' : '-',
+                      (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 'R' : '-',
+                      (LINE_TR_HOLD == tr[i].searching) ? 'H' : 'S');
+        }
+    }
+    tm_printf((UB *)"\n");
+}
+
 /* The obstacle probe's side-steps (sonar position, median reading) */
 LOCAL void ctrlt_print_probe(void)
 {
@@ -233,6 +265,9 @@ void ctrl_test_course(void)
         }
         if(0u != (opts & CTRL_OPT_OBSTACLE)) {
             ctrlt_print_probe();
+        }
+        if((c == 'l') || (c == 'c')) {
+            ctrlt_print_line_trace();
         }
         tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose "
                         "gap for o).\n");

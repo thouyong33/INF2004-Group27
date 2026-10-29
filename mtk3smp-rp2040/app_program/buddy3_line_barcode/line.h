@@ -44,7 +44,13 @@ typedef struct {
     int16_t trim;            /**< periods steering to the same side */
     uint8_t bits;            /**< IR_BIT_LEFT/CENTRE/RIGHT at this period */
     uint8_t searching;       /**< LINE_TR_FOLLOW / SEARCH / HOLD */
+    int16_t heading_cdeg;    /**< encoder heading since the start, left + */
+    /** steering decision: 1 left, 0 straight, -1 right, -2 hard right,
+     * LINE_TR_NO_OFF when not following */
+    int8_t off;
 } line_trace_t;
+
+#define LINE_TR_NO_OFF       9
 
 #define LINE_TR_FOLLOW       0u      /**< following the line */
 /** searching on the spot (every 200 ms) */

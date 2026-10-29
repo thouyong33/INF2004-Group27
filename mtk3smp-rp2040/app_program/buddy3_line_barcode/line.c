@@ -111,7 +111,8 @@ turned_cdeg(int32_t l0, int32_t r0)
 }
 
 static void
-trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode)
+trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode,
+      int32_t off)
 {
     line_trace_t *p_t;
 
@@ -125,6 +126,8 @@ trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode)
     p_t->trim = (int16_t)trim;
     p_t->bits = (uint8_t)bits;
     p_t->searching = mode;
+    p_t->heading_cdeg = (int16_t)turned_cdeg(0, 0);
+    p_t->off = (int8_t)off;
     g_trace_n++;
 }
 
@@ -197,7 +200,8 @@ search_turn(int32_t to_cdeg)
         waited += 4u;
         if (0u == (waited % SEARCH_TRACE_MS))
         {
-            trace(dist_mm(), 0, 0, bits, LINE_TR_SEARCH);
+            trace(dist_mm(), 0, 0, bits, LINE_TR_SEARCH,
+                  LINE_TR_NO_OFF);
         }
     }
     motion_stop();
@@ -339,7 +343,7 @@ line_task_main(INT stacd, void *exinf)
                 (void)motion_set_velocity((int16_t)(base - corr),
                                           (int16_t)(base + corr));
                 prev_d = d;
-                trace(d, corr, 0, bits, LINE_TR_HOLD);
+                trace(d, corr, 0, bits, LINE_TR_HOLD, LINE_TR_NO_OFF);
                 tk_dly_tsk(LINE_PERIOD_MS);
                 continue;
             }
@@ -354,7 +358,8 @@ line_task_main(INT stacd, void *exinf)
                 {
                     motion_stop();
                     tk_dly_tsk(200u);
-                    trace(d, 0, 0, bits, LINE_TR_SEARCH);
+                    trace(d, 0, 0, bits, LINE_TR_SEARCH,
+                  LINE_TR_NO_OFF);
                     if (search_window(hold_dir, SEARCH_RAMP_CDEG, 1)
                         || (0u != g_hold))
                     {
@@ -446,7 +451,8 @@ line_task_main(INT stacd, void *exinf)
                     /* Lost: stop, then look on the spot only (raised mats) */
                     motion_stop();
                     tk_dly_tsk(200u);
-                    trace(d, 0, 0, bits, LINE_TR_SEARCH);
+                    trace(d, 0, 0, bits, LINE_TR_SEARCH,
+                  LINE_TR_NO_OFF);
                     if (search_window(line_dir, SEARCH_HALF_CDEG, last_side)
                         || (0u != g_hold))
                     {
@@ -512,7 +518,7 @@ line_task_main(INT stacd, void *exinf)
 
             (void)motion_set_velocity((int16_t)(base - corr),
                                       (int16_t)(base + corr));
-            trace(d, corr, run, bits, LINE_TR_FOLLOW);
+            trace(d, corr, run, bits, LINE_TR_FOLLOW, off);
             tk_dly_tsk(LINE_PERIOD_MS);
         }
 
