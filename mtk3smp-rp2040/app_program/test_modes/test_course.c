@@ -145,7 +145,7 @@ void ctrl_test_course(void)
         opts = (c == 'o') ? CTRL_OPT_OBSTACLE
                : ((c == 'a') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID)
                : ((c == 'c') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID
-                                | CTRL_OPT_BARCODE)
+                                | CTRL_OPT_BARCODE | CTRL_OPT_NO_CMD)
                : ((c == 'r') ? (CTRL_OPT_BARCODE | CTRL_OPT_NO_CMD)
                : ((c == 'b') ? CTRL_OPT_BARCODE : 0u))));
         tk_dly_tsk(500);
@@ -159,9 +159,18 @@ void ctrl_test_course(void)
             continue;
         }
         ns = 0;
+        if(c == 'c') {
+            tm_printf((UB *)"[CTRL] continuous run started: the serial wire can"
+                            " be unplugged now. Press s to stop (or lift the"
+                            " car: the line search fails and it stops).
+");
+        }
         while(ctrl_running()) {
             for(i = 0; (i < CTRLT_SNAP_MS / 20) && ctrl_running(); i++) {
-                if(console_try_getc() >= 0) {
+                k = console_try_getc();
+                /* c runs: only 's' stops, so a loose serial wire's noise
+                   cannot end the run */
+                if((k >= 0) && ((c != 'c') || (k == 's'))) {
                     ctrl_stop();
                 }
                 tk_dly_tsk(20);
@@ -171,6 +180,15 @@ void ctrl_test_course(void)
             ns++;
         }
         ctrl_get_status(&st);
+        if(c == 'c') {
+            /* The log stays in RAM: reconnect the serial wire, then ask */
+            tm_printf((UB *)"[CTRL] run ended; press p to print the log
+");
+            do {
+                k = console_try_getc();
+                tk_dly_tsk(50);
+            } while(k != 'p');
+        }
 
         tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
                   " faults 0x%x, events dropped %d\n", run,
