@@ -81,6 +81,9 @@
 /** with CTRL_OPT_OBSTACLE: measure it, go round on the left, rejoin the
  * line behind it and carry on */
 #define CTRL_OPT_AVOID        (1u << 3)
+/** with CTRL_OPT_BARCODE: log reads only, carry out no command (junctions
+ * are crossed straight) */
+#define CTRL_OPT_NO_CMD       (1u << 4)
 
 /** Snapshot for telemetry and tests, 18 bytes */
 typedef struct {

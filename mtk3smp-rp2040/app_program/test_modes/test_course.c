@@ -22,6 +22,7 @@
    bracket's ramp strike has been checked against the rule. */
 #define CTRLT_MM_S               100
 #define CTRLT_MAX_MM             450
+#define CTRLT_READ_MM            900   /* r: room for an A4-scale code */
 #define CTRLT_SNAP_MS            500
 #define CTRLT_SNAPS              24
 
@@ -132,23 +133,27 @@ void ctrl_test_course(void)
                   "  o = line + obstacle stop,  b = line + barcode command at "
                   "the cross,\n[CTRL]   a = line + obstacle: measure, go round"
                   " on the left, rejoin the line,\n[CTRL]   c = continuous"
-                  " course: everything on, no distance limit"
+                  " course: everything on, no distance limit,\n[CTRL]   r ="
+                  " line + barcode read only (no command, 900 mm)"
                   "\n[CTRL]   (any key while running stops it)\n", run);
         console_flush_input();
         do {
             c = console_try_getc();
             tk_dly_tsk(50);
         } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a')
-                && (c != 'c'));
+                && (c != 'c') && (c != 'r'));
         opts = (c == 'o') ? CTRL_OPT_OBSTACLE
                : ((c == 'a') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID)
                : ((c == 'c') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID
                                 | CTRL_OPT_BARCODE)
-               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u)));
+               : ((c == 'r') ? (CTRL_OPT_BARCODE | CTRL_OPT_NO_CMD)
+               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u))));
         tk_dly_tsk(500);
         console_flush_input();
 
-        er = ctrl_run(CTRLT_MM_S, (c == 'c') ? 0 : CTRLT_MAX_MM, opts);
+        er = ctrl_run(CTRLT_MM_S,
+                      (c == 'c') ? 0 : ((c == 'r') ? CTRLT_READ_MM
+                                                   : CTRLT_MAX_MM), opts);
         if(E_OK != er) {
             tm_printf((UB *)"[CTRL] ctrl_run failed: %d\n", er);
             continue;
@@ -170,6 +175,7 @@ void ctrl_test_course(void)
         tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
                   " faults 0x%x, events dropped %d\n", run,
                   (c == 'c') ? "continuous course"
+                  : (c == 'r') ? "line + barcode read only"
                   : (0u != (opts & CTRL_OPT_OBSTACLE)) ? "line + obstacle"
                   : ((0u != (opts & CTRL_OPT_BARCODE)) ? "line + "
                                                          "barcode" : "line + "
@@ -266,7 +272,7 @@ void ctrl_test_course(void)
         if(0u != (opts & CTRL_OPT_OBSTACLE)) {
             ctrlt_print_probe();
         }
-        if((c == 'l') || (c == 'c')) {
+        if((c == 'l') || (c == 'c') || (c == 'r')) {
             ctrlt_print_line_trace();
         }
         tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose "
