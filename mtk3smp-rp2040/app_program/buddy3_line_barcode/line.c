@@ -52,11 +52,13 @@
  * an arm) and then leaves C within ~7 mm (v34, 30 Oct): that is a
  * curve, so the straight hold is dropped and no junction is sent */
 #define LINE_JUNC_HOLD_C_MM  10
-/* Where the line went when both IRs read white: right of C if R was
- * the last to see black (R alone, or C and R together, and C has not
- * since been black alone this far); otherwise left. The weave only
- * leaves the line to the left (v34: after a right curve's "arm" the
- * car took the white for "line to the left" and turned 90 deg left) */
+/* Where the line went when both IRs read white: right of C if R alone
+ * (C white) was the last to see it and C has not since been black
+ * alone this far; otherwise left. The weave only leaves the line to
+ * the left (v34: after a right curve the car took the white for "line
+ * to the left" and turned 90 deg left). C and R black together does
+ * not count: a mat seam across the line reads so, and on the top
+ * straight one sent the car into a right curve (v37 runs 1-2) */
 #define LINE_RIGHT_CLEAR_MM  10
 /* Line under the right IR alone (centre white): the car overshot the line
  * to the left, a hard right brings it back. This is the weave's normal
@@ -349,6 +351,7 @@ line_task_main(INT stacd, void *exinf)
     int32_t curve_end;       /* where the last curve ended */
     int32_t ff_prev;
     bool b_after_curve;
+    int32_t run_grow = LINE_BIAS_GROW_CDEG;   /* this side's growth */
 
     (void)stacd;
     (void)exinf;
@@ -448,7 +451,10 @@ line_task_main(INT stacd, void *exinf)
              * LINE_RIGHT_CLEAR_MM) */
             if (b_r_on)
             {
-                b_line_right = true;
+                if (!b_c_on)
+                {
+                    b_line_right = true;
+                }
                 c_only_since = -1;
             }
             else if (b_c_on)
@@ -716,6 +722,11 @@ line_task_main(INT stacd, void *exinf)
             if (off != prev_off)
             {
                 run = 0;
+                /* the rate is kept until the side changes: the end of
+                 * the after-curve window mid-stretch dropped the bias
+                 * at once and flipped the steering (v37 run 4) */
+                run_grow = b_after_curve ? LINE_BIAS_GROW_AFTER_CDEG
+                                         : LINE_BIAS_GROW_CDEG;
             }
             prev_off = off;
             if (0 == off)
@@ -735,9 +746,7 @@ line_task_main(INT stacd, void *exinf)
             else
             {
                 run++;
-                bias = LINE_BIAS_CDEG
-                       + (run * (b_after_curve ? LINE_BIAS_GROW_AFTER_CDEG
-                                               : LINE_BIAS_GROW_CDEG));
+                bias = LINE_BIAS_CDEG + (run * run_grow);
                 bias = (bias > LINE_BIAS_MAX_CDEG) ? LINE_BIAS_MAX_CDEG : bias;
                 bias = (off < 0) ? -(bias * ((off < -1) ? 2 : 1)) : bias;
             }
