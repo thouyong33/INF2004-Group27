@@ -93,10 +93,16 @@
  * curve turn and overturned right), barcode read mode and junction
  * arms are ignored (on a left curve the left IR crosses the line and
  * started a "read" that cancelled the curve, v33 runs 1 and 2).
- * LINE_CURVE_MAX_MM_S a side is a ~14 cm radius at 100 mm/s. */
-#define LINE_CURVE_WHITE_MM  40
+ * LINE_CURVE_MAX_MM_S a side is a ~14 cm radius at 100 mm/s.
+ * v35 circuit runs (30 Oct): leaving a right curve the turn took ~40 mm
+ * to fade (decay 2 a period), the car turned past the straight, C saw
+ * 45 mm of white and that started a left curve: a weave that grew
+ * with every swing (run 3). A straight's weave also once held white
+ * for exactly 40 mm and turned the car 150 deg left (run 2). So the
+ * turn now fades in ~13 mm and a left curve needs 60 mm of white. */
+#define LINE_CURVE_WHITE_MM  60
 #define LINE_CURVE_GROW_MM_S 2
-#define LINE_CURVE_DECAY_MM_S 2
+#define LINE_CURVE_DECAY_MM_S 6
 #define LINE_CURVE_MAX_MM_S  40
 /* On a left curve the centre is white while the car turns toward the
  * line, so "lost" is this much turning, or distance, without finding
@@ -184,11 +190,9 @@ trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode,
 {
     line_trace_t *p_t;
 
-    if (g_trace_n >= LINE_TRACE_LEN)
-    {
-        return;
-    }
-    p_t = &g_trace[g_trace_n];
+    /* rolling: a continuous run keeps its last LINE_TRACE_LEN periods,
+       where it failed (v35 runs failed past the first 830 mm) */
+    p_t = &g_trace[g_trace_n % LINE_TRACE_LEN];
     p_t->d_mm = (int16_t)d;
     p_t->corr = (int16_t)corr;
     p_t->trim = (int16_t)trim;
@@ -874,14 +878,16 @@ line_trace_get(line_trace_t *p_out)
 {
     uint32_t i;
     uint32_t n = g_trace_n;
+    uint32_t first;
 
     if (NULL == p_out)
     {
         return 0u;
     }
-    for (i = 0u; i < n; i++)
+    first = (n > LINE_TRACE_LEN) ? (n - LINE_TRACE_LEN) : 0u;
+    for (i = first; i < n; i++)
     {
-        p_out[i] = g_trace[i];
+        p_out[i - first] = g_trace[i % LINE_TRACE_LEN];
     }
-    return n;
+    return n - first;
 }

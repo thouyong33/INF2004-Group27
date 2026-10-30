@@ -103,7 +103,8 @@ uint8_t line_follow_end(void);
 /** @brief Number of times the line was lost and found again by searching. */
 uint32_t line_recoveries(void);
 
-/** @brief Copy the trace (oldest first); returns the number of entries. */
+/** @brief Copy the trace, its latest LINE_TRACE_LEN periods (oldest
+ * first); returns the number of entries. */
 uint32_t line_trace_get(line_trace_t *p_out);
 
 #endif /* BUDDY3_LINE_H */
