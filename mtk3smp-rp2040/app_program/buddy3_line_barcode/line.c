@@ -52,13 +52,14 @@
  * an arm) and then leaves C within ~7 mm (v34, 30 Oct): that is a
  * curve, so the straight hold is dropped and no junction is sent */
 #define LINE_JUNC_HOLD_C_MM  10
-/* Where the line went when both IRs read white: right of C if R alone
- * (C white) was the last to see it and C has not since been black
- * alone this far; otherwise left. The weave only leaves the line to
- * the left (v34: after a right curve the car took the white for "line
- * to the left" and turned 90 deg left). C and R black together does
- * not count: a mat seam across the line reads so, and on the top
- * straight one sent the car into a right curve (v37 runs 1-2) */
+/* Where the line went when both IRs read white: right of C if R was
+ * the last to see black (R alone, or C and R together) and C has not
+ * since been black alone this far; otherwise left. The weave only
+ * leaves the line to the left (v34: after a right curve the car took
+ * the white for "line to the left" and turned 90 deg left). v38 left
+ * out C and R together (a mat seam reads so too), but every right
+ * curve on the circuit enters that way, with no R-alone reading after
+ * the right IR was retrimmed (v38 runs, 30 Oct): all turned left. */
 #define LINE_RIGHT_CLEAR_MM  10
 /* Line under the right IR alone (centre white): the car overshot the line
  * to the left, a hard right brings it back. This is the weave's normal
@@ -451,10 +452,7 @@ line_task_main(INT stacd, void *exinf)
              * LINE_RIGHT_CLEAR_MM) */
             if (b_r_on)
             {
-                if (!b_c_on)
-                {
-                    b_line_right = true;
-                }
+                b_line_right = true;
                 c_only_since = -1;
             }
             else if (b_c_on)
