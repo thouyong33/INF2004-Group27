@@ -46,6 +46,18 @@
  * test ramp, 27 Oct) for 100 mm or more. The junction is reported when the
  * black ends, from where it began. */
 #define LINE_JUNC_MAX_MM     35
+/* ...and is only reported once C has stayed black this far past the
+ * end of R's black. At a cross C stays on the line 25 mm or more; on a
+ * right curve the line sweeps under C and R together (it looks like
+ * an arm) and then leaves C within ~7 mm (v34, 30 Oct): that is a
+ * curve, so the straight hold is dropped and no junction is sent */
+#define LINE_JUNC_HOLD_C_MM  10
+/* Where the line went when both IRs read white: right of C if R was
+ * the last to see black (R alone, or C and R together, and C has not
+ * since been black alone this far); otherwise left. The weave only
+ * leaves the line to the left (v34: after a right curve's "arm" the
+ * car took the white for "line to the left" and turned 90 deg left) */
+#define LINE_RIGHT_CLEAR_MM  10
 /* Line under the right IR alone (centre white): the car overshot the line
  * to the left, a hard right brings it back. This is the weave's normal
  * recovery (without it, ctrl_course_v14 lost the line and searched on
@@ -309,6 +321,10 @@ line_task_main(INT stacd, void *exinf)
     int32_t white_hdg = 0;   /* heading when the centre went white */
     int32_t found;
     bool b_lost;
+    bool b_line_right;       /* white: the line is right of C */
+    int32_t c_only_since;    /* C black, R white, since */
+    int32_t junc_pending;    /* junction waiting for C to confirm */
+    int32_t junc_until = 0;
 
     (void)stacd;
     (void)exinf;
@@ -337,6 +353,9 @@ line_task_main(INT stacd, void *exinf)
         g_line_dir = 0;
         prev_d = 0;
         curve_ff = 0;
+        b_line_right = false;
+        c_only_since = -1;
+        junc_pending = -1;
         base = g_base;
         g_end = LINE_END_NONE;
 
@@ -373,10 +392,51 @@ line_task_main(INT stacd, void *exinf)
             {
                 if (b_junc_ok && ((d - r_since) <= LINE_JUNC_MAX_MM))
                 {
-                    ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)r_since);
+                    junc_pending = r_since;   /* see LINE_JUNC_HOLD_C_MM */
+                    junc_until = d + LINE_JUNC_HOLD_C_MM;
                 }
                 r_since = -1;
                 b_junc_ok = false;
+            }
+            if (junc_pending >= 0)
+            {
+                if (!b_c_on)
+                {
+                    junc_pending = -1;        /* a right curve */
+                    straight_until = -1;
+                }
+                else if (d >= junc_until)
+                {
+                    ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)junc_pending);
+                    junc_pending = -1;
+                }
+                else
+                {
+                    /* still confirming */
+                }
+            }
+
+            /* Which side the line is on when both read white (see
+             * LINE_RIGHT_CLEAR_MM) */
+            if (b_r_on)
+            {
+                b_line_right = true;
+                c_only_since = -1;
+            }
+            else if (b_c_on)
+            {
+                if (c_only_since < 0)
+                {
+                    c_only_since = d;
+                }
+                if ((d - c_only_since) >= LINE_RIGHT_CLEAR_MM)
+                {
+                    b_line_right = false;
+                }
+            }
+            else
+            {
+                c_only_since = -1;
             }
 
             /* Barcode read mode (see LINE_READ_BIAS_CDEG), at most
@@ -412,6 +472,7 @@ line_task_main(INT stacd, void *exinf)
                 b_after_hold = true;
                 run = 0;
                 curve_ff = 0;
+                b_line_right = false;
                 prev_off = 0;
                 white_since = -1;
                 last_side = 1;
@@ -549,14 +610,22 @@ line_task_main(INT stacd, void *exinf)
             }
             else
             {
-                off = 1;
+                /* the line is left of C, or right of it (between C and
+                 * R, or past R) after R saw it last */
+                off = b_line_right ? -2 : 1;
+                if (b_line_right)
+                {
+                    last_side = -1;
+                }
                 if (white_since < 0)
                 {
                     white_since = d;
                     white_hdg = heading_cdeg();
                 }
-                b_lost = (curve_ff > 0)
-                    ? (((heading_cdeg() - white_hdg) > LINE_CURVE_LOST_CDEG)
+                found = heading_cdeg() - white_hdg;
+                found = (found < 0) ? -found : found;
+                b_lost = (0 != curve_ff)
+                    ? ((found > LINE_CURVE_LOST_CDEG)
                        || ((d - white_since) > LINE_CURVE_LOST_MM))
                     : ((d - white_since) > LINE_LOST_MM);
                 if (b_lost)
@@ -587,6 +656,7 @@ line_task_main(INT stacd, void *exinf)
                         prev_off = 0;
                         white_since = -1;
                         last_side = 1;
+                        b_line_right = false;
                         continue;
                     }
                     if (0u != g_stop_req)
@@ -649,6 +719,12 @@ line_task_main(INT stacd, void *exinf)
                          || ((d - white_since) >= LINE_CURVE_WHITE_MM)))
             {
                 curve_ff += LINE_CURVE_GROW_MM_S;
+            }
+            else if ((-2 == off) && !b_r_on && (white_since >= 0)
+                     && ((curve_ff < 0)
+                         || ((d - white_since) >= (LINE_CURVE_WHITE_MM / 2))))
+            {
+                curve_ff -= LINE_CURVE_GROW_MM_S;   /* right curve */
             }
             else if ((off < 0) && (curve_ff < 0))
             {
