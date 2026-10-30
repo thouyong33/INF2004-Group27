@@ -61,6 +61,13 @@
  * curve on the circuit enters that way, with no R-alone reading after
  * the right IR was retrimmed (v38 runs, 30 Oct): all turned left. */
 #define LINE_RIGHT_CLEAR_MM  10
+/* ...unless the left IR also saw black within this of C and R both
+ * black: then it was a cross (both arms) or a seam across the mat,
+ * not a right curve (the left IR, 65 mm left, never sees a right
+ * curve). v41 runs 7-8 (30 Oct, new circuit): a cross where C left
+ * the line early was taken for a right curve and the car turned off
+ * the mat; the left IR logged its bar at the same place both times. */
+#define LINE_CROSS_WINDOW_MM 40
 /* Line under the right IR alone (centre white): the car overshot the line
  * to the left, a hard right brings it back. This is the weave's normal
  * recovery (without it, ctrl_course_v14 lost the line and searched on
@@ -358,6 +365,8 @@ line_task_main(INT stacd, void *exinf)
     int32_t found;
     bool b_lost;
     bool b_blind_right;      /* both white, the line to the right */
+    int32_t left_d;          /* where the left IR last saw black */
+    int32_t cr_d;            /* where C and R were last both black */
     bool b_line_right;       /* white: the line is right of C */
     int32_t c_only_since;    /* C black, R white, since */
     int32_t junc_pending;    /* junction waiting for C to confirm */
@@ -396,6 +405,8 @@ line_task_main(INT stacd, void *exinf)
         curve_ff = 0;
         b_line_right = false;
         c_only_since = -1;
+        left_d = -10000;
+        cr_d = -10000;
         junc_pending = -1;
         curve_end = -10000;
         base = g_base;
@@ -420,6 +431,14 @@ line_task_main(INT stacd, void *exinf)
             b_r_on = (0u != (bits & IR_BIT_RIGHT));
             b_blind_right = false;
             ff_prev = curve_ff;
+            if (0u != (bits & IR_BIT_LEFT))
+            {
+                left_d = d;
+            }
+            if (b_c_on && b_r_on)
+            {
+                cr_d = d;
+            }
             b_after_curve = (0 == curve_ff)
                             && ((d - curve_end) < LINE_AFTER_CURVE_MM);
 
@@ -446,7 +465,15 @@ line_task_main(INT stacd, void *exinf)
             }
             if (junc_pending >= 0)
             {
-                if (!b_c_on)
+                if (!b_c_on && ((left_d - cr_d) <= LINE_CROSS_WINDOW_MM)
+                    && ((cr_d - left_d) <= LINE_CROSS_WINDOW_MM))
+                {
+                    /* C left early, but the left IR saw the other arm: a
+                     * cross all the same */
+                    ctrl_evt_post(EVT_JUNCTION, 0u, (int16_t)junc_pending);
+                    junc_pending = -1;
+                }
+                else if (!b_c_on)
                 {
                     junc_pending = -1;        /* a right curve */
                     straight_until = -1;
@@ -483,6 +510,14 @@ line_task_main(INT stacd, void *exinf)
             else
             {
                 c_only_since = -1;
+            }
+            if (b_line_right && ((d - cr_d) <= LINE_CROSS_WINDOW_MM)
+                && ((left_d - cr_d) <= LINE_CROSS_WINDOW_MM)
+                && ((cr_d - left_d) <= LINE_CROSS_WINDOW_MM))
+            {
+                /* a cross or seam (see LINE_CROSS_WINDOW_MM) */
+                b_line_right = false;
+                curve_ff = (curve_ff < 0) ? 0 : curve_ff;
             }
 
             /* Barcode read mode (see LINE_READ_BIAS_CDEG), at most
