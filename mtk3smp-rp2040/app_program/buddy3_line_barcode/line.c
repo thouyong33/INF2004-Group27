@@ -606,6 +606,13 @@ line_task_main(INT stacd, void *exinf)
              *        20 mm out over white on a plain line) -> straight on,
              *        unless R has been black longer than an arm (a ramp
              *        beside the line) -> as 1 0 */
+            if ((d < straight_until) && !b_c_on)
+            {
+                /* C left the line during the arm's straight hold: a
+                 * right curve, not a cross (v40 run 2 held straight
+                 * 12 mm with the line under R alone) */
+                straight_until = -1;
+            }
             if (d < straight_until)
             {
                 off = 0;
@@ -783,12 +790,12 @@ line_task_main(INT stacd, void *exinf)
             {
                 curve_ff += LINE_CURVE_GROW_MM_S;
             }
-            else if (b_blind_right && (white_since >= 0)
-                     && ((curve_ff < 0) || !b_after_curve
-                         || ((d - white_since)
-                             >= LINE_AFTER_CURVE_WHITE_MM)))
+            else if (b_blind_right && (white_since >= 0))
             {
-                /* right curve: at once, see LINE_BLIND_RIGHT_* */
+                /* right curve: at once, see LINE_BLIND_RIGHT_*, even
+                 * just after a curve: the right IR saw the line, so
+                 * this is the S-bend's right half, not an overshoot
+                 * (v40: held off 90 mm there, the car drove off it) */
                 curve_ff = (curve_ff > -LINE_BLIND_RIGHT_START_MM_S)
                            ? -LINE_BLIND_RIGHT_START_MM_S
                            : (curve_ff - LINE_CURVE_GROW_MM_S);
