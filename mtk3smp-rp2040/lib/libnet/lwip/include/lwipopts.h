@@ -22,11 +22,11 @@
 #define LWIP_ICMP                       (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_RAW                        (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_UDP                        TM_WIFI_DHCP
-#define LWIP_TCP                        TM_WIFI_TCP
+#define LWIP_TCP                        (TM_WIFI_TCP || TM_WIFI_MQTT)
 /* The altcp shim is only needed by application protocols written against it
  * Nothing in this tree uses it; turn it on here if you add something that
  * does. */
-#define LWIP_ALTCP                      0
+#define LWIP_ALTCP                      TM_WIFI_MQTT
 #define LWIP_ALTCP_TLS                  0
 #define LWIP_DHCP                       TM_WIFI_DHCP
 #define LWIP_AUTOIP                     0
@@ -41,7 +41,7 @@
 #define LWIP_NETIF_EXT_STATUS_CALLBACK  0
 
 #define MEM_ALIGNMENT                   4
-#if TM_WIFI_TCP
+#if TM_WIFI_TCP || TM_WIFI_MQTT
 #define MEM_SIZE                        (12 * 1024)
 #else
 #define MEM_SIZE                        (8 * 1024)
@@ -54,7 +54,7 @@
 /* Phase 7 opens exactly one outbound connection and never listens.  The
  * send window stays small on purpose: the gate is stop-and-wait, so a large
  * window would only cost RAM the kernel qualification also needs. */
-#if TM_WIFI_TCP
+#if TM_WIFI_TCP || TM_WIFI_MQTT
 /* Each finished connection lingers in TIME_WAIT for 2MSL while still holding
  * a pool entry, and the cumulative image now opens two connections in
  * sequence (Phase 7, then Phase 8).  Two entries would force lwIP to
