@@ -109,6 +109,18 @@
  * it (not LINE_LOST_MM) */
 #define LINE_CURVE_LOST_CDEG 12000
 #define LINE_CURVE_LOST_MM   400
+/* Just after a curve (v36 circuit runs 4 and 5, 30 Oct): the car came
+ * back to the line slowly (bias growing LINE_BIAS_GROW_CDEG a period),
+ * 60 mm of white built up and opened a small opposite curve, which
+ * overshot and opened the next one: a +/-13 deg weave every ~250 mm
+ * on the straight. For LINE_AFTER_CURVE_MM after a curve ends the bias
+ * grows LINE_BIAS_GROW_AFTER_CDEG a period instead (a firm return to
+ * the edge), and a new curve needs LINE_AFTER_CURVE_WHITE_MM of white
+ * (still under LINE_LOST_MM) or the line under R alone does not
+ * start one at all. */
+#define LINE_AFTER_CURVE_MM  100
+#define LINE_AFTER_CURVE_WHITE_MM 90
+#define LINE_BIAS_GROW_AFTER_CDEG 30
 /* A search that finds the line further than this from the line's
  * direction found a curve: carry on turning that way (curve_ff at
  * half) from the found heading, not back to the old straight */
@@ -138,6 +150,11 @@
  * (no growth): the centre IR stays on the edge and the heading within
  * ~+/-2 deg. Never longer than this: */
 #define STRAIGHT_MAX_MM      400
+/* ...and read mode ends once C has been white this far: a code is
+ * read with C on the line's edge, and off the line the fixed aim only
+ * kept the car from steering back (v36 runs 1 and 2: ~50 mm held
+ * straight just as the line curved away) */
+#define READ_WHITE_MAX_MM    20
 #define LINE_READ_BIAS_CDEG  100
 /* Line direction: the encoder heading averaged over ~LINE_DIR_MM of
  * following, so the weave and a knock just before the ramp (the IR
@@ -329,6 +346,9 @@ line_task_main(INT stacd, void *exinf)
     int32_t c_only_since;    /* C black, R white, since */
     int32_t junc_pending;    /* junction waiting for C to confirm */
     int32_t junc_until = 0;
+    int32_t curve_end;       /* where the last curve ended */
+    int32_t ff_prev;
+    bool b_after_curve;
 
     (void)stacd;
     (void)exinf;
@@ -360,6 +380,7 @@ line_task_main(INT stacd, void *exinf)
         b_line_right = false;
         c_only_since = -1;
         junc_pending = -1;
+        curve_end = -10000;
         base = g_base;
         g_end = LINE_END_NONE;
 
@@ -380,6 +401,9 @@ line_task_main(INT stacd, void *exinf)
             bits = ir_read();
             b_c_on = (0u != (bits & IR_BIT_CENTRE));
             b_r_on = (0u != (bits & IR_BIT_RIGHT));
+            ff_prev = curve_ff;
+            b_after_curve = (0 == curve_ff)
+                            && ((d - curve_end) < LINE_AFTER_CURVE_MM);
 
             /* Junction report: when the right IR's black stretch ends, if
              * it was arm-sized and C and R were black together for
@@ -456,7 +480,9 @@ line_task_main(INT stacd, void *exinf)
                 run = 0;
             }
             b_reading = b_straight && ((d - str_start) <= STRAIGHT_MAX_MM)
-                        && (0 == curve_ff);
+                        && (0 == curve_ff)
+                        && ((white_since < 0)
+                            || ((d - white_since) < READ_WHITE_MAX_MM));
 
             /* Ramp hold: drive along the line's direction on the encoders,
              * ignore the IR */
@@ -598,7 +624,7 @@ line_task_main(INT stacd, void *exinf)
                 {
                     curve_ff = 0;   /* overshot left: the curve is over */
                 }
-                else if ((0 == curve_ff) && !b_reading
+                else if ((0 == curve_ff) && !b_reading && !b_after_curve
                          && (heading_cdeg()
                              <= (line_dir - LINE_R_DEV_MAX_CDEG)))
                 {
@@ -709,7 +735,9 @@ line_task_main(INT stacd, void *exinf)
             else
             {
                 run++;
-                bias = LINE_BIAS_CDEG + (run * LINE_BIAS_GROW_CDEG);
+                bias = LINE_BIAS_CDEG
+                       + (run * (b_after_curve ? LINE_BIAS_GROW_AFTER_CDEG
+                                               : LINE_BIAS_GROW_CDEG));
                 bias = (bias > LINE_BIAS_MAX_CDEG) ? LINE_BIAS_MAX_CDEG : bias;
                 bias = (off < 0) ? -(bias * ((off < -1) ? 2 : 1)) : bias;
             }
@@ -720,13 +748,17 @@ line_task_main(INT stacd, void *exinf)
             }
             else if ((1 == off) && (white_since >= 0)
                      && ((curve_ff > 0)
-                         || ((d - white_since) >= LINE_CURVE_WHITE_MM)))
+                         || ((d - white_since)
+                             >= (b_after_curve ? LINE_AFTER_CURVE_WHITE_MM
+                                               : LINE_CURVE_WHITE_MM))))
             {
                 curve_ff += LINE_CURVE_GROW_MM_S;
             }
             else if ((-2 == off) && !b_r_on && (white_since >= 0)
                      && ((curve_ff < 0)
-                         || ((d - white_since) >= (LINE_CURVE_WHITE_MM / 2))))
+                         || ((d - white_since)
+                             >= (b_after_curve ? LINE_AFTER_CURVE_WHITE_MM
+                                               : (LINE_CURVE_WHITE_MM / 2)))))
             {
                 curve_ff -= LINE_CURVE_GROW_MM_S;   /* right curve */
             }
@@ -751,6 +783,10 @@ line_task_main(INT stacd, void *exinf)
             curve_ff = (curve_ff > LINE_CURVE_MAX_MM_S) ? LINE_CURVE_MAX_MM_S
                      : ((curve_ff < -LINE_CURVE_MAX_MM_S)
                         ? -LINE_CURVE_MAX_MM_S : curve_ff);
+            if ((0 != ff_prev) && (0 == curve_ff))
+            {
+                curve_end = d;
+            }
             target = (((line_dir + bias) - heading_cdeg())
                       / LINE_HDG_GAIN_DIV) + curve_ff;
             lim = (off < -1) ? LINE_CORR_MAX_MM_S : LINE_TRIM_MAX_MM_S;
