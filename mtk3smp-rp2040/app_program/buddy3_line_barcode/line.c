@@ -112,6 +112,18 @@
  * it (not LINE_LOST_MM) */
 #define LINE_CURVE_LOST_CDEG 12000
 #define LINE_CURVE_LOST_MM   400
+/* Blind right turn: both IRs white with the line known to be right (a
+ * right curve's inner edge). v39 ran ~30 mm almost straight, then
+ * stacked the curve turn on a hard right (66 mm/s, ~8.5 cm radius)
+ * against ~15 cm corners: it spiralled inside the top-left corner,
+ * the IRs never reaching the line (v39 runs 1, 2, 4). Now the turn
+ * starts at once at LINE_BLIND_RIGHT_START_MM_S, the single bias is
+ * used, and curve_ff is capped at LINE_BLIND_RIGHT_MAX_MM_S: ~40 mm/s
+ * in all, a ~14 cm radius. Past LINE_BLIND_RIGHT_LOST_CDEG of turning
+ * without the line it stops and searches, left first. */
+#define LINE_BLIND_RIGHT_START_MM_S 14
+#define LINE_BLIND_RIGHT_MAX_MM_S   27
+#define LINE_BLIND_RIGHT_LOST_CDEG  9000
 /* Just after a curve (v36 circuit runs 4 and 5, 30 Oct): the car came
  * back to the line slowly (bias growing LINE_BIAS_GROW_CDEG a period),
  * 60 mm of white built up and opened a small opposite curve, which
@@ -345,6 +357,7 @@ line_task_main(INT stacd, void *exinf)
     int32_t white_hdg = 0;   /* heading when the centre went white */
     int32_t found;
     bool b_lost;
+    bool b_blind_right;      /* both white, the line to the right */
     bool b_line_right;       /* white: the line is right of C */
     int32_t c_only_since;    /* C black, R white, since */
     int32_t junc_pending;    /* junction waiting for C to confirm */
@@ -405,6 +418,7 @@ line_task_main(INT stacd, void *exinf)
             bits = ir_read();
             b_c_on = (0u != (bits & IR_BIT_CENTRE));
             b_r_on = (0u != (bits & IR_BIT_RIGHT));
+            b_blind_right = false;
             ff_prev = curve_ff;
             b_after_curve = (0 == curve_ff)
                             && ((d - curve_end) < LINE_AFTER_CURVE_MM);
@@ -646,7 +660,8 @@ line_task_main(INT stacd, void *exinf)
             {
                 /* the line is left of C, or right of it (between C and
                  * R, or past R) after R saw it last */
-                off = b_line_right ? -2 : 1;
+                off = b_line_right ? -1 : 1;
+                b_blind_right = b_line_right;
                 if (b_line_right)
                 {
                     last_side = -1;
@@ -658,10 +673,17 @@ line_task_main(INT stacd, void *exinf)
                 }
                 found = heading_cdeg() - white_hdg;
                 found = (found < 0) ? -found : found;
-                b_lost = (0 != curve_ff)
-                    ? ((found > LINE_CURVE_LOST_CDEG)
+                b_lost = b_blind_right
+                    ? ((found > LINE_BLIND_RIGHT_LOST_CDEG)
                        || ((d - white_since) > LINE_CURVE_LOST_MM))
-                    : ((d - white_since) > LINE_LOST_MM);
+                    : ((0 != curve_ff)
+                       ? ((found > LINE_CURVE_LOST_CDEG)
+                          || ((d - white_since) > LINE_CURVE_LOST_MM))
+                       : ((d - white_since) > LINE_LOST_MM));
+                if (b_lost && b_blind_right)
+                {
+                    last_side = 1;   /* turned past it: look left first */
+                }
                 if (b_lost)
                 {
                     /* Lost: stop, then look on the spot only (raised mats) */
@@ -761,13 +783,17 @@ line_task_main(INT stacd, void *exinf)
             {
                 curve_ff += LINE_CURVE_GROW_MM_S;
             }
-            else if ((-2 == off) && !b_r_on && (white_since >= 0)
-                     && ((curve_ff < 0)
+            else if (b_blind_right && (white_since >= 0)
+                     && ((curve_ff < 0) || !b_after_curve
                          || ((d - white_since)
-                             >= (b_after_curve ? LINE_AFTER_CURVE_WHITE_MM
-                                               : (LINE_CURVE_WHITE_MM / 2)))))
+                             >= LINE_AFTER_CURVE_WHITE_MM)))
             {
-                curve_ff -= LINE_CURVE_GROW_MM_S;   /* right curve */
+                /* right curve: at once, see LINE_BLIND_RIGHT_* */
+                curve_ff = (curve_ff > -LINE_BLIND_RIGHT_START_MM_S)
+                           ? -LINE_BLIND_RIGHT_START_MM_S
+                           : (curve_ff - LINE_CURVE_GROW_MM_S);
+                curve_ff = (curve_ff < -LINE_BLIND_RIGHT_MAX_MM_S)
+                           ? -LINE_BLIND_RIGHT_MAX_MM_S : curve_ff;
             }
             else if ((off < 0) && (curve_ff < 0))
             {
