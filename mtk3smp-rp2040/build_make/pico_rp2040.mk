@@ -137,25 +137,25 @@ WIFI_TCPBULK ?= 0
 ifneq ($(filter $(WIFI_TCPBULK),0 1),$(WIFI_TCPBULK))
 $(error Unknown WIFI_TCPBULK '$(WIFI_TCPBULK)'; use 0 or 1)
 endif
+
 ifeq ($(WIFI_TCPBULK),1)
 ifneq ($(WIFI_TCP),1)
 $(error WIFI_TCPBULK=1 requires WIFI_TCP=1)
 endif
 endif
 
-# Buddy 1 telemetry: lwIP's MQTT client, run from the radio-owner task by the
-# app's cyw43_utk_app_poll() hook (app_program/buddy1_telemetry). Needs only
-# DHCP; the broker address is a local ignored file like the echo peers.
+# Buddy 1: MQTT communication
 WIFI_MQTT ?= 0
 ifneq ($(filter $(WIFI_MQTT),0 1),$(WIFI_MQTT))
 $(error Unknown WIFI_MQTT '$(WIFI_MQTT)'; use 0 or 1)
 endif
+
 ifeq ($(WIFI_MQTT),1)
 ifneq ($(WIFI_DHCP),1)
 $(error WIFI_MQTT=1 requires WIFI_DHCP=1)
 endif
-ifeq ($(wildcard ../config/mqtt_config.h),)
-$(error WIFI_MQTT=1 needs config/mqtt_config.h; copy it from config/mqtt_config.example.h and set the broker address)
+ifneq ($(WIFI_DNS),1)
+$(error WIFI_MQTT=1 requires WIFI_DNS=1)
 endif
 endif
 
@@ -199,9 +199,11 @@ endif
 ifeq ($(WIFI_TCPBULK),1)
 WIFI_SUFFIX := _wifi_tcpbulk
 endif
+
 ifeq ($(WIFI_MQTT),1)
 WIFI_SUFFIX := _wifi_mqtt
 endif
+
 endif
 
 #
@@ -411,9 +413,12 @@ LWIP_SRCS := core/init.c core/def.c core/dns.c core/inet_chksum.c \
              core/ipv4/icmp.c core/ipv4/igmp.c core/ipv4/ip4_frag.c \
              core/ipv4/ip4.c core/ipv4/ip4_addr.c core/ipv4/acd.c \
              netif/ethernet.c
+
+# Buddy 1: Include the lwIP MQTT client when enabled.
 ifeq ($(WIFI_MQTT),1)
 LWIP_SRCS += apps/mqtt/mqtt.c
 endif
+
 LWIP_OBJS := $(addprefix ./mtkernel_3/lwip/,$(LWIP_SRCS:.c=.o))
 LWIP_PORT_OBJS := ./mtkernel_3/lib/libnet/lwip/lwip_utk.o
 ifneq ($(filter 1,$(WIFI_STATIC) $(WIFI_DHCP)),)
@@ -428,6 +433,12 @@ endif
 ifeq ($(WIFI_TCPBULK),1)
 LWIP_PORT_OBJS += ./mtkernel_3/lib/libnet/lwip/lwip_utk_tcpbulk.o
 endif
+
+ifeq ($(WIFI_MQTT),1)
+LWIP_PORT_OBJS += ./mtkernel_3/lib/libnet/lwip/lwip_utk_mqtt.o
+LWIP_PORT_OBJS += ./mtkernel_3/lib/libnet/lwip/telemetry_codec.o
+endif
+
 endif
 
 WIFI_INCLUDES := -I"$(WIFIDIR)" \
@@ -458,11 +469,14 @@ WIFI_INCLUDES := -I"$(WIFIDIR)" \
                  -I"$(PICO_SDK_PATH)/src/rp2_common/hardware_resets/include" \
                  -I"$(PICO_SDK_PATH)/src/rp2_common/hardware_timer/include"
 
+
 ifeq ($(WIFI_NETIF),1)
 WIFI_INCLUDES += -I"$(LWIP_PORT_DIR)/include" \
+                 -I"$(LWIP_PORT_DIR)" \
                  -I"$(LWIP_PATH)/src/include" \
                  -I"$(PICO_SDK_PATH)/src/rp2_common/pico_lwip/include"
 endif
+
 
 CFLAGS += -DTM_WIFI_CYW43=1 -DTM_WIFI_JOIN=$(WIFI_JOIN) \
           -DTM_WIFI_NETIF=$(WIFI_NETIF) -DCYW43_LWIP=$(WIFI_NETIF) \

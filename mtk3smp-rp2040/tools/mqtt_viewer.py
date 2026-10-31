@@ -3,23 +3,25 @@
 Buddy 1 laptop end: a small MQTT 3.1.1 broker that also prints the car's
 telemetry. Plain Python 3.8+, nothing to install.
 
-The car (WIFI_MQTT=1 build) connects to this laptop on port 1883 and
-publishes:
+The car (WIFI_MQTT=1 build, Buddy 1 client lib/libnet/lwip/
+lwip_utk_mqtt.c) connects to this laptop on port 1883 and publishes:
 
-    car27/online   "1" on connect, "0" (its last will) if it drops off
-    car27/status   18-byte status snapshot, 5 Hz
-    car27/event    14-byte controller event, one per event
-    car27/sys      14-byte timing figures, once a second
+    inf2004/group27/telemetry  11-byte bit-packed Telemetry V2, 2 Hz
+                               (lib/libnet/lwip/telemetry_codec.c)
+    inf2004/group27/event      14-byte controller event, one per event
+    inf2004/group27/sys        14-byte timing figures, once a second
+    inf2004/group27/online     "1" on connect, "0" as its last will
 
-and listens on car27/cmd for the serial menu's keys (l o b a c r to start
-a run, s to stop, p to print a continuous run's log). Send them from the
+and listens on inf2004/group27/command for one command byte: 00 START
+(the continuous course), 01 STOP, 10-15 = runs l o b a r and p (print
+the continuous run's log). Send them from the
 control page this script opens on http://localhost:8080 (live status,
 buttons, events and run timing; tools/mqtt_web.html), or type a key here
 and press Enter.
 
-The byte layouts are in app_program/buddy1_telemetry/tel_source.h. Other
-MQTT clients (MQTT Explorer, a phone app, mosquitto_sub) can connect too
-and subscribe to car27/#: this is a real broker, with QoS 0/1 publishes,
+The event and timing layouts are in lib/libnet/lwip/buddy1_hooks.h. Other
+MQTT clients (buddy1_mqtt_decoder.py, MQTT Explorer, mosquitto_sub) can
+connect too and subscribe to inf2004/group27/#: this is a real broker, with QoS 0/1 publishes,
 retained messages, wildcards, keep-alive and last will. No QoS 2, no auth.
 
 Usage:
@@ -27,7 +29,8 @@ Usage:
     python tools/mqtt_viewer.py --every 0       # every status (5 Hz)
     python tools/mqtt_viewer.py --csv run1.csv  # also log to a file
 
-Put this laptop's hotspot address in config/mqtt_config.h before building.
+Put this laptop's hotspot address in lib/libnet/lwip/include/
+mqtt_config.h (MQTT_BROKER_HOST) before building.
 Windows treats a phone hotspot as a Public network, so allow port 1883 once
 (admin PowerShell):
     New-NetFirewallRule -DisplayName "MQTT 1883" -Direction Inbound
@@ -57,11 +60,32 @@ FAULTS = ["STALL", "ENC_L", "ENC_R", "IMU", "NO_ECHO", "WIFI", "SCAN",
           "LINE_LOST"]
 COMMANDS = ["none", "left", "right", "straight", "U-turn"]
 
-STATUS_FMT = "<BBBBhhhhhBBH"      # 18 bytes
+TOPIC = "inf2004/group27/"
+TELEMETRY_LEN = 11
 EVENT_FMT = "<IiBBhH"             # 14 bytes
 SYS_FMT = "<HIHHHH"               # 14 bytes
 RUN_STATES = (1, 2, 3, 5, 8)      # START FOLLOW RAMP OBSTACLE TURN
 KEYS = "lobacrsp"
+KEY_BYTE = {"c": 0x00, "s": 0x01, "l": 0x10, "o": 0x11, "b": 0x12,
+            "a": 0x13, "r": 0x14, "p": 0x15}
+
+
+def decode_telemetry(payload):
+    """Telemetry V2 (version 2, 88 bits, LSB first), as in
+    telemetry_codec.c and buddy1_mqtt_decoder.py."""
+    bits = int.from_bytes(payload, "little")
+    out = []
+    for width in (2, 4, 11, 11, 16, 3, 1, 8, 1, 12, 8, 8):
+        out.append(bits & ((1 << width) - 1))
+        bits >>= width
+    (version, state, left, right, dist, cmd, valid, hump, obst, obst_mm,
+     faults, heartbeat) = out
+    if version != 2 or left > 1100 or right > 1100:
+        raise ValueError("not a version 2 packet")
+    return {"state": state, "left": left - 550, "right": right - 550,
+            "dist_mm": dist, "cmd": cmd, "valid": valid, "hump": hump,
+            "obstacle": obst, "obst_mm": obst_mm, "faults": faults,
+            "heartbeat": heartbeat}
 
 
 def name(table, i):
@@ -126,7 +150,7 @@ def local_addresses():
 
 
 class Viewer:
-    """Decodes and prints the car27/* topics."""
+    """Decodes and prints the inf2004/group27/* topics."""
 
     def __init__(self, every, csv_path):
         self.every = every
@@ -148,31 +172,37 @@ class Viewer:
             self.file.flush()
 
     def message(self, topic, payload):
-        if topic == "car27/online":
+        if topic == TOPIC + "online":
             text = payload.decode(errors="replace")
             say("car %s" % ("ONLINE" if text == "1"
                             else "OFFLINE (last will)"), "online")
             HUB.send({"t": "car", "up": text == "1"})
             self.log(topic, [text])
-        elif topic == "car27/status" and len(payload) == 18:
-            self.status(struct.unpack(STATUS_FMT, payload))
-        elif topic == "car27/event" and len(payload) == 14:
+        elif topic == TOPIC + "telemetry" and len(payload) == TELEMETRY_LEN:
+            try:
+                self.status(decode_telemetry(payload))
+            except ValueError as error:
+                say("bad telemetry %s: %s" % (payload.hex(), error), "warn")
+        elif topic == TOPIC + "event" and len(payload) == 14:
             self.event(struct.unpack(EVENT_FMT, payload))
-        elif topic == "car27/sys" and len(payload) == 14:
+        elif topic == TOPIC + "sys" and len(payload) == 14:
             self.sys(struct.unpack(SYS_FMT, payload))
-        elif topic == "car27/cmd":
+        elif topic == TOPIC + "command":
             pass                                  # our own keys
-        elif topic.startswith("car27/"):
+        elif topic.startswith(TOPIC):
             say("%s: %d bytes %s" % (topic, len(payload), payload.hex()))
 
-    def status(self, v):
-        (state, faults, last_evt, flags, dist, hdg, roll, obst, width,
-         ramp, _spare, total_cm) = v
+    def status(self, t):
+        state = t["state"]
+        faults = t["faults"]
+        obst = t["obst_mm"] if t["obstacle"] else -1
         now = time.time()
         self.status_count += 1
         if self.first_status is None:
             self.first_status = now
-        self.log("status", list(v))
+        self.log("telemetry", [t[k] for k in ("state", "left", "right",
+                 "dist_mm", "cmd", "hump", "obst_mm", "faults",
+                 "heartbeat")])
         if state in RUN_STATES and self.run is None:
             self.run = {"rate": None, "pass": 0, "busy": 0, "gap": 0,
                         "samples": None}
@@ -182,12 +212,12 @@ class Viewer:
         if now > self.first_status + 1:
             rate_now = self.status_count / (now - self.first_status)
         HUB.send({"t": "status", "state": name(STATES, state),
-                  "running": state in RUN_STATES, "dist": dist,
-                  "total_m": total_cm / 100.0, "hdg": hdg / 100.0,
-                  "roll": roll / 100.0, "sonar": obst, "width": width,
-                  "ramp": ramp, "on_ramp": bool(flags & 1),
-                  "imu": bool(flags & 2),
-                  "cmd": name(COMMANDS, (flags >> 4) & 7),
+                  "running": state in RUN_STATES,
+                  "total_m": t["dist_mm"] / 1000.0,
+                  "left": t["left"], "right": t["right"],
+                  "sonar": obst, "ramp": t["hump"],
+                  "cmd": name(COMMANDS, t["cmd"]),
+                  "heartbeat": t["heartbeat"],
                   "faults": fault_text(faults), "fault_bits": faults,
                   "rate": round(rate_now, 1)})
         changed = state != self.last_state
@@ -199,15 +229,14 @@ class Viewer:
         rate = ""
         if now > self.first_status + 1:
             rate = "  %.1f/s" % (self.status_count / (now - self.first_status))
-        cmd = (flags >> 4) & 7
-        say("%-8s d=%5d mm total=%5.1f m hdg=%7.2f roll=%6.2f "
-            "sonar=%5s width=%4s ramp=%2d%s%s faults=%s%s"
-            % (name(STATES, state), dist, total_cm / 100.0,
-               hdg / 100.0, roll / 100.0,
-               "-" if obst < 0 else obst, width if width else "-", ramp,
-               " RAMP" if flags & 1 else "",
+        cmd = t["cmd"]
+        say("%-8s L=%4d R=%4d mm/s dist=%6.2f m sonar=%5s ramp=%2d%s "
+            "faults=%s hb=%3d%s"
+            % (name(STATES, state), t["left"], t["right"],
+               t["dist_mm"] / 1000.0, "-" if obst < 0 else obst,
+               t["hump"],
                " cmd=" + name(COMMANDS, cmd) if cmd else "",
-               fault_text(faults), rate), "status")
+               fault_text(faults), t["heartbeat"], rate), "status")
 
     def sys(self, v):
         rate, busy, pass_us, samples, gap, drops = v
@@ -275,7 +304,7 @@ class Broker:
         return len(f) == len(t)
 
     def car_connected(self):
-        return any(s.client_id == "car27" for s in self.sessions)
+        return any(s.is_car() for s in self.sessions)
 
     def key(self, ch):
         """Send one menu key to the car; returns whether it went."""
@@ -283,7 +312,7 @@ class Broker:
             say("car not connected: '%s' not sent" % ch, "warn")
             return False
         say("-> sent '%s' to the car" % ch, "key")
-        self.route("car27/cmd", ch.encode(), False)
+        self.route(TOPIC + "command", bytes([KEY_BYTE[ch]]), False)
         return True
 
     def route(self, topic, payload, retain, sender=None):
@@ -313,6 +342,10 @@ class Session:
         self.will = None
         self.keepalive = 0
         self.peer = writer.get_extra_info("peername")
+
+    def is_car(self):
+        """The car's MQTT_CLIENT_ID (mqtt_config.h) ends in "car"."""
+        return self.client_id.endswith("car")
 
     def send(self, ptype, body):
         n = len(body)
@@ -357,7 +390,7 @@ class Session:
             wt, i = self.string(body, i)
             wm, i = self.string(body, i)
             self.will = (wt.decode(), wm, bool(flags & 0x20))
-        if self.client_id == "car27":
+        if self.is_car():
             HUB.send({"t": "car", "up": True})
         say("[broker] %s connected from %s (MQTT level %d, keep-alive %d s)"
             % (self.client_id, self.peer[0], level, self.keepalive),
@@ -423,7 +456,7 @@ class Session:
             pass
         finally:
             self.broker.sessions.discard(self)
-            if self.client_id == "car27" and not self.broker.car_connected():
+            if self.is_car() and not self.broker.car_connected():
                 HUB.send({"t": "car", "up": False})
             say("[broker] %s %s" % (self.client_id, "disconnected" if clean
                                     else "connection lost"), "broker")

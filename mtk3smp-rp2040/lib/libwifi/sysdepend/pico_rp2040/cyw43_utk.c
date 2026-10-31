@@ -9,11 +9,14 @@
 #include "cyw43.h"
 #include "cyw43_country.h"
 #include "cyw43_utk.h"
+/* µT-Kernel monitor output */
+extern int tm_printf(const unsigned char *format, ...);
 
 #if TM_WIFI_NETIF
 #include "lwip/init.h"
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
+#include "lwip/sys.h"
 #endif
 #if TM_WIFI_DHCP
 #include "lwip/dhcp.h"
@@ -28,19 +31,23 @@
 #if TM_WIFI_TCPBULK
 #include "lwip_utk_tcpbulk.h"
 #endif
+
+#if TM_WIFI_MQTT
+#include "lwip_utk_mqtt.h"
+#endif
+
 #if TM_WIFI_STATIC || TM_WIFI_DHCP
 #include "lwip_utk_ipv4.h"
 #endif
 #if TM_WIFI_STATIC
 #include "network_config.h"
 #endif
-#if TM_WIFI_MQTT
-/* The application's network client (Buddy 1 telemetry), called from
- * this task -- the only lwIP context -- on every poll. */
-extern void cyw43_utk_app_poll(struct netif *netif);
-#endif
+
 
 #define CYW43_POLL_MS        2
+#ifndef BUDDY1_DEBUG
+#define BUDDY1_DEBUG         0   /* 1: periodic [wifi-debug] poll count */
+#endif
 /* Bounded so a reader can never wedge if the writer is starved; an exhausted
  * budget returns the last copy and is visible through status_retries. */
 #define CYW43_STATUS_READ_ATTEMPTS 16
@@ -529,6 +536,78 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #if TM_WIFI_DNS
         update_dns_status();
 #endif
+
+
+
+
+#if TM_WIFI_MQTT
+        lwip_utk_mqtt_poll(
+            &cyw43_state.netif[CYW43_ITF_STA]
+        );
+
+
+        /* Display received MQTT commands for testing. */
+        {
+            char command[64];
+
+            if (lwip_utk_mqtt_get_command(
+                    command, sizeof(command))) {
+                tm_printf("[mqtt] Received command: %s\n", command);
+            }
+        }
+
+
+        /* Print MQTT status only when the state changes. */
+        {
+            mqtt_status_t mqtt_status;
+            static mqtt_state_t previous_state =
+                (mqtt_state_t)-1;
+
+            lwip_utk_mqtt_get_status(&mqtt_status);
+
+            if (mqtt_status.state != previous_state) {
+                previous_state = mqtt_status.state;
+
+                if (mqtt_status.state ==
+                    MQTT_STATE_BROKER_RESOLVED) {
+
+                    tm_printf(
+                        "[mqtt] broker IP=%u.%u.%u.%u\n",
+                        mqtt_status.broker_ip[0],
+                        mqtt_status.broker_ip[1],
+                        mqtt_status.broker_ip[2],
+                        mqtt_status.broker_ip[3]
+                    );
+
+                } else if (mqtt_status.state ==
+                           MQTT_STATE_DNS_FAILED) {
+
+                    tm_printf(
+                        "[mqtt] DNS failed: %d\n",
+                        mqtt_status.dns_result
+                    );
+
+                } else if (mqtt_status.state ==
+                           MQTT_STATE_CONNECTING) {
+
+                    tm_printf("[mqtt] Connecting to broker...\n");
+
+                } else if (mqtt_status.state ==
+                           MQTT_STATE_CONNECTED) {
+
+                    tm_printf("[mqtt] Connected successfully!\n");
+
+                } else if (mqtt_status.state ==
+                           MQTT_STATE_CONNECT_FAILED) {
+
+                    tm_printf("[mqtt] Connection failed\n");
+                }
+            }
+        }
+#endif
+
+
+
 #if TM_WIFI_UDP
         if(radio_status.dns_complete && radio_status.dns_result == ERR_OK) {
             lwip_utk_udp_poll(&cyw43_state.netif[CYW43_ITF_STA]);
@@ -553,14 +632,29 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
         }
         update_bulk_status();
 #endif
-#if TM_WIFI_MQTT
-        cyw43_utk_app_poll(&cyw43_state.netif[CYW43_ITF_STA]);
-#endif
 #if TM_WIFI_STATIC || TM_WIFI_DHCP
         lwip_utk_ipv4_poll(&cyw43_state.netif[CYW43_ITF_STA]);
         update_ipv4_status();
 #endif
         radio_status.poll_count++;
+#if TM_WIFI_MQTT && BUDDY1_DEBUG
+        /* Diagnostic (BUDDY1_DEBUG=1): verify the Wi-Fi service keeps
+         * running. Off by default: this task outranks the motion
+         * loop, so it should not print in normal runs. */
+        {
+            static uint32_t last_debug_ms = 0;
+            uint32_t now_ms = sys_now();
+
+            if ((uint32_t)(now_ms - last_debug_ms) >= 10000U) {
+                last_debug_ms = now_ms;
+
+                tm_printf(
+                    "[wifi-debug] poll_count=%lu\n",
+                    (unsigned long)radio_status.poll_count
+                );
+            }
+        }
+#endif
         radio_status.scan_active = cyw43_wifi_scan_active(&cyw43_state);
         if(was_scanning && !radio_status.scan_active) {
             mp_memory_barrir();

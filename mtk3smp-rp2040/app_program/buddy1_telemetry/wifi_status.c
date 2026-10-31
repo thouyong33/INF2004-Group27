@@ -20,10 +20,6 @@
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
 #include "cyw43_utk.h"
-#if TM_WIFI_MQTT
-#include "mqtt_config.h"
-#include "buddy1_telemetry/mqtt_tel.h"
-#endif
 
 #define STACK_SZ 4096
 
@@ -62,10 +58,6 @@ LOCAL void wifi_status_task(INT stacd, void *exinf)
     UW shown_session = 0xffffffffU;
     UW summarised = 0xffffffffU;
     INT i;
-#if TM_WIFI_MQTT
-    mqtt_tel_info_t mq;
-    UW last_mqtt = 0xffffffffU;
-#endif
 
     (void)stacd; (void)exinf;
 
@@ -110,38 +102,6 @@ LOCAL void wifi_status_task(INT stacd, void *exinf)
                           ip, gw, dns);
             }
         }
-
-#if TM_WIFI_MQTT
-        /* Telemetry state, once per change. After a failure the client
-           alternates connecting/retrying every 2 s; that is one
-           "retrying" line, not one per attempt. */
-        mqtt_tel_get_info(&mq);
-        if(mq.state == MQTT_TEL_ST_CONNECTING
-           && last_mqtt == MQTT_TEL_ST_RETRY) {
-            mq.state = MQTT_TEL_ST_RETRY;
-        }
-        if(mq.state != last_mqtt) {
-            last_mqtt = mq.state;
-            if(mq.state == MQTT_TEL_ST_CONNECTING) {
-                tm_printf((UB *)"[mqtt] connecting to %s:%u\n",
-                          UTK_MQTT_BROKER_ADDRESS,
-                          (UW)UTK_MQTT_BROKER_PORT);
-            } else if(mq.state == MQTT_TEL_ST_UP) {
-                tm_printf((UB *)"[mqtt] connected (#%u): car27/status"
-                          " at 5 Hz, car27/event\n", mq.connects);
-            } else if(mq.state == MQTT_TEL_ST_RETRY) {
-                tm_printf((UB *)"[mqtt] no broker (result %d), retrying"
-                          " every 2 s; sent status=%u events=%u"
-                          " drops=%u\n", mq.last_result,
-                          mq.status_sent, mq.events_sent, mq.drops);
-            } else if(mq.connects != 0U) {
-                tm_printf((UB *)"[mqtt] Wi-Fi lost: rejoining the hotspot"
-                          " every 5 s, the car drives on\n");
-            } else {
-                /* no address yet: the [wifi] lines say why */
-            }
-        }
-#endif
 
         if(!st.udp_enabled) {
             tk_dly_tsk(WIFI_IDLE_MS);

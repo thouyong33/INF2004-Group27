@@ -26,7 +26,7 @@
 /* The altcp shim is only needed by application protocols written against it
  * Nothing in this tree uses it; turn it on here if you add something that
  * does. */
-#define LWIP_ALTCP                      0
+#define LWIP_ALTCP                      TM_WIFI_MQTT
 #define LWIP_ALTCP_TLS                  0
 #define LWIP_DHCP                       TM_WIFI_DHCP
 #define LWIP_AUTOIP                     0

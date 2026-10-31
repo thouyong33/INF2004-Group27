@@ -17,8 +17,18 @@ config/wifi_credentials.h
 config/network_config.h
 config/udp_test_config.h
 config/tcp_test_config.h
-config/mqtt_config.h
 
 # Python
 __pycache__/
 *.pyc
+
+# Buddy 1 - private local configuration
+**/mqtt_config.h
+**/wifi_credentials.h
+
+# Buddy 1 - local testing artifacts
+*.log
+telemetry_codec_test
+buddy1_evidence/
+*.telemetry_baseline
+*.backup
