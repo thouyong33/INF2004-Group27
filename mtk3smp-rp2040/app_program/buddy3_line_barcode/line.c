@@ -114,6 +114,11 @@
 #define LINE_CURVE_GROW_MM_S 2
 #define LINE_CURVE_DECAY_MM_S 6
 #define LINE_CURVE_MAX_MM_S  40
+/* ...but a left curve's 40, plus the bias's 13, turned a ~108 mm radius
+ * at 100 mm/s: inside the ~14 cm curve, it left the curve 15-25 deg short
+ * of the straight and weaved over a barcode just past it (v43/v44 r runs,
+ * 31 Oct). 26 + 13 is a ~145 mm radius, C's path on the outer edge. */
+#define LINE_CURVE_LEFT_MAX_MM_S 26
 /* On a left curve the centre is white while the car turns toward the
  * line, so "lost" is this much turning, or distance, without finding
  * it (not LINE_LOST_MM) */
@@ -143,6 +148,11 @@
 #define LINE_AFTER_CURVE_MM  100
 #define LINE_AFTER_CURVE_WHITE_MM 90
 #define LINE_BIAS_GROW_AFTER_CDEG 30
+/* ...and the steering is capped at this either way (not the line under
+ * R alone, not a curve turn): the line's direction still lags the turn,
+ * so C touching the line called for a -40..-55 swerve that threw the car
+ * off it again (v44 r runs, 31 Oct) */
+#define LINE_AFTER_CURVE_LIM_MM_S 25
 /* A search that finds the line further than this from the line's
  * direction found a curve: carry on turning that way (curve_ff at
  * half) from the found heading, not back to the old straight */
@@ -855,7 +865,8 @@ line_task_main(INT stacd, void *exinf)
             {
                 /* on a straight */
             }
-            curve_ff = (curve_ff > LINE_CURVE_MAX_MM_S) ? LINE_CURVE_MAX_MM_S
+            curve_ff = (curve_ff > LINE_CURVE_LEFT_MAX_MM_S)
+                     ? LINE_CURVE_LEFT_MAX_MM_S
                      : ((curve_ff < -LINE_CURVE_MAX_MM_S)
                         ? -LINE_CURVE_MAX_MM_S : curve_ff);
             if ((0 != ff_prev) && (0 == curve_ff))
@@ -864,7 +875,9 @@ line_task_main(INT stacd, void *exinf)
             }
             target = (((line_dir + bias) - heading_cdeg())
                       / LINE_HDG_GAIN_DIV) + curve_ff;
-            lim = (off < -1) ? LINE_CORR_MAX_MM_S : LINE_TRIM_MAX_MM_S;
+            lim = (off < -1) ? LINE_CORR_MAX_MM_S
+                : ((b_after_curve && (0 == curve_ff))
+                   ? LINE_AFTER_CURVE_LIM_MM_S : LINE_TRIM_MAX_MM_S);
             target = (target > lim) ? lim : ((target < -lim) ? -lim : target);
             /* Slew-limit the steering so it never jerks */
             corr += (target > corr + LINE_SLEW_MM_S) ? LINE_SLEW_MM_S
