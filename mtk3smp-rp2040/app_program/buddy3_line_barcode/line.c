@@ -176,7 +176,7 @@
  * read with C on the line's edge, and off the line the fixed aim only
  * kept the car from steering back (v36 runs 1 and 2: ~50 mm held
  * straight just as the line curved away) */
-#define READ_WHITE_MAX_MM    20
+#define READ_WHITE_MAX_MM    30   /* 20 dropped a read at a curve exit (31 Oct) */
 #define LINE_READ_BIAS_CDEG  100
 /* Line direction: the encoder heading averaged over ~LINE_DIR_MM of
  * following, so the weave and a knock just before the ramp (the IR
