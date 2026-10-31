@@ -288,6 +288,16 @@ void ctrl_test_course(void)
                           (0u != lg[i].arg) ? "went round, line rejoined"
                                             : "FAILED", lg[i].val / 10,
                           lg[i].val % 10);
+            } else if((EVT_OBST_AVOID == lg[i].type) && (0u != lg[i].arg)) {
+                if(1u == lg[i].arg) {
+                    tm_printf((UB *)"   (line found on the way back, %d mm"
+                              " %s than planned)",
+                              (lg[i].val < 0) ? -lg[i].val : lg[i].val,
+                              (lg[i].val < 0) ? "nearer" : "further");
+                } else {
+                    tm_printf((UB *)"   (line not seen on the way back:"
+                              " planned distance)");
+                }
             } else if(EVT_OBST_HDG == lg[i].type) {
                 if(lg[i].arg >= OBST_HDG_TURN) {
                     tm_printf((UB *)"   (turn %d: %d x0.01 deg off the"

@@ -11,6 +11,7 @@
 #include "../common/faults.h"
 #include "../common/ctrl_events.h"
 #include "../buddy2_motion/motion_task.h"
+#include "../buddy3_line_barcode/ir_sensor.h"
 #include "../buddy3_line_barcode/line.h"
 #include "../buddy3_line_barcode/barcode_scan.h"
 #include "../buddy4_imu/imu.h"
@@ -395,8 +396,19 @@ creep_to_scan_range(void)
 /* plan for at least this width (course obstacles are 10-20 cm): a low
  * estimate left too little room (v19, the car brushed the box) */
 #define AVOID_MIN_WIDTH_MM   100
-/* not measurable from the front: assumed */
-#define AVOID_DEPTH_MM       200
+/* Depth is not measurable from the front: taken as the planned width (the
+ * obstacle square), at most this. 200 mm for every obstacle drove ~100 mm
+ * further past a 10 cm box than needed and could rejoin on a curve
+ * (31 Oct); a long narrow obstacle is the risk this cap keeps in check */
+#define AVOID_DEPTH_MAX_MM   200
+/* Back to the line: stop over it when C or R sees it, not at the planned
+ * sideways distance, so a line that curved away is met where it is. C
+ * meets the line's far edge AVOID_IR_AHEAD_MM + AVOID_LINE_W_MM before
+ * the axle is back at the start's position (C on the right edge) */
+#define AVOID_IR_AHEAD_MM    139     /* = CTRL_JUNC_AHEAD_MM */
+#define AVOID_LINE_W_MM      18
+/* ...and this much further than planned once the line has been seen */
+#define AVOID_SEEK_EXTRA_MM  60
 #define AVOID_MM_S           100
 #define AVOID_AFTER_MM       300     /* follow this far after rejoining */
 
@@ -633,6 +645,49 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
  *         car's widest side clears its back face after the turn
  *   in:   sideways back to the start's position
  * Returns false if the probe failed or a motion fault stopped it. */
+/* The sideways leg back to the line (facing it), planned as y mm: stops
+ * over the line if C or R sees it (see AVOID_IR_AHEAD_MM), else after y.
+ * Logs EVT_OBST_AVOID arg 1, val = where the line was against the plan
+ * (mm, + = further), or arg 2 if it was not seen. Returns the distance. */
+static int32_t
+avoid_return(int32_t y)
+{
+    int32_t d0;
+    int32_t moved = 0;
+    int32_t target = y;
+    int32_t seen = -1;
+    uint32_t waited = 0u;
+    uint32_t limit_ms;
+
+    limit_ms = (uint32_t)(((y + AVOID_SEEK_EXTRA_MM) * 1000) / AVOID_MM_S)
+               + CTRL_JUNC_FWD_MS;
+    d0 = dist_mm();
+    (void)motion_set_velocity(AVOID_MM_S, AVOID_MM_S);
+    while ((moved < (target - PROBE_BRAKE_MM)) && (waited < limit_ms)
+           && (0u == (fault_get() & FAULT_MOTION_MASK)))
+    {
+        if ((seen < 0)
+            && (0u != (ir_read() & (IR_BIT_CENTRE | IR_BIT_RIGHT))))
+        {
+            seen = moved;
+            target = seen + AVOID_IR_AHEAD_MM + AVOID_LINE_W_MM;
+            target = (target > (y + AVOID_SEEK_EXTRA_MM))
+                     ? (y + AVOID_SEEK_EXTRA_MM) : target;
+        }
+        tk_dly_tsk(CTRL_PERIOD_MS);
+        waited += CTRL_PERIOD_MS;
+        moved = dist_mm() - d0;
+    }
+    motion_stop();
+    tk_dly_tsk(PROBE_SETTLE_MS);
+    moved = dist_mm() - d0;
+    log_evt(EVT_OBST_AVOID, (seen >= 0) ? 1u : 2u,
+            (int16_t)((seen >= 0)
+                      ? ((seen + AVOID_IR_AHEAD_MM + AVOID_LINE_W_MM) - y)
+                      : 0), dist_mm());
+    return moved;
+}
+
 static bool
 avoid_obstacle(void)
 {
@@ -652,6 +707,7 @@ avoid_obstacle(void)
     if (width < AVOID_MIN_WIDTH_MM)
     {
         left += AVOID_MIN_WIDTH_MM - width;  /* all the shortfall this side */
+        width = AVOID_MIN_WIDTH_MM;
     }
     out = left + AVOID_HALF_R_MM + AVOID_MARGIN_MM;
     if (out > y)
@@ -660,11 +716,12 @@ avoid_obstacle(void)
         y += probe_drive(out - y, AVOID_MM_S);
     }
     avoid_turn_to(dir, 2u);
-    past = face_mm + AVOID_SENSOR_AHEAD_MM + AVOID_DEPTH_MM
+    past = face_mm + AVOID_SENSOR_AHEAD_MM
+           + ((width < AVOID_DEPTH_MAX_MM) ? width : AVOID_DEPTH_MAX_MM)
            + AVOID_HALF_L_MM + AVOID_MARGIN_MM;
     (void)probe_drive(past, AVOID_MM_S);
     avoid_turn_to(dir - 9000, 3u);
-    y -= probe_drive(y, AVOID_MM_S);
+    y -= avoid_return(y);
     avoid_turn_to(dir, 4u);
     log_evt(EVT_OBST_AVOID, 0u, (int16_t)y, dist_mm());
     return 0u == (fault_get() & FAULT_MOTION_MASK);
