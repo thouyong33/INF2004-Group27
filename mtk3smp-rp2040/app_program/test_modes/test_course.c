@@ -27,8 +27,8 @@
 #define CTRLT_SNAPS              24
 
 /* The line task's 20 ms trace (since following last started, up to 8 s):
-   distance, heading, which IRs saw black, the steering decision, the wheel
-   speed difference; S = an on-spot search (every 200 ms), H = ramp hold */
+   distance, heading, which IRs (L/C/R) saw black, the steering decision,
+   the wheel speed difference; S = an on-spot search (every 200 ms), H = ramp hold */
 LOCAL void ctrlt_print_line_trace(void)
 {
     static line_trace_t tr[LINE_TRACE_LEN];
@@ -37,14 +37,15 @@ LOCAL void ctrlt_print_line_trace(void)
 
     n = (INT)line_trace_get(tr);
     tm_printf((UB *)"[CTRL]   line trace (%d periods; d_mm:heading x0.01:IRs"
-                    " C/R:steer:corr[:f curve turn]):", n);
+                    " L/C/R:steer:corr[:f curve turn]):", n);
     for(i = 0; i < n; i++) {
         if((i % 8) == 0) {
             tm_printf((UB *)"\n[CTRL]    ");
         }
         if(LINE_TR_FOLLOW == tr[i].searching) {
-            tm_printf((UB *)" %d:%d:%c%c:%d:%d", tr[i].d_mm,
+            tm_printf((UB *)" %d:%d:%c%c%c:%d:%d", tr[i].d_mm,
                       tr[i].heading_cdeg,
+                      (0u != (tr[i].bits & IR_BIT_LEFT)) ? 'L' : '-',
                       (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 'C' : '-',
                       (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 'R' : '-',
                       (INT)tr[i].off, tr[i].corr);
@@ -52,7 +53,8 @@ LOCAL void ctrlt_print_line_trace(void)
                 tm_printf((UB *)":f%d", tr[i].trim);   /* curve turn */
             }
         } else {
-            tm_printf((UB *)" %d:%d:%c%c:%c", tr[i].d_mm, tr[i].heading_cdeg,
+            tm_printf((UB *)" %d:%d:%c%c%c:%c", tr[i].d_mm, tr[i].heading_cdeg,
+                      (0u != (tr[i].bits & IR_BIT_LEFT)) ? 'L' : '-',
                       (0u != (tr[i].bits & IR_BIT_CENTRE)) ? 'C' : '-',
                       (0u != (tr[i].bits & IR_BIT_RIGHT)) ? 'R' : '-',
                       (LINE_TR_HOLD == tr[i].searching) ? 'H' : 'S');
