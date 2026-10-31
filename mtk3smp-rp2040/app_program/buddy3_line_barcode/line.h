@@ -102,6 +102,10 @@ int32_t line_direction_cdeg(void);
  * of it (line.c, LINE_CLEAN_MIN_MM). For squaring up at an obstacle. */
 int32_t line_clean_direction_cdeg(void);
 
+/** @brief true if line_clean_direction_cdeg() comes from plain following
+ * (not the fallback). */
+bool line_clean_ok(void);
+
 /** @brief LINE_END_* (LINE_END_NONE while following). */
 uint8_t line_follow_end(void);
 

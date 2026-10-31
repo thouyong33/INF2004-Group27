@@ -998,10 +998,16 @@ line_direction_cdeg(void)
     return g_line_dir;
 }
 
+bool
+line_clean_ok(void)
+{
+    return g_clean_mm >= LINE_CLEAN_MIN_MM;
+}
+
 int32_t
 line_clean_direction_cdeg(void)
 {
-    return (g_clean_mm >= LINE_CLEAN_MIN_MM) ? g_clean_dir : g_line_dir;
+    return line_clean_ok() ? g_clean_dir : g_line_dir;
 }
 
 void

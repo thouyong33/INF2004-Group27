@@ -56,7 +56,7 @@ STATES = ["IDLE", "START", "FOLLOW", "RAMP", "DONE", "OBSTACLE", "IMPACT",
 EVENTS = ["NONE", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF",
           "IMPACT", "JOLT_IGNORED", "STOP_REQ", "BARCODE", "JUNCTION",
           "COMMAND", "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID",
-          "OBST_DONE"]
+          "OBST_DONE", "OBST_HDG"]
 FAULTS = ["STALL", "ENC_L", "ENC_R", "IMU", "NO_ECHO", "WIFI", "SCAN",
           "LINE_LOST"]
 COMMANDS = ["none", "left", "right", "straight", "U-turn"]

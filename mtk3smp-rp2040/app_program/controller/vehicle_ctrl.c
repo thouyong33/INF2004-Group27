@@ -368,6 +368,11 @@ creep_to_scan_range(void)
  * drifts 25-40 mm along it, and comparing with the first reading ended
  * probes early on one stray reading (ctrl_course_v19 runs 7, 8, 13) */
 #define PROBE_BAND_MM        25
+/* ...and a reading up to this beyond it is still the obstacle, a rounded
+ * corner curving away (9.5 cm box: 188-194 mm face, 220 mm at the corner,
+ * read as the edge and the width as 44 mm, c run 31 Oct); it holds the
+ * edge further out but is not a face reading */
+#define PROBE_SHOULDER_MM    60
 #define PROBE_OFF_NEEDED     2       /* off-face readings in a row = edge */
 #define PROBE_DRIVE_MM_S     60
 #define PROBE_BRAKE_MM       3       /* stop command this early */
@@ -431,6 +436,16 @@ probe_turn_to(int32_t target_cdeg)
     {
         (void)motion_turn_cdeg(cdeg - got, CTRL_TRIM_MM_S);
     }
+}
+
+/* probe_turn_to, then log how far the encoder heading ended from the
+ * target (EVT_OBST_HDG, arg = OBST_HDG_TURN + k) */
+static void
+avoid_turn_to(int32_t target_cdeg, uint8_t k)
+{
+    probe_turn_to(target_cdeg);
+    log_evt(EVT_OBST_HDG, (uint8_t)(OBST_HDG_TURN + k),
+            (int16_t)(heading_raw_cdeg() - target_cdeg), dist_mm());
 }
 
 /* Drive straight forward mm at mm_s and stop; returns the distance */
@@ -532,6 +547,11 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t *p_ref, int32_t *p_y,
             offs = 0u;
             *p_ref = face_add(mm);
         }
+        else if ((mm > 0) && (mm <= (*p_ref + PROBE_SHOULDER_MM)))
+        {
+            y_on = *p_y;               /* a rounded corner: still on it */
+            offs = 0u;
+        }
         else
         {
             if (0u == offs)
@@ -567,7 +587,11 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     g_probe_n = 0u;
     g_face_n = 0u;
     dir = line_clean_direction_cdeg();
-    probe_turn_to(dir);
+    /* the reference: plain following or the fallback, and how far it is
+       from the plain 100 mm average */
+    log_evt(EVT_OBST_HDG, line_clean_ok() ? OBST_HDG_CLEAN : OBST_HDG_PLAIN,
+            (int16_t)(dir - line_direction_cdeg()), dist_mm());
+    avoid_turn_to(dir, 0u);
     tk_dly_tsk(PROBE_SETTLE_MS);
     face_mm = probe_ping();
     probe_log(0, face_mm);
@@ -632,16 +656,16 @@ avoid_obstacle(void)
     out = left + AVOID_HALF_R_MM + AVOID_MARGIN_MM;
     if (out > y)
     {
-        probe_turn_to(dir + 9000);
+        avoid_turn_to(dir + 9000, 1u);
         y += probe_drive(out - y, AVOID_MM_S);
     }
-    probe_turn_to(dir);
+    avoid_turn_to(dir, 2u);
     past = face_mm + AVOID_SENSOR_AHEAD_MM + AVOID_DEPTH_MM
            + AVOID_HALF_L_MM + AVOID_MARGIN_MM;
     (void)probe_drive(past, AVOID_MM_S);
-    probe_turn_to(dir - 9000);
+    avoid_turn_to(dir - 9000, 3u);
     y -= probe_drive(y, AVOID_MM_S);
-    probe_turn_to(dir);
+    avoid_turn_to(dir, 4u);
     log_evt(EVT_OBST_AVOID, 0u, (int16_t)y, dist_mm());
     return 0u == (fault_get() & FAULT_MOTION_MASK);
 }

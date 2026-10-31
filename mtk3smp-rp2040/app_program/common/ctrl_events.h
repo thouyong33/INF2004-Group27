@@ -48,6 +48,14 @@
 /** controller: obstacle sequence over (the one-off report), arg 1 = went
  * round and rejoined the line, 0 = failed; val = time taken, x0.1 s */
 #define EVT_OBST_DONE        16u
+/** controller, avoid headings: arg OBST_HDG_CLEAN / _PLAIN = the reference
+ * (from plain following or the fallback), val = it minus the plain 100 mm
+ * average; arg OBST_HDG_TURN + k = turn k (0 square up, 1 out, 2 along,
+ * 3 back in, 4 square again), val = heading minus target, x0.01 deg */
+#define EVT_OBST_HDG         17u
+#define OBST_HDG_PLAIN       0u
+#define OBST_HDG_CLEAN       1u
+#define OBST_HDG_TURN        10u
 
 /** One event, 4 bytes */
 typedef struct {

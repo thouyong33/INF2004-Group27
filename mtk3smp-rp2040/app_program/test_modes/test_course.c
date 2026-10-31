@@ -115,12 +115,13 @@ LOCAL const char *ctrlt_state(UB s)
 
 LOCAL const char *ctrlt_evt(UB e)
 {
-    static const char *const txt[17] = {
+    static const char *const txt[18] = {
         "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
         "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND",
-        "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID", "OBST_DONE"
+        "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID", "OBST_DONE",
+        "OBST_HDG"
     };
-    return (e < 17u) ? txt[e] : "?";
+    return (e < 18u) ? txt[e] : "?";
 }
 
 LOCAL const char *ctrlt_cmd(UB c)
@@ -287,6 +288,18 @@ void ctrl_test_course(void)
                           (0u != lg[i].arg) ? "went round, line rejoined"
                                             : "FAILED", lg[i].val / 10,
                           lg[i].val % 10);
+            } else if(EVT_OBST_HDG == lg[i].type) {
+                if(lg[i].arg >= OBST_HDG_TURN) {
+                    tm_printf((UB *)"   (turn %d: %d x0.01 deg off the"
+                              " target)", (INT)(lg[i].arg - OBST_HDG_TURN),
+                              lg[i].val);
+                } else {
+                    tm_printf((UB *)"   (reference from %s, %d x0.01 deg"
+                              " from the plain average)",
+                              (OBST_HDG_CLEAN == lg[i].arg)
+                              ? "plain following" : "the fallback",
+                              lg[i].val);
+                }
             } else if(EVT_OBST_CREEP == lg[i].type) {
                 tm_printf((UB *)"   (crept in to scan, sonar %d mm)",
                           lg[i].val);
