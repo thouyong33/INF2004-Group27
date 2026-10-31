@@ -43,4 +43,17 @@ uint32_t barcode_scan_count(void);
    the count. */
 uint32_t barcode_scan_last(bc_elem_t *p_out, uint32_t max);
 
+/** failed reads with this many elements or more are kept (tests) */
+#define BCS_FAIL_MIN         20u
+#define BCS_FAIL_KEEP        4u      /**< ...the last this many */
+
+/** @brief Failed reads kept since start-up (the last BCS_FAIL_KEEP of them
+   can be fetched). */
+uint32_t barcode_scan_fail_count(void);
+
+/** @brief Bars and spaces of failed read idx (0 = the first since
+   start-up) and the distance where it ended; 0 if no longer kept. */
+uint32_t barcode_scan_failed(uint32_t idx, bc_elem_t *p_out, uint32_t max,
+                             int32_t *p_d_mm);
+
 #endif /* BUDDY3_BARCODE_SCAN_H */

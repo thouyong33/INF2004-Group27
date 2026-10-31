@@ -566,7 +566,7 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
 
     g_probe_n = 0u;
     g_face_n = 0u;
-    dir = line_direction_cdeg();
+    dir = line_clean_direction_cdeg();
     probe_turn_to(dir);
     tk_dly_tsk(PROBE_SETTLE_MS);
     face_mm = probe_ping();
@@ -785,7 +785,7 @@ ctrl_task_main(INT stacd, void *exinf)
                         line_wind_down();
                         obstacle_watch(false);
                         tk_dly_tsk(300u);
-                        probe_turn_to(line_direction_cdeg());
+                        probe_turn_to(line_clean_direction_cdeg());
                         log_evt(EVT_OBST_CREEP, 0u,
                                 (int16_t)creep_to_scan_range(), dist_mm());
                         if (!avoid_obstacle())
@@ -1073,7 +1073,7 @@ ctrl_task_main(INT stacd, void *exinf)
         if (CTRL_ST_OBSTACLE == state)
         {
             tk_dly_tsk(300u);
-            probe_turn_to(line_direction_cdeg());
+            probe_turn_to(line_clean_direction_cdeg());
             log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
                     dist_mm());
             {

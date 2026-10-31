@@ -76,6 +76,12 @@ static uint16_t g_lead[BCS_LEAD];
 static bc_elem_t g_el[BC_MAX_ELEMS];
 static bc_elem_t g_last_el[BC_MAX_ELEMS];
 static volatile uint32_t g_last_n = 0u;
+/* The last BCS_FAIL_KEEP reads that failed with BCS_FAIL_MIN or more
+ * elements (a code nearly read; tests) */
+static bc_elem_t g_fail_el[BCS_FAIL_KEEP][BC_MAX_ELEMS];
+static uint8_t g_fail_n[BCS_FAIL_KEEP];
+static int32_t g_fail_d[BCS_FAIL_KEEP];
+static volatile uint32_t g_fails = 0u;
 
 static int32_t
 steps_now(void)
@@ -121,6 +127,20 @@ finish(uint32_t n, uint32_t quiet, bool b_clear)
         }
         g_last_n = ne;
     }
+    if ((!b_ok) && (ne >= BCS_FAIL_MIN))
+    {
+        uint32_t k = g_fails % BCS_FAIL_KEEP;
+        enc_diag_t l, r;
+
+        for (i = 0u; i < ne; i++)
+        {
+            g_fail_el[k][i] = g_el[i];
+        }
+        g_fail_n[k] = (uint8_t)ne;
+        (void)motion_get_encoder_diag(&l, &r);
+        g_fail_d[k] = (((l.hw_count + r.hw_count) / 2) * UM_PER_EDGE) / 1000;
+        g_fails++;
+    }
     if ((!b_ok) && b_clear && (1u == ne) && (0u != g_el[0].bar)
         && (g_el[0].w >= (uint16_t)((ARM_MIN_MM * 1000) / UM_PER_EDGE))
         && (g_el[0].w <= (uint16_t)((ARM_MAX_MM * 1000) / UM_PER_EDGE)))
@@ -131,7 +151,7 @@ finish(uint32_t n, uint32_t quiet, bool b_clear)
     if (b_ok)
     {
         ctrl_evt_post(EVT_BARCODE, (uint8_t)res.text[0],
-                      (int16_t)(res.reversed | (res.end_cut << 1)));
+                      (int16_t)(res.reversed | (res.cut << 1)));
     }
     else
     {
@@ -353,6 +373,38 @@ uint32_t
 barcode_scan_count(void)
 {
     return g_reads;
+}
+
+uint32_t
+barcode_scan_fail_count(void)
+{
+    return g_fails;
+}
+
+uint32_t
+barcode_scan_failed(uint32_t idx, bc_elem_t *p_out, uint32_t max,
+                    int32_t *p_d_mm)
+{
+    uint32_t i;
+    uint32_t k = idx % BCS_FAIL_KEEP;
+    uint32_t n;
+
+    if ((NULL == p_out) || (idx >= g_fails)
+        || ((g_fails - idx) > BCS_FAIL_KEEP))
+    {
+        return 0u;
+    }
+    n = g_fail_n[k];
+    n = (n < max) ? n : max;
+    for (i = 0u; i < n; i++)
+    {
+        p_out[i] = g_fail_el[k][i];
+    }
+    if (NULL != p_d_mm)
+    {
+        *p_d_mm = g_fail_d[k];
+    }
+    return n;
 }
 
 uint32_t

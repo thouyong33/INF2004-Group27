@@ -22,7 +22,8 @@ and press Enter.
 The event and timing layouts are in lib/libnet/lwip/buddy1_hooks.h. Other
 MQTT clients (buddy1_mqtt_decoder.py, MQTT Explorer, mosquitto_sub) can
 connect too and subscribe to inf2004/group27/#: this is a real broker,
-with QoS 0/1 publishes, retained messages, wildcards, keep-alive and last will. No QoS 2, no auth.
+with QoS 0/1 publishes, retained messages, wildcards, keep-alive and
+last will. No QoS 2, no auth.
 
 Usage:
     python tools/mqtt_viewer.py                 # status once a second
@@ -66,6 +67,8 @@ EVENT_FMT = "<IiBBhH"             # 14 bytes
 SYS_FMT = "<HIHHHH"               # 14 bytes
 RUN_STATES = (1, 2, 3, 5, 8)      # START FOLLOW RAMP OBSTACLE TURN
 KEYS = "lobacrsp"
+# BARCODE event val >> 1 (barcode.h BC_CUT_*)
+CUT_TEXT = {1: ", last bar missing", 2: ", first bar missing"}
 KEY_BYTE = {"c": 0x00, "s": 0x01, "l": 0x10, "o": 0x11, "b": 0x12,
             "a": 0x13, "r": 0x14, "p": 0x15}
 
@@ -274,11 +277,11 @@ class Viewer:
         self.log("event", list(v))
         extra = ""
         if etype == 9:                                   # BARCODE
-            extra = ("  read '%s' %s%s" % (chr(arg), "REVERSED" if val & 1
-                                           else "forward",
-                                           ", end bar missing" if val & 2
-                                           else "")) if arg else \
-                "  no read"
+            extra = "  no read"
+            if arg:
+                extra = "  read '%s' %s%s" % (
+                    chr(arg), "REVERSED" if val & 1 else "forward",
+                    CUT_TEXT.get(val >> 1, ""))
         elif etype == 11:                                # COMMAND
             extra = "  %s done" % name(COMMANDS, arg)
         elif etype == 1:                                 # FAULT

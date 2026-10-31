@@ -83,6 +83,27 @@ LOCAL void ctrlt_print_probe(void)
     tm_printf((UB *)"\n");
 }
 
+/* One barcode read's bars and spaces: B mm/peak mV, w mm */
+LOCAL void ctrlt_print_bars(const bc_elem_t *p_el, INT n)
+{
+    INT i;
+    INT k;
+
+    tm_printf((UB *)"[CTRL]    ");
+    for(i = 0; i < n; i++) {
+        k = (INT)((p_el[i].w * SWEEP_UM_PER_EDGE) / 100);
+        if(0u != p_el[i].bar) {
+            tm_printf((UB *)" B%d.%d/%d", k / 10, k % 10, p_el[i].peak);
+        } else {
+            tm_printf((UB *)" w%d.%d", k / 10, k % 10);
+        }
+        if((i % 10) == 9) {
+            tm_printf((UB *)"\n[CTRL]    ");
+        }
+    }
+    tm_printf((UB *)"\n");
+}
+
 LOCAL const char *ctrlt_state(UB s)
 {
     static const char *const txt[9] = {
@@ -117,6 +138,8 @@ void ctrl_test_course(void)
     robot_status_t st;
     INT run, c, n, i, k, ns;
     uint32_t rate, rate_min, pass, pass_max;
+    uint32_t fails0, nf, f;
+    int32_t fd;
     UB opts;
     ER er;
 
@@ -158,6 +181,7 @@ void ctrl_test_course(void)
         tk_dly_tsk(500);
         console_flush_input();
 
+        fails0 = barcode_scan_fail_count();
         er = ctrl_run(CTRLT_MM_S,
                       (c == 'c') ? 0 : ((c == 'r') ? CTRLT_READ_MM
                                                    : CTRLT_MAX_MM), opts);
@@ -235,8 +259,10 @@ void ctrl_test_course(void)
                 if(0u != lg[i].arg) {
                     tm_printf((UB *)"   (read '%c' %s%s)", (INT)lg[i].arg,
                               (0 != (lg[i].val & 1)) ? "REVERSED" : "forward",
-                              (0 != (lg[i].val & 2)) ? ", end bar missing"
-                                                     : "");
+                              (BC_CUT_END == (lg[i].val >> 1))
+                              ? ", last bar missing"
+                              : ((BC_CUT_START == (lg[i].val >> 1))
+                                 ? ", first bar missing" : ""));
                 } else {
                     tm_printf((UB *)"   (no read, %d bars/spaces)", lg[i].val);
                 }
@@ -275,19 +301,18 @@ void ctrl_test_course(void)
             n = (INT)barcode_scan_last(bel, BC_MAX_ELEMS);
             tm_printf((UB *)"[CTRL]   last barcode read, %d bars/spaces (B "
                             "mm/peak mV,"
-                      " w mm):\n[CTRL]    ", n);
-            for(i = 0; i < n; i++) {
-                k = (INT)((bel[i].w * SWEEP_UM_PER_EDGE) / 100);
-                if(0u != bel[i].bar) {
-                    tm_printf((UB *)" B%d.%d/%d", k / 10, k % 10, bel[i].peak);
-                } else {
-                    tm_printf((UB *)" w%d.%d", k / 10, k % 10);
-                }
-                if((i % 10) == 9) {
-                    tm_printf((UB *)"\n[CTRL]    ");
-                }
+                      " w mm):\n", n);
+            ctrlt_print_bars(bel, n);
+            /* failed reads of a nearly whole code, this run's last few */
+            nf = barcode_scan_fail_count();
+            for(f = (nf - fails0 > BCS_FAIL_KEEP) ? (nf - BCS_FAIL_KEEP)
+                                                  : fails0;
+                f < nf; f++) {
+                n = (INT)barcode_scan_failed(f, bel, BC_MAX_ELEMS, &fd);
+                tm_printf((UB *)"[CTRL]   failed read ending near %d mm, %d"
+                                " bars/spaces:\n", (INT)fd, n);
+                ctrlt_print_bars(bel, n);
             }
-            tm_printf((UB *)"\n");
         }
         tm_printf((UB *)"[CTRL]   robot_status every %d ms (state, d_mm, "
                         "heading, roll,"

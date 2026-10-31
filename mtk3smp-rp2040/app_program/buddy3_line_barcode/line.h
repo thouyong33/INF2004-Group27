@@ -97,6 +97,11 @@ void line_set_straight(bool b_on);
  */
 int32_t line_direction_cdeg(void);
 
+/** @brief The line's direction from plain following only (no curve, no
+ * junction), same reference; line_direction_cdeg() if there was too little
+ * of it (line.c, LINE_CLEAN_MIN_MM). For squaring up at an obstacle. */
+int32_t line_clean_direction_cdeg(void);
+
 /** @brief LINE_END_* (LINE_END_NONE while following). */
 uint8_t line_follow_end(void);
 

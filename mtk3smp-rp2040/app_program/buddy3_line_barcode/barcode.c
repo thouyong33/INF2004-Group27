@@ -13,15 +13,21 @@
 /* widest >= 1.8 x narrowest, else all narrow */
 #define BC_WIDE_RATIO_X10    18
 #define BC_STAR              0x094u
-/* A read that stops one bar short (the last narrow bar of the closing
- * '*' too faint, fresh 50 % 'Z' after a curve, 31 Oct) loses that bar
- * and the space before it: 7 of the star's 9 elements are left. Read
- * forwards they are its first 7 (all 3 wides, so the missing two can
- * only be narrow), read backwards its last 7 (no other character ends
- * that way). They must match exactly, the other star too. */
+/* A read one bar short at either end (the last narrow bar of the
+ * closing '*' too faint, fresh 50 % 'Z' after a curve; the first bar
+ * of the opening one, 50 % 'A', 31 Oct) loses that bar and the space
+ * next to it: 7 of the star's 9 elements are left. Short at the end
+ * of the decode order they are its first 7 (all 3 wides, so the two
+ * missing can only be narrow), at the start its last 7 (no other
+ * character ends that way). They must match exactly, the other star
+ * too, and only one end may be short. */
 #define BC_CUT_ELEMS         2u
 #define BC_STAR_FIRST7       (BC_STAR >> 2)
 #define BC_STAR_LAST7        (BC_STAR & 0x7Fu)
+/* which star of a window is short, in decode order */
+#define BC_SHORT_NONE        0u
+#define BC_SHORT_FIRST       1u
+#define BC_SHORT_LAST        2u
 
 /* Code 39: 9 elements (bar, space, ... bar), bit 8 = first, 1 = wide */
 static const struct {
@@ -192,12 +198,11 @@ bits_diff(uint16_t a, uint16_t b)
     return c;
 }
 
-/* b_cut: the window lacks the travel-last BC_CUT_ELEMS elements (see
- * BC_STAR_FIRST7), i.e. the closing star's last two read forwards, the
- * opening star's first two read backwards */
+/* short: which star lacks BC_CUT_ELEMS elements (see BC_STAR_FIRST7),
+ * in decode order */
 static bool
 try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
-           bool b_rev, bool b_cut,
+           bool b_rev, uint8_t short_star,
            bc_result_t *p_res)
 {
     uint16_t bthr;
@@ -206,6 +211,7 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
     uint32_t c;
     uint32_t k;
     uint32_t i;
+    bool b_cut = (BC_SHORT_NONE != short_star);
     uint32_t nch = (ln + 1u + (b_cut ? BC_CUT_ELEMS : 0u)) / 10u;
     uint32_t errs = 0u;
     uint32_t base;
@@ -219,8 +225,10 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
     for (c = 0u; c < nch; c++)
     {
         base = st + (c * 10u)
-               - ((b_cut && b_rev && (c > 0u)) ? BC_CUT_ELEMS : 0u);
-        cnt = (b_cut && (b_rev ? (0u == c) : ((nch - 1u) == c)))
+               - (((BC_SHORT_FIRST == short_star) && (c > 0u))
+                  ? BC_CUT_ELEMS : 0u);
+        cnt = (((BC_SHORT_FIRST == short_star) && (0u == c))
+               || ((BC_SHORT_LAST == short_star) && ((nch - 1u) == c)))
               ? (9u - BC_CUT_ELEMS) : 9u;
         pat = 0u;
         for (k = 0u; k < cnt; k++)
@@ -233,7 +241,8 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
         }
         if (cnt < 9u)
         {
-            if (pat != (b_rev ? BC_STAR_LAST7 : BC_STAR_FIRST7))
+            if (pat != ((BC_SHORT_FIRST == short_star) ? BC_STAR_LAST7
+                                                       : BC_STAR_FIRST7))
             {
                 return false;
             }
@@ -266,7 +275,11 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
     p_res->text[p_res->len] = '\0';
     p_res->reversed = b_rev ? 1u : 0u;
     p_res->star_errs = (uint8_t)errs;
-    p_res->end_cut = b_cut ? 1u : 0u;
+    /* in travel order: the decode-order end is the travel end unless
+     * read backwards */
+    p_res->cut = (!b_cut) ? BC_CUT_NONE
+               : (((BC_SHORT_LAST == short_star) != b_rev) ? BC_CUT_END
+                                                           : BC_CUT_START);
     p_res->first = (uint8_t)(b_rev ? (n - st - ln) : st);
     return true;
 }
@@ -308,15 +321,18 @@ barcode_decode(const bc_elem_t *p_el, uint32_t n, bc_result_t *p_res)
             for (st = 0u; (st + ln) <= n; st++)
             {
                 if ((0u != elem(p_el, n, st, 0u != r)->bar)
-                    && try_window(p_el, n, st, ln, 0u != r, false, p_res))
+                    && try_window(p_el, n, st, ln, 0u != r, BC_SHORT_NONE,
+                                  p_res))
                 {
                     return true;
                 }
             }
         }
     }
-    /* Then a code one bar short at the end of the read (see
-     * BC_STAR_FIRST7): it must end where the read ended */
+    /* Then a code one bar short at either end of the read (see
+     * BC_STAR_FIRST7): the short end must be where the read ended or
+     * began. Decode-order windows: forwards st = n - ln is the read's
+     * end, st = 0 its start; backwards the other way round. */
     for (ln = 29u - BC_CUT_ELEMS;
          ln <= ((9u + (10u * (BC_MAX_TEXT + 1u))) - BC_CUT_ELEMS); ln += 10u)
     {
@@ -326,8 +342,11 @@ barcode_decode(const bc_elem_t *p_el, uint32_t n, bc_result_t *p_res)
         }
         st = n - ln;
         if (((0u != p_el[st].bar)
-             && try_window(p_el, n, st, ln, false, true, p_res))
-            || try_window(p_el, n, 0u, ln, true, true, p_res))
+             && try_window(p_el, n, st, ln, false, BC_SHORT_LAST, p_res))
+            || try_window(p_el, n, 0u, ln, true, BC_SHORT_FIRST, p_res)
+            || try_window(p_el, n, 0u, ln, false, BC_SHORT_FIRST, p_res)
+            || ((0u != elem(p_el, n, st, true)->bar)
+                && try_window(p_el, n, st, ln, true, BC_SHORT_LAST, p_res)))
         {
             return true;
         }

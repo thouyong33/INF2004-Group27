@@ -192,6 +192,12 @@
  * following, so the weave and a knock just before the ramp (the IR
  * bracket hits it first) do not set the direction the ramp is held on */
 #define LINE_DIR_MM          100
+/* The obstacle avoid squares up to the line's direction: line_dir there
+ * included a cross and a curve's end 120 mm back and the whole avoid came
+ * out a few degrees off (c run, 31 Oct). Its own direction averages only
+ * plain following (no curve turn, no curve settle, no junction, no hold)
+ * over the last LINE_DIR_MM of it, if there are LINE_CLEAN_MIN_MM. */
+#define LINE_CLEAN_MIN_MM    30
 
 #define UM_PER_EDGE          328L
 #define TRACK_MM             114L
@@ -207,6 +213,8 @@ static volatile uint32_t g_recoveries = 0u;
 static volatile uint8_t g_hold = 0u;
 static volatile uint8_t g_straight = 0u;
 static volatile int32_t g_line_dir = 0;     /* published for the controller */
+static volatile int32_t g_clean_dir = 0;    /* see LINE_CLEAN_MIN_MM */
+static volatile int32_t g_clean_mm = 0;
 
 static line_trace_t g_trace[LINE_TRACE_LEN];
 static volatile uint32_t g_trace_n = 0u;
@@ -411,6 +419,7 @@ line_task_main(INT stacd, void *exinf)
         hold_until = -1;
         line_dir = 0;
         g_line_dir = 0;
+        g_clean_mm = 0;
         prev_d = 0;
         curve_ff = 0;
         b_line_right = false;
@@ -634,6 +643,21 @@ line_task_main(INT stacd, void *exinf)
                             / LINE_DIR_MM;
             }
             g_line_dir = line_dir;
+            if ((0 != curve_ff) || b_after_curve || (d < straight_until))
+            {
+                g_clean_mm = 0;
+            }
+            else
+            {
+                int32_t w;
+
+                g_clean_mm += step;
+                w = (g_clean_mm < LINE_DIR_MM) ? g_clean_mm : LINE_DIR_MM;
+                g_clean_dir = (w <= step) ? heading_cdeg()
+                              : (g_clean_dir
+                                 + (((heading_cdeg() - g_clean_dir) * step)
+                                    / w));
+            }
             prev_d = d;
 
             /* Right-edge following (mat runs 2026-10-23: with the centre on
@@ -760,6 +784,7 @@ line_task_main(INT stacd, void *exinf)
                             line_dir = heading_cdeg();
                             g_line_dir = line_dir;
                         }
+                        g_clean_mm = 0;         /* a search: start over */
                         run = 0;
                         prev_off = 0;
                         white_since = -1;
@@ -971,6 +996,12 @@ int32_t
 line_direction_cdeg(void)
 {
     return g_line_dir;
+}
+
+int32_t
+line_clean_direction_cdeg(void)
+{
+    return (g_clean_mm >= LINE_CLEAN_MIN_MM) ? g_clean_dir : g_line_dir;
 }
 
 void
