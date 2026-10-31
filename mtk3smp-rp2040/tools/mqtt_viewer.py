@@ -21,8 +21,8 @@ and press Enter.
 
 The event and timing layouts are in lib/libnet/lwip/buddy1_hooks.h. Other
 MQTT clients (buddy1_mqtt_decoder.py, MQTT Explorer, mosquitto_sub) can
-connect too and subscribe to inf2004/group27/#: this is a real broker, with QoS 0/1 publishes,
-retained messages, wildcards, keep-alive and last will. No QoS 2, no auth.
+connect too and subscribe to inf2004/group27/#: this is a real broker,
+with QoS 0/1 publishes, retained messages, wildcards, keep-alive and last will. No QoS 2, no auth.
 
 Usage:
     python tools/mqtt_viewer.py                 # status once a second
@@ -274,8 +274,10 @@ class Viewer:
         self.log("event", list(v))
         extra = ""
         if etype == 9:                                   # BARCODE
-            extra = ("  read '%s' %s" % (chr(arg), "REVERSED" if val
-                                         else "forward")) if arg else \
+            extra = ("  read '%s' %s%s" % (chr(arg), "REVERSED" if val & 1
+                                           else "forward",
+                                           ", end bar missing" if val & 2
+                                           else "")) if arg else \
                 "  no read"
         elif etype == 11:                                # COMMAND
             extra = "  %s done" % name(COMMANDS, arg)

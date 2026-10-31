@@ -13,6 +13,15 @@
 /* widest >= 1.8 x narrowest, else all narrow */
 #define BC_WIDE_RATIO_X10    18
 #define BC_STAR              0x094u
+/* A read that stops one bar short (the last narrow bar of the closing
+ * '*' too faint, fresh 50 % 'Z' after a curve, 31 Oct) loses that bar
+ * and the space before it: 7 of the star's 9 elements are left. Read
+ * forwards they are its first 7 (all 3 wides, so the missing two can
+ * only be narrow), read backwards its last 7 (no other character ends
+ * that way). They must match exactly, the other star too. */
+#define BC_CUT_ELEMS         2u
+#define BC_STAR_FIRST7       (BC_STAR >> 2)
+#define BC_STAR_LAST7        (BC_STAR & 0x7Fu)
 
 /* Code 39: 9 elements (bar, space, ... bar), bit 8 = first, 1 = wide */
 static const struct {
@@ -183,9 +192,12 @@ bits_diff(uint16_t a, uint16_t b)
     return c;
 }
 
+/* b_cut: the window lacks the travel-last BC_CUT_ELEMS elements (see
+ * BC_STAR_FIRST7), i.e. the closing star's last two read forwards, the
+ * opening star's first two read backwards */
 static bool
 try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
-           bool b_rev,
+           bool b_rev, bool b_cut,
            bc_result_t *p_res)
 {
     uint16_t bthr;
@@ -194,8 +206,10 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
     uint32_t c;
     uint32_t k;
     uint32_t i;
-    uint32_t nch = (ln + 1u) / 10u;
+    uint32_t nch = (ln + 1u + (b_cut ? BC_CUT_ELEMS : 0u)) / 10u;
     uint32_t errs = 0u;
+    uint32_t base;
+    uint32_t cnt;
     bool b_found;
 
     bthr = split(p_el, n, st, ln, b_rev, 1u);
@@ -204,19 +218,31 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
 
     for (c = 0u; c < nch; c++)
     {
+        base = st + (c * 10u)
+               - ((b_cut && b_rev && (c > 0u)) ? BC_CUT_ELEMS : 0u);
+        cnt = (b_cut && (b_rev ? (0u == c) : ((nch - 1u) == c)))
+              ? (9u - BC_CUT_ELEMS) : 9u;
         pat = 0u;
-        for (k = 0u; k < 9u; k++)
+        for (k = 0u; k < cnt; k++)
         {
-            const bc_elem_t *p_e = elem(p_el, n, st + (c * 10u) + k, b_rev);
+            const bc_elem_t *p_e = elem(p_el, n, base + k, b_rev);
 
             pat = (uint16_t)((pat << 1)
                              | ((p_e->w > ((0u != p_e->bar) ? bthr : sthr))
                                 ? 1u : 0u));
         }
+        if (cnt < 9u)
+        {
+            if (pat != (b_rev ? BC_STAR_LAST7 : BC_STAR_FIRST7))
+            {
+                return false;
+            }
+            continue;
+        }
         if ((0u == c) || ((nch - 1u) == c))
         {
             errs += bits_diff(pat, BC_STAR);
-            if (bits_diff(pat, BC_STAR) > 1u)
+            if (bits_diff(pat, BC_STAR) > (b_cut ? 0u : 1u))
             {
                 return false;
             }
@@ -240,6 +266,7 @@ try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
     p_res->text[p_res->len] = '\0';
     p_res->reversed = b_rev ? 1u : 0u;
     p_res->star_errs = (uint8_t)errs;
+    p_res->end_cut = b_cut ? 1u : 0u;
     p_res->first = (uint8_t)(b_rev ? (n - st - ln) : st);
     return true;
 }
@@ -281,11 +308,28 @@ barcode_decode(const bc_elem_t *p_el, uint32_t n, bc_result_t *p_res)
             for (st = 0u; (st + ln) <= n; st++)
             {
                 if ((0u != elem(p_el, n, st, 0u != r)->bar)
-                    && try_window(p_el, n, st, ln, 0u != r, p_res))
+                    && try_window(p_el, n, st, ln, 0u != r, false, p_res))
                 {
                     return true;
                 }
             }
+        }
+    }
+    /* Then a code one bar short at the end of the read (see
+     * BC_STAR_FIRST7): it must end where the read ended */
+    for (ln = 29u - BC_CUT_ELEMS;
+         ln <= ((9u + (10u * (BC_MAX_TEXT + 1u))) - BC_CUT_ELEMS); ln += 10u)
+    {
+        if (ln > n)
+        {
+            break;
+        }
+        st = n - ln;
+        if (((0u != p_el[st].bar)
+             && try_window(p_el, n, st, ln, false, true, p_res))
+            || try_window(p_el, n, 0u, ln, true, true, p_res))
+        {
+            return true;
         }
     }
     return false;

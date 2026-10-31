@@ -130,7 +130,8 @@ finish(uint32_t n, uint32_t quiet, bool b_clear)
     }
     if (b_ok)
     {
-        ctrl_evt_post(EVT_BARCODE, (uint8_t)res.text[0], (int16_t)res.reversed);
+        ctrl_evt_post(EVT_BARCODE, (uint8_t)res.text[0],
+                      (int16_t)(res.reversed | (res.end_cut << 1)));
     }
     else
     {

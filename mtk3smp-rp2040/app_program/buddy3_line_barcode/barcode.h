@@ -10,7 +10,9 @@
  * sorted into narrow/wide separately: the spot's blur makes bars read
  * narrower and spaces wider than printed. The data characters must decode
  * exactly; each '*' may have one element wrong (a faint or merged bar at
- * the ends, e.g. next to the tape holding the paper down).
+ * the ends, e.g. next to the tape holding the paper down). A read that
+ * ends one bar short of the code is also taken, if both stars are
+ * otherwise exact.
  */
 
 #ifndef BUDDY3_BARCODE_H
@@ -57,6 +59,8 @@ typedef struct {
     uint8_t reversed;        /**< 1 = read backwards in the travel direction */
     uint8_t star_errs;       /**< elements corrected in the two stars */
     uint8_t first;           /**< first element of the code in the list */
+    /** 1 = the read stopped one bar short of the code's end (barcode.c) */
+    uint8_t end_cut;
 } bc_result_t;
 
 /**

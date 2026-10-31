@@ -27,7 +27,8 @@
 /** controller: val = jolt, mg (wheels kept speed) */
 #define EVT_JOLT_IGNORED     7u
 #define EVT_STOP_REQ         8u   /**< someone asked the controller to stop */
-/** arg = character (0 = no read), val = 1 if reversed */
+/** arg = character (0 = no read), val bit 0 = reversed, bit 1 = the read
+ * ended one bar short (still decoded); no read: val = bars/spaces */
 #define EVT_BARCODE          9u
 /** line task: junction arm under C and R, val = mm */
 #define EVT_JUNCTION         10u  /* arg 0 = right IR, 1 = left IR */

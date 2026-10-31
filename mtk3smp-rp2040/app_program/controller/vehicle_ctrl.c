@@ -848,9 +848,10 @@ ctrl_task_main(INT stacd, void *exinf)
                 case EVT_BARCODE:
                     log_evt(evt.type, evt.arg, evt.val, d);
                     if ((0u != evt.arg) && (0u == (opts & CTRL_OPT_NO_CMD))
-                        && (CTRL_CMD_NONE != cmd_for(evt.arg, 0 != evt.val)))
+                        && (CTRL_CMD_NONE
+                            != cmd_for(evt.arg, 0 != (evt.val & 1))))
                     {
-                        cmd = cmd_for(evt.arg, 0 != evt.val);
+                        cmd = cmd_for(evt.arg, 0 != (evt.val & 1));
                         flags = (uint8_t)((flags & 0x0Fu)
                                           | (cmd << CTRL_FLAG_CMD_SHIFT));
                     }

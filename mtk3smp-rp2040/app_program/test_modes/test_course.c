@@ -28,7 +28,8 @@
 
 /* The line task's 20 ms trace (since following last started, up to 8 s):
    distance, heading, which IRs (L/C/R) saw black, the steering decision,
-   the wheel speed difference; S = an on-spot search (every 200 ms), H = ramp hold */
+   the wheel speed difference; S = an on-spot search (every 200 ms),
+   H = ramp hold */
 LOCAL void ctrlt_print_line_trace(void)
 {
     static line_trace_t tr[LINE_TRACE_LEN];
@@ -232,8 +233,10 @@ void ctrl_test_course(void)
                       ctrlt_evt(lg[i].type), (INT)lg[i].arg, lg[i].val);
             if(EVT_BARCODE == lg[i].type) {
                 if(0u != lg[i].arg) {
-                    tm_printf((UB *)"   (read '%c' %s)", (INT)lg[i].arg,
-                              (0 != lg[i].val) ? "REVERSED" : "forward");
+                    tm_printf((UB *)"   (read '%c' %s%s)", (INT)lg[i].arg,
+                              (0 != (lg[i].val & 1)) ? "REVERSED" : "forward",
+                              (0 != (lg[i].val & 2)) ? ", end bar missing"
+                                                     : "");
                 } else {
                     tm_printf((UB *)"   (no read, %d bars/spaces)", lg[i].val);
                 }
