@@ -9,6 +9,7 @@
 #include <tk/tkernel.h>
 
 #include "../common/ctrl_events.h"
+#include "../common/cpu_meter.h"
 #include "../buddy2_motion/motion_task.h"
 #include "ir_sensor.h"
 #include "barcode.h"
@@ -181,10 +182,13 @@ bcs_task_main(INT stacd, void *exinf)
 
     (void)stacd;
     (void)exinf;
+    cpu_meter_register(CPU_BARCODE);
 
     while (1)
     {
+        cpu_idle();
         (void)tk_wai_flg(g_bcs_flg, BCS_FLG_RUN, TWF_ORW, &flgptn, TMO_FEVR);
+        cpu_busy();
 
         last = steps_now();
         white = (uint16_t)ir_ao_left_mv();
@@ -201,7 +205,7 @@ bcs_task_main(INT stacd, void *exinf)
 
         while (0u != g_enabled)
         {
-            tk_dly_tsk(BCS_POLL_MS);
+            cpu_dly(BCS_POLL_MS);
             s = steps_now();
             if (s < (last - BCS_RESET_STEPS))
             {

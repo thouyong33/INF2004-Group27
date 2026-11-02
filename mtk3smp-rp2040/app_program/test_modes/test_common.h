@@ -24,6 +24,7 @@
 #include "buddy5_ultrasonic/obstacle.h"
 #include "common/console_in.h"
 #include "common/faults.h"
+#include "common/cpu_meter.h"
 #include "common/ctrl_events.h"
 #include "controller/vehicle_ctrl.h"
 

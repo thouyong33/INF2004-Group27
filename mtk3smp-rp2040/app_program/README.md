@@ -39,7 +39,7 @@ for telemetry, events and run commands.
 | `buddy4_imu/` | 4 | GY-511 accelerometer (pitch, roll), ramp height (`terrain.c`) |
 | `buddy5_ultrasonic/` | 5 | HC-SR04 ultrasonic, obstacle watch, servo (held centred) |
 | `controller/` | all | vehicle controller (`vehicle_ctrl.c`) |
-| `common/` | all | pins, fault flags, event queue, console input, blink |
+| `common/` | all | pins, fault flags, event queue, console input, blink, per-task CPU meter (`cpu_meter.c`) |
 | `test_modes/` | all | test modes; one is built into each UF2 |
 
 ## Pins

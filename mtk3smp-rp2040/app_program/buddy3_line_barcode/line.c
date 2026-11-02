@@ -9,6 +9,7 @@
 
 #include "../common/faults.h"
 #include "../common/ctrl_events.h"
+#include "../common/cpu_meter.h"
 #include "../buddy2_motion/motion_task.h"
 #include "ir_sensor.h"
 #include "line.h"
@@ -321,7 +322,7 @@ search_turn(int32_t to_cdeg)
         {
             break;
         }
-        tk_dly_tsk(4u);
+        cpu_dly(4u);
         waited += 4u;
         if (0u == (waited % SEARCH_TRACE_MS))
         {
@@ -330,7 +331,7 @@ search_turn(int32_t to_cdeg)
         }
     }
     motion_stop();
-    tk_dly_tsk(150u);
+    cpu_dly(150u);
     return b_found;
 }
 
@@ -392,11 +393,14 @@ line_task_main(INT stacd, void *exinf)
 
     (void)stacd;
     (void)exinf;
+    cpu_meter_register(CPU_LINE);
 
     while (1)
     {
+        cpu_idle();
         (void)tk_wai_flg(g_line_flg, LINE_FLG_RUN, TWF_ORW | TWF_CLR, &flgptn,
                          TMO_FEVR);
+        cpu_busy();
 
         corr = 0;
         prev_off = 0;
@@ -588,7 +592,7 @@ line_task_main(INT stacd, void *exinf)
                                           (int16_t)(base + corr));
                 prev_d = d;
                 trace(d, corr, 0, bits, LINE_TR_HOLD, LINE_TR_NO_OFF);
-                tk_dly_tsk(LINE_PERIOD_MS);
+                cpu_dly(LINE_PERIOD_MS);
                 continue;
             }
 
@@ -601,7 +605,7 @@ line_task_main(INT stacd, void *exinf)
                 if (!b_c_on)
                 {
                     motion_stop();
-                    tk_dly_tsk(200u);
+                    cpu_dly(200u);
                     trace(d, 0, 0, bits, LINE_TR_SEARCH,
                   LINE_TR_NO_OFF);
                     if (search_window(hold_dir, SEARCH_RAMP_CDEG, 1)
@@ -763,7 +767,7 @@ line_task_main(INT stacd, void *exinf)
                 {
                     /* Lost: stop, then look on the spot only (raised mats) */
                     motion_stop();
-                    tk_dly_tsk(200u);
+                    cpu_dly(200u);
                     trace(d, 0, 0, bits, LINE_TR_SEARCH,
                   LINE_TR_NO_OFF);
                     if (search_window(line_dir, SEARCH_HALF_CDEG, last_side)
@@ -911,7 +915,7 @@ line_task_main(INT stacd, void *exinf)
             (void)motion_set_velocity((int16_t)(base - corr),
                                       (int16_t)(base + corr));
             trace(d, corr, curve_ff, bits, LINE_TR_FOLLOW, off);
-            tk_dly_tsk(LINE_PERIOD_MS);
+            cpu_dly(LINE_PERIOD_MS);
         }
 
         motion_stop();

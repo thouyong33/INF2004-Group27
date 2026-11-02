@@ -10,6 +10,7 @@
 #include "../common/critical.h"
 #include "../common/faults.h"
 #include "../common/ctrl_events.h"
+#include "../common/cpu_meter.h"
 #include "../buddy2_motion/motion_task.h"
 #include "../buddy3_line_barcode/ir_sensor.h"
 #include "../buddy3_line_barcode/line.h"
@@ -187,7 +188,7 @@ rest_attitude(int32_t *p_roll0)
             r0 += att.roll_cdeg;
             n++;
         }
-        tk_dly_tsk(CTRL_PERIOD_MS);
+        cpu_dly(CTRL_PERIOD_MS);
     }
     if (0 == n)
     {
@@ -228,7 +229,7 @@ line_wind_down(void)
     for (j = 0u; (j < CTRL_END_WAIT_MS) && (LINE_END_NONE == line_follow_end());
          j += CTRL_PERIOD_MS)
     {
-        tk_dly_tsk(CTRL_PERIOD_MS);
+        cpu_dly(CTRL_PERIOD_MS);
     }
 }
 
@@ -293,12 +294,12 @@ junction_turn(uint8_t cmd, int32_t d_seen)
         while ((dist_mm() < target) && (waited < CTRL_JUNC_FWD_MS)
                && (0u == (fault_get() & FAULT_MOTION_MASK)))
         {
-            tk_dly_tsk(CTRL_PERIOD_MS);
+            cpu_dly(CTRL_PERIOD_MS);
             waited += CTRL_PERIOD_MS;
         }
     }
     motion_stop();
-    tk_dly_tsk(300u);
+    cpu_dly(300u);
     if (0u != (fault_get() & FAULT_MOTION_MASK))
     {
         return 99999;
@@ -312,7 +313,7 @@ junction_turn(uint8_t cmd, int32_t d_seen)
     {
         got += motion_turn_cdeg(cdeg - got, CTRL_TRIM_MM_S);
     }
-    tk_dly_tsk(200u);
+    cpu_dly(200u);
     return got;
 }
 
@@ -343,10 +344,10 @@ creep_to_scan_range(void)
         {
             break;
         }
-        tk_dly_tsk(CTRL_CREEP_PING_MS);
+        cpu_dly(CTRL_CREEP_PING_MS);
     }
     motion_stop();
-    tk_dly_tsk(300u);
+    cpu_dly(300u);
     return mm;
 }
 
@@ -474,11 +475,11 @@ probe_drive(int32_t mm, int16_t mm_s)
            && (waited < limit_ms)
            && (0u == (fault_get() & FAULT_MOTION_MASK)))
     {
-        tk_dly_tsk(CTRL_PERIOD_MS);
+        cpu_dly(CTRL_PERIOD_MS);
         waited += CTRL_PERIOD_MS;
     }
     motion_stop();
-    tk_dly_tsk(PROBE_SETTLE_MS);
+    cpu_dly(PROBE_SETTLE_MS);
     return dist_mm() - d0;
 }
 
@@ -496,7 +497,7 @@ probe_ping(void)
     {
         v[i] = (E_OK == ultrasonic_read_us(&echo_us))
                ? ultrasonic_us_to_mm(echo_us) : -1;
-        tk_dly_tsk(PROBE_PING_MS);
+        cpu_dly(PROBE_PING_MS);
     }
     for (i = 1u; i < PROBE_PINGS; i++)
     {
@@ -549,7 +550,7 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t *p_ref, int32_t *p_y,
         moved = probe_drive(PROBE_STEP_MM, PROBE_DRIVE_MM_S);
         *p_y += side * moved;
         probe_turn_to(dir_cdeg);
-        tk_dly_tsk(PROBE_SETTLE_MS);
+        cpu_dly(PROBE_SETTLE_MS);
         mm = probe_ping();
         probe_log(*p_y, mm);
         if ((mm > 0) && (mm <= (*p_ref + PROBE_BAND_MM)))
@@ -603,7 +604,7 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     log_evt(EVT_OBST_HDG, line_clean_ok() ? OBST_HDG_CLEAN : OBST_HDG_PLAIN,
             (int16_t)(dir - line_direction_cdeg()), dist_mm());
     avoid_turn_to(dir, 0u);
-    tk_dly_tsk(PROBE_SETTLE_MS);
+    cpu_dly(PROBE_SETTLE_MS);
     face_mm = probe_ping();
     probe_log(0, face_mm);
     if (face_mm <= 0)
@@ -673,12 +674,12 @@ avoid_return(int32_t y)
             target = (target > (y + AVOID_SEEK_EXTRA_MM))
                      ? (y + AVOID_SEEK_EXTRA_MM) : target;
         }
-        tk_dly_tsk(CTRL_PERIOD_MS);
+        cpu_dly(CTRL_PERIOD_MS);
         waited += CTRL_PERIOD_MS;
         moved = dist_mm() - d0;
     }
     motion_stop();
-    tk_dly_tsk(PROBE_SETTLE_MS);
+    cpu_dly(PROBE_SETTLE_MS);
     moved = dist_mm() - d0;
     log_evt(EVT_OBST_AVOID, (seen >= 0) ? 1u : 2u,
             (int16_t)((seen >= 0)
@@ -744,6 +745,7 @@ ctrl_task_main(INT stacd, void *exinf)
 {
     UINT flgptn;
     ctrl_evt_t evt;
+    ER er;
     imu_attitude_t att;
     imu_raw_t raw;
     hump_event_t hump;
@@ -783,11 +785,14 @@ ctrl_task_main(INT stacd, void *exinf)
 
     (void)stacd;
     (void)exinf;
+    cpu_meter_register(CPU_CTRL);
 
     while (1)
     {
+        cpu_idle();
         (void)tk_wai_flg(g_ctrl_flg, CTRL_FLG_RUN, TWF_ORW | TWF_CLR, &flgptn,
                          TMO_FEVR);
+        cpu_busy();
 
         opts = g_opts;
         g_t0 = now_ms();
@@ -815,7 +820,7 @@ ctrl_task_main(INT stacd, void *exinf)
         {
             obstacle_watch(true);
             flags |= CTRL_FLAG_WATCHING;
-            tk_dly_tsk(CTRL_WATCH_SETTLE_MS);
+            cpu_dly(CTRL_WATCH_SETTLE_MS);
         }
         while (E_OK == ctrl_evt_wait(&evt, TMO_POL))
         {
@@ -848,7 +853,10 @@ ctrl_task_main(INT stacd, void *exinf)
             t = now_ms();
             wait = ((t - t_sample) >= CTRL_PERIOD_MS) ? TMO_POL
                  : (TMO)(CTRL_PERIOD_MS - (t - t_sample));
-            if (E_OK == ctrl_evt_wait(&evt, wait))
+            cpu_idle();
+            er = ctrl_evt_wait(&evt, wait);
+            cpu_busy();
+            if (E_OK == er)
             {
                 d = dist_mm();
                 switch (evt.type)
@@ -864,7 +872,7 @@ ctrl_task_main(INT stacd, void *exinf)
                         barcode_scan_enable(false);
                         line_wind_down();
                         obstacle_watch(false);
-                        tk_dly_tsk(300u);
+                        cpu_dly(300u);
                         probe_turn_to(line_clean_direction_cdeg());
                         log_evt(EVT_OBST_CREEP, 0u,
                                 (int16_t)creep_to_scan_range(), dist_mm());
@@ -880,7 +888,7 @@ ctrl_task_main(INT stacd, void *exinf)
                                 (int16_t)((now_ms() - t_obst) / 100u),
                                 dist_mm());
                         obstacle_watch(true);
-                        tk_dly_tsk(CTRL_WATCH_SETTLE_MS);
+                        cpu_dly(CTRL_WATCH_SETTLE_MS);
                         requeue_events();
                         g_dist_base += dist_mm();
                         (void)line_follow_start(g_speed,
@@ -1139,7 +1147,7 @@ ctrl_task_main(INT stacd, void *exinf)
              && (LINE_END_NONE == line_follow_end());
              j += CTRL_PERIOD_MS)
         {
-            tk_dly_tsk(CTRL_PERIOD_MS);
+            cpu_dly(CTRL_PERIOD_MS);
         }
         motion_set_hump_mask(false);
         line_set_hold(false);
@@ -1152,7 +1160,7 @@ ctrl_task_main(INT stacd, void *exinf)
          * side-stepping (see probe_obstacle) and report its width */
         if (CTRL_ST_OBSTACLE == state)
         {
-            tk_dly_tsk(300u);
+            cpu_dly(300u);
             probe_turn_to(line_clean_direction_cdeg());
             log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
                     dist_mm());

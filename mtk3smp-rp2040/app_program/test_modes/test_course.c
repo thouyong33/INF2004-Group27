@@ -83,6 +83,30 @@ LOCAL void ctrlt_print_probe(void)
     tm_printf((UB *)"\n");
 }
 
+/* Each task's share of the CPU over the run and its longest pass
+   (common/cpu_meter.h: an upper bound, preemption counts in both) */
+LOCAL void ctrlt_print_cpu(void)
+{
+    static const char *const name[CPU_SLOTS] = {
+        "motion", "line", "barcode", "obstacle", "controller"
+    };
+    uint32_t span_us;
+    uint32_t busy_us;
+    uint32_t max_us;
+    uint32_t pct_x10;
+    uint32_t i;
+
+    tm_printf((UB *)"[CTRL]   CPU (share of the run, longest pass):");
+    for(i = 0u; i < CPU_SLOTS; i++) {
+        span_us = cpu_meter_get(i, &busy_us, &max_us);
+        pct_x10 = (span_us > 0u)
+                  ? (uint32_t)(((uint64_t)busy_us * 1000u) / span_us) : 0u;
+        tm_printf((UB *)" %s %u.%u%% (%u us)%s", name[i],
+                  (UINT)(pct_x10 / 10u), (UINT)(pct_x10 % 10u), (UINT)max_us,
+                  (i + 1u < CPU_SLOTS) ? "," : "\n");
+    }
+}
+
 /* One barcode read's bars and spaces: B mm/peak mV, w mm */
 LOCAL void ctrlt_print_bars(const bc_elem_t *p_el, INT n)
 {
@@ -183,6 +207,7 @@ void ctrl_test_course(void)
         console_flush_input();
 
         fails0 = barcode_scan_fail_count();
+        cpu_meter_reset();
         er = ctrl_run(CTRLT_MM_S,
                       (c == 'c') ? 0 : ((c == 'r') ? CTRLT_READ_MM
                                                    : CTRLT_MAX_MM), opts);
@@ -250,6 +275,7 @@ void ctrl_test_course(void)
                   " controller longest sample gap %u ms (period 20)\n",
                   (UINT)rate_min, (UINT)pass_max,
                   (UINT)ctrl_sample_gap_max_ms());
+        ctrlt_print_cpu();
         n = (INT)ctrl_log_get(lg);
         tm_printf((UB *)"[CTRL]   events (t_ms, d_mm, event, arg, val):\n");
         for(i = 0; i < n; i++) {

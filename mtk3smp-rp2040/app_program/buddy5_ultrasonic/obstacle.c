@@ -10,6 +10,7 @@
 
 #include "../common/faults.h"
 #include "../common/ctrl_events.h"
+#include "../common/cpu_meter.h"
 #include "ultrasonic.h"
 #include "servo.h"
 #include "obstacle.h"
@@ -49,12 +50,15 @@ obstacle_task_main(INT stacd, void *exinf)
 
     (void)stacd;
     (void)exinf;
+    cpu_meter_register(CPU_OBSTACLE);
 
     while (1)
     {
         /* Sleep until watching is on (the flag stays set while it is) */
+        cpu_idle();
         (void)tk_wai_flg(g_obs_flg, OBS_FLG_WATCH, TWF_ORW, &flgptn,
                          TMO_FEVR);
+        cpu_busy();
 
         if (0u != g_reset_req)
         {
@@ -100,7 +104,7 @@ obstacle_task_main(INT stacd, void *exinf)
         }
         g_near_hist = hist;
 
-        tk_dly_tsk(OBS_PING_MS);
+        cpu_dly(OBS_PING_MS);
     }
 }
 

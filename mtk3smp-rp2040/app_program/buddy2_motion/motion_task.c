@@ -24,6 +24,7 @@
 #include "../common/pin_defs.h"
 #include "../common/critical.h"
 #include "../common/faults.h"
+#include "../common/cpu_meter.h"
 #include "motion_task.h"
 
 /*----------------------------------------------------------------------------
@@ -925,6 +926,7 @@ motion_task_main(INT stacd, void *exinf)
 
         busy_us = in_w(TIMER_TIMERAWL) - t_pass_us;
         g_busy_acc_us += busy_us;
+        cpu_meter_add(CPU_MOTION, busy_us);
         if (busy_us > g_busy_pass_max_us)
         {
             g_busy_pass_max_us = busy_us;
@@ -1306,7 +1308,7 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
 
     do
     {
-        tk_dly_tsk(MOVE_POLL_MS);
+        cpu_dly(MOVE_POLL_MS);
         progress = average_progress_counts();
     } while ((progress + brake_edges) < target_edges);
 
@@ -1323,7 +1325,7 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
     waited_ms = 0u;
     while ((still_ms < MOVE_STILL_MS) && (waited_ms < MOVE_SETTLE_MAX_MS))
     {
-        tk_dly_tsk(MOVE_POLL_MS);
+        cpu_dly(MOVE_POLL_MS);
         waited_ms += MOVE_POLL_MS;
         progress = average_progress_counts();
         still_ms = (progress == last_progress) ? (still_ms + MOVE_POLL_MS) : 0u;
@@ -1410,10 +1412,10 @@ motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s)
         {
             break;
         }
-        tk_dly_tsk(4u);
+        cpu_dly(4u);
         waited += 4u;
     }
     (void)motion_set_velocity(0, 0);
-    tk_dly_tsk(TURN_SETTLE_MS);
+    cpu_dly(TURN_SETTLE_MS);
     return turn_angle_cdeg(l0, r0);
 }
