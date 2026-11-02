@@ -4,7 +4,9 @@
  * by MOTION_TEST_MODE (default below, or -DMOTION_TEST_MODE=n). usermain()
  * creates the motion task and then calls test_mode_run(). The numbers are
  * the ones the test logs and docs/tribunal1/cr1_evidence.md refer to;
- * modes retired on 28 Oct 2026 are in git history (commit 7e16bec).
+ * modes retired on 28 Oct 2026 are in git history (commit 7e16bec), the
+ * ramp roll log (22) and width calibration (33) since 2 Nov (the course
+ * test's l, a and c runs replaced them).
  *
  *   MOTION_TEST_HAND       - motors stay OFF; prints encoder counters
  *                            every second while the wheels are turned
@@ -21,18 +23,14 @@
  *                            (both wheels held), encoder check (one held).
  *   MOTION_TEST_CPU        - motion task CPU (busy us/s, longest pass) idle
  *                            and at 150/300/500 mm/s, and stack high-water.
- *   IMU_TEST_RAMP_ROLL     - phase 2 step 1: 50 cm at 150 mm/s with only the
- *                            right wheel over a ramp (flat/small/tall); logs
- *                            roll, pitch, heading, wheel distances, jolt.
- *   CTRL_TEST_COURSE       - vehicle controller task: course runs (line +
- *                            ramp, or line + obstacle stop), event log and
- *                            robot_status every 500 ms.
+ *   CTRL_TEST_COURSE       - vehicle controller task: course runs picked by
+ *                            key (l line + ramp, o obstacle stop, a go
+ *                            round it, b barcode command, r barcode read,
+ *                            c the whole course), then the event log,
+ *                            robot_status every 500 ms and the line trace.
  *   BARCODE_TEST_DRIVE     - Buddy 3 barcode: driven scan (50 mm/s) of the
  *                            slit-taped left IR AO, decoder v2 (barcode.c)
  *                            reading Code 39 both ways.
- *   OBST_TEST_WIDTH        - Buddy 5: drive, stop at an object, scan; width
- *                            estimate plus every reading, for calibrating
- *                            the width against objects of known size.
  */
 
 #ifndef TEST_MODES_H
@@ -43,10 +41,8 @@
 #define IR_TEST_LOG              18
 #define MOTION_TEST_SAFETY       20
 #define MOTION_TEST_CPU          21
-#define IMU_TEST_RAMP_ROLL       22
 #define CTRL_TEST_COURSE         31
 #define BARCODE_TEST_DRIVE       32
-#define OBST_TEST_WIDTH          33
 
 #ifndef MOTION_TEST_MODE
 #define MOTION_TEST_MODE         CTRL_TEST_COURSE
