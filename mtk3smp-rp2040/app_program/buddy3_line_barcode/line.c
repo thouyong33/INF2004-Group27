@@ -127,7 +127,7 @@
  * turn on a hard right (66 mm/s, a ~8.5 cm radius) spiralled inside the
  * corner without the IRs ever reaching the line. Past
  * LINE_BLIND_RIGHT_LOST_CDEG of turning without the line it stops and
- * searches, left first. */
+ * searches, right first (the curve carries on that way). */
 #define LINE_BLIND_RIGHT_START_MM_S 14
 #define LINE_BLIND_RIGHT_MAX_MM_S   27
 #define LINE_BLIND_RIGHT_LOST_CDEG  9000
@@ -753,7 +753,11 @@ line_task_main(INT stacd, void *exinf)
                        : ((d - white_since) > LINE_LOST_MM));
                 if (b_lost && b_blind_right)
                 {
-                    last_side = 1;   /* turned past it: look left first */
+                    /* a right curve longer than the blind turn (the 270 deg
+                     * curve driven clockwise): the line carries on to the
+                     * right, so look right first. Looking left first swung
+                     * back 60 deg for nothing on every such curve. */
+                    last_side = -1;
                 }
                 if (b_lost)
                 {
