@@ -42,9 +42,9 @@
 /* A cross arm under the left IR reads as one bar 18 mm wide. When the
  * car crosses pointing a few degrees left, the right IR runs from the arm
  * straight onto the main line and the line task never reports the
- * junction (ctrl_course_v15 runs 5-6), so the arm seen here reports it
+ * junction at all, so the arm seen here reports it
  * too: EVT_JUNCTION arg 1, val = where the right IR meets the arm (the
- * left IR sits LEFT_IR_AHEAD_MM ahead of it, user 28 Oct), in the line
+ * left IR sits LEFT_IR_AHEAD_MM ahead of it), in the line
  * task's distance. */
 #define ARM_MIN_MM           10
 #define ARM_MAX_MM           35

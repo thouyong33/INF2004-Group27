@@ -18,17 +18,17 @@
 #define LINE_FLG_RUN         (1u << 0)
 
 #define LINE_PERIOD_MS       20u     /* = the PI period */
-/* Right-edge following by heading (29 Oct). Steering straight from the
- * IR reading (a wheel speed difference starting at 20 mm/s and growing 2
- * per period on one side) turned back late at every side change: each
- * swing grew (-23 then +13..+20 deg, ctrl_course_v25) and the car left
- * the mat; the old 40 mm lost-line stop had been damping it. Now each
- * reading picks a target heading just to one side of the line's direction
- * (line_dir, the heading averaged over LINE_DIR_MM): C black -> right of
- * it, C white -> left, by LINE_BIAS_CDEG, growing LINE_BIAS_GROW_CDEG a
- * period while on the same side (curves) up to LINE_BIAS_MAX_CDEG. The
- * wheel difference is the heading error / LINE_HDG_GAIN_DIV: at a side
- * change the error flips at once, so the car turns back at once. */
+/* Right-edge following by heading. The centre IR (C) rides the line's
+ * right edge. Each reading picks a target heading just to one side of the
+ * line's direction (line_dir, the heading averaged over LINE_DIR_MM):
+ * C black -> right of it, C white -> left, by LINE_BIAS_CDEG, growing
+ * LINE_BIAS_GROW_CDEG a period while it stays on the same side, up to
+ * LINE_BIAS_MAX_CDEG. The wheel speed difference is the heading error /
+ * LINE_HDG_GAIN_DIV, so when C changes side the error flips at once and
+ * the car turns back at once. Steering straight from the IR reading
+ * instead (a wheel difference that grew while C stayed on one side)
+ * turned back late at every side change: each swing grew, from -23 to
+ * +13..+20 deg, until the car left the mat. */
 #define LINE_BIAS_CDEG       200
 #define LINE_BIAS_GROW_CDEG  8
 #define LINE_BIAS_MAX_CDEG   4500
@@ -38,120 +38,115 @@
 #define LINE_SLEW_MM_S       15      /* max steering change per period */
 #define LINE_JUNCTION_MM     30      /* drive straight this far over an arm */
 /* C and R both black this far before it counts as a junction: a cross arm
- * keeps both black ~18 mm; a diagonal glance across the line's edge only a
- * few mm (false junctions on the plain straight, 26 Oct) */
+ * keeps both black ~18 mm, but a diagonal glance across the line's edge
+ * only a few mm, which gave false junctions on plain straights */
 #define LINE_JUNC_CONFIRM_MM 6
 /* ...and the right IR's black stretch must end within this: an 18 mm arm
- * keeps it black for ~6-35 mm, a black ramp under the right IR (the small
- * test ramp, 27 Oct) for 100 mm or more. The junction is reported when the
- * black ends, from where it began. */
+ * keeps it black for ~6-35 mm, a black ramp under the right IR for 100 mm
+ * or more. The junction is reported when the black ends, from where it
+ * began. */
 #define LINE_JUNC_MAX_MM     35
-/* ...and is only reported once C has stayed black this far past the
- * end of R's black. At a cross C stays on the line 25 mm or more; on a
- * right curve the line sweeps under C and R together (it looks like
- * an arm) and then leaves C within ~7 mm (v34, 30 Oct): that is a
- * curve, so the straight hold is dropped and no junction is sent */
+/* ...and is only reported once C has stayed black this far past the end
+ * of R's black. At a cross C stays on the line 25 mm or more; on a right
+ * curve the line sweeps under C and R together (it looks like an arm)
+ * and then leaves C within ~7 mm. That is a curve, so the straight hold
+ * is dropped and no junction is sent (taking it for a junction drove the
+ * car straight on, off the curve). */
 #define LINE_JUNC_HOLD_C_MM  10
-/* Where the line went when both IRs read white: right of C if R was
- * the last to see black (R alone, or C and R together) and C has not
- * since been black alone this far; otherwise left. The weave only
- * leaves the line to the left (v34: after a right curve the car took
- * the white for "line to the left" and turned 90 deg left). v38 left
- * out C and R together (a mat seam reads so too), but every right
- * curve on the circuit enters that way, with no R-alone reading after
- * the right IR was retrimmed (v38 runs, 30 Oct): all turned left. */
+/* Where the line went when both IRs read white: right of C if R was the
+ * last to see black (R alone, or C and R together) and C has not since
+ * been black alone this far; otherwise left, since the normal weave only
+ * leaves the line to the left. Without this the car read the white after
+ * a right curve as "line to the left" and turned 90 deg left. C and R
+ * black together must count: every right curve on the circuit enters
+ * that way, with no R-alone reading, and leaving it out made them all
+ * turn left. */
 #define LINE_RIGHT_CLEAR_MM  10
-/* ...unless the left IR also saw black within this of C and R both
- * black: then it was a cross (both arms) or a seam across the mat,
- * not a right curve (the left IR, 65 mm left, never sees a right
- * curve). v41 runs 7-8 (30 Oct, new circuit): a cross where C left
- * the line early was taken for a right curve and the car turned off
- * the mat; the left IR logged its bar at the same place both times. */
+/* ...unless the left IR also saw black within this of C and R both black:
+ * then it was a cross (both arms) or a seam across the mat, not a right
+ * curve (the left IR, 65 mm left of C, never sees a right curve). Without
+ * this, a cross where C left the line early was taken for a right curve
+ * and the car turned off the mat. */
 #define LINE_CROSS_WINDOW_MM 40
 /* Line under the right IR alone (centre white): the car overshot the line
- * to the left, a hard right brings it back. This is the weave's normal
- * recovery (without it, ctrl_course_v14 lost the line and searched on
- * nearly every run). A black ramp beside the line reads the same, so the
- * hard right only lasts while R's black stretch is arm-sized and stops
- * once the heading is LINE_R_DEV_MAX_CDEG right of the line's direction
- * (v13: it turned 13 deg right onto the ramp). Past that it counts as
- * "centre on the white" or straight. */
+ * to the left, and a hard right brings it back. This is the weave's normal
+ * recovery; without it the car lost the line and searched on nearly every
+ * run. A black ramp beside the line reads the same, so the hard right only
+ * lasts while R's black stretch is arm-sized and stops once the heading is
+ * LINE_R_DEV_MAX_CDEG right of the line's direction (without the cap it
+ * turned 13 deg right onto a ramp). Past that it counts as "centre on the
+ * white" or straight. */
 #define LINE_R_ONLY_MAX_MM   35
 #define LINE_R_DEV_MAX_CDEG  500
-/* Centre white this far (steering left): lost. 40 mm was shorter than a
- * swing under the old steering (ctrl_course_v23); with the smaller heading
- * weave (v29) a swing back from the right can take exactly 60 mm of white
- * and tripped a needless search 1-2 times a run, so 100 mm. */
+/* Centre white this far (steering left): lost, so search. A swing back
+ * from the right can take ~60 mm of white, and a lower limit started a
+ * needless search 1-2 times a run. */
 #define LINE_LOST_MM         100
-/* Curves (29 Oct). The steering above keeps the car beside the line's
- * direction averaged over LINE_DIR_MM and widens its aim by only
- * LINE_BIAS_GROW_CDEG a period: on the circuit's curve mat it turned
- * ~5 deg per 100 mm, lost the line, and after the search had found
- * it 20 deg left it steered back to the old straight (c run, v32).
- * A curve now adds a feed-forward turn (curve_ff, + left) that grows
- * LINE_CURVE_GROW_MM_S a period while the line is on the curve's
- * inside and decays LINE_CURVE_DECAY_MM_S a period otherwise, so it
- * settles where the two balance:
- *   left curve: starts after LINE_CURVE_WHITE_MM of centre white
- *     (a straight's weave is 18-25 mm); grows while C is white.
- *   right curve: starts when the line is still under R alone after
- *     the car has turned LINE_R_DEV_MAX_CDEG right (that cap used to
- *     send it straight on, off the curve); grows while C or R alone
- *     is black. A long C-black start (v33) also fired on straights.
- * While it is on, the reference direction follows the car and the
- * bias stays at LINE_BIAS_CDEG (v33 added the growing bias to the
- * curve turn and overturned right), barcode read mode and junction
- * arms are ignored (on a left curve the left IR crosses the line and
- * started a "read" that cancelled the curve, v33 runs 1 and 2).
- * LINE_CURVE_MAX_MM_S a side is a ~14 cm radius at 100 mm/s.
- * v35 circuit runs (30 Oct): leaving a right curve the turn took ~40 mm
- * to fade (decay 2 a period), the car turned past the straight, C saw
- * 45 mm of white and that started a left curve: a weave that grew
- * with every swing (run 3). A straight's weave also once held white
- * for exactly 40 mm and turned the car 150 deg left (run 2). So the
- * turn now fades in ~13 mm and a left curve needs 60 mm of white. */
+/* Curves. Edge following alone turns too slowly for a curve mat (about
+ * 5 deg per 100 mm): the car lost the line and, once a search found it
+ * again, steered back towards the old straight. So a curve adds a
+ * feed-forward turn, curve_ff (mm/s, + = left), on top of the steering.
+ * It grows LINE_CURVE_GROW_MM_S a period while the line stays on the
+ * curve's inside and fades LINE_CURVE_DECAY_MM_S a period once it is
+ * back, so it settles where the two balance:
+ *   left curve: starts once C has been white for LINE_CURVE_WHITE_MM;
+ *     a straight's weave stays white only 18-25 mm, and a lower value
+ *     (40) let the weave start a curve that turned the car 150 deg.
+ *   right curve: starts when the line is still under R alone after the
+ *     car has already turned LINE_R_DEV_MAX_CDEG right; grows while C or
+ *     R alone is black. Starting on a long C-black stretch instead also
+ *     fired on plain straights.
+ * The fade is quick (~13 mm). A slow fade (~40 mm) carried the turn past
+ * the straight, the white that followed started a curve the other way,
+ * and the weave grew at every swing.
+ * While a curve turn is on, the reference direction follows the car and
+ * the bias stays at LINE_BIAS_CDEG (adding the growing bias as well made
+ * right curves over-turn). Barcode read mode and junction arms are
+ * ignored: on a left curve the left IR crosses the line itself, which
+ * would start a false read and cancel the curve. */
 #define LINE_CURVE_WHITE_MM  60
 #define LINE_CURVE_GROW_MM_S 2
 #define LINE_CURVE_DECAY_MM_S 6
 #define LINE_CURVE_MAX_MM_S  40
-/* ...but a left curve's 40, plus the bias's 13, turned a ~108 mm radius
- * at 100 mm/s: inside the ~14 cm curve, it left the curve 15-25 deg short
- * of the straight and weaved over a barcode just past it (v43/v44 r runs,
- * 31 Oct). 26 + 13 is a ~145 mm radius, C's path on the outer edge. */
+/* ...but a left curve's turn is capped lower. At 100 mm/s, 40 plus the
+ * bias's 13 turns a ~108 mm radius, tighter than the ~14 cm curve mats:
+ * the car cut inside, left the curve 15-25 deg short of the straight and
+ * weaved over a barcode just past it. 26 + 13 turns ~145 mm, the path
+ * of C along the curve's outer edge. A tighter curve needs it raised. */
 #define LINE_CURVE_LEFT_MAX_MM_S 26
 /* On a left curve the centre is white while the car turns toward the
  * line, so "lost" is this much turning, or distance, without finding
  * it (not LINE_LOST_MM) */
 #define LINE_CURVE_LOST_CDEG 12000
 #define LINE_CURVE_LOST_MM   400
-/* Blind right turn: both IRs white with the line known to be right (a
- * right curve's inner edge). v39 ran ~30 mm almost straight, then
- * stacked the curve turn on a hard right (66 mm/s, ~8.5 cm radius)
- * against ~15 cm corners: it spiralled inside the top-left corner,
- * the IRs never reaching the line (v39 runs 1, 2, 4). Now the turn
- * starts at once at LINE_BLIND_RIGHT_START_MM_S, the single bias is
- * used, and curve_ff is capped at LINE_BLIND_RIGHT_MAX_MM_S: ~40 mm/s
- * in all, a ~14 cm radius. Past LINE_BLIND_RIGHT_LOST_CDEG of turning
- * without the line it stops and searches, left first. */
+/* Blind right turn: both IRs white with the line known to be to the
+ * right (a right curve's inner edge). The turn starts at once at
+ * LINE_BLIND_RIGHT_START_MM_S, uses the single bias, and caps curve_ff at
+ * LINE_BLIND_RIGHT_MAX_MM_S: ~40 mm/s in all, a ~14 cm radius like the
+ * corners. Waiting ~30 mm before turning and then stacking the curve
+ * turn on a hard right (66 mm/s, a ~8.5 cm radius) spiralled inside the
+ * corner without the IRs ever reaching the line. Past
+ * LINE_BLIND_RIGHT_LOST_CDEG of turning without the line it stops and
+ * searches, left first. */
 #define LINE_BLIND_RIGHT_START_MM_S 14
 #define LINE_BLIND_RIGHT_MAX_MM_S   27
 #define LINE_BLIND_RIGHT_LOST_CDEG  9000
-/* Just after a curve (v36 circuit runs 4 and 5, 30 Oct): the car came
- * back to the line slowly (bias growing LINE_BIAS_GROW_CDEG a period),
- * 60 mm of white built up and opened a small opposite curve, which
- * overshot and opened the next one: a +/-13 deg weave every ~250 mm
- * on the straight. For LINE_AFTER_CURVE_MM after a curve ends the bias
- * grows LINE_BIAS_GROW_AFTER_CDEG a period instead (a firm return to
- * the edge), and a new curve needs LINE_AFTER_CURVE_WHITE_MM of white
- * (still under LINE_LOST_MM) or the line under R alone does not
- * start one at all. */
+/* Just after a curve the car returns to the line's edge slowly (the bias
+ * grows only LINE_BIAS_GROW_CDEG a period), so 60 mm of white can build
+ * up and start a small curve the other way, which overshoots and starts
+ * the next: a +/-13 deg weave every ~250 mm along the straight. So for
+ * LINE_AFTER_CURVE_MM after a curve ends, the bias grows
+ * LINE_BIAS_GROW_AFTER_CDEG a period instead (a firm return to the
+ * edge), and a new left curve needs LINE_AFTER_CURVE_WHITE_MM of white
+ * (kept below LINE_LOST_MM so it never becomes a search); the line under
+ * R alone does not start one at all. */
 #define LINE_AFTER_CURVE_MM  100
 #define LINE_AFTER_CURVE_WHITE_MM 90
 #define LINE_BIAS_GROW_AFTER_CDEG 30
-/* ...and the steering is capped at this either way (not the line under
- * R alone, not a curve turn): the line's direction still lags the turn,
- * so C touching the line called for a -40..-55 swerve that threw the car
- * off it again (v44 r runs, 31 Oct) */
+/* ...and in that window the steering is capped at this (except for the
+ * line under R alone, or a curve turn): the line's direction still lags
+ * the turn just made, so C touching the line called for a -40..-55 mm/s
+ * swerve that threw the car off it again. */
 #define LINE_AFTER_CURVE_LIM_MM_S 25
 /* A search that finds the line further than this from the line's
  * direction found a curve: carry on turning that way (curve_ff at
@@ -160,43 +155,45 @@
 #define SEARCH_MM_S          30      /* on-spot search turn speed */
 /* Searches sweep a window around the line's direction (below), first
  * toward the side the line was last seen, so a perpendicular junction arm
- * is never taken (ramp runs 2026-10-23/24 picked up a cross arm) */
+ * is never taken (a wider search on the ramp mats picked up a cross arm) */
 #define SEARCH_HALF_CDEG     6000    /* line lost while following */
 #define SEARCH_RAMP_CDEG     4500    /* line not under C/R right after a ramp */
 #define SEARCH_TIMEOUT_MS    8000u
 /* trace a search this often (keeps the trace short) */
 #define SEARCH_TRACE_MS      200u
-/* Ramp hold (line_set_hold): tilted on the one-sided ramp the IR reads
- * false black (ramp runs 2026-10-24), so the car drives straight on the
- * encoders and only looks at the line again this far past the ramp */
+/* Ramp hold (line_set_hold): tilted on the one-sided ramp the IRs read
+ * false black, so the car drives straight on the encoders and only looks
+ * at the line again this far past the ramp */
 #define HOLD_AFTER_MM        50
 /* steering mm/s = heading x0.01 deg / 20 */
 #define HOLD_GAIN_DIV        20
 #define HOLD_CORR_MAX_MM_S   30
 /* Barcode read mode (line_set_straight): the left IR is ~130 mm ahead of
- * the axle, so the weave swings it sideways (+/-18 mm at +/-8 deg) and it
- * left the bars (A4 reads with 19-53 mm "spaces", 29 Oct). A blind
- * straight hold fixed the heading but kept whatever sideways offset the
- * car had at the first bar (v27/v28). While a read is in progress the car
- * now keeps following the edge, with a fixed +/-LINE_READ_BIAS_CDEG aim
- * (no growth): the centre IR stays on the edge and the heading within
- * ~+/-2 deg. Never longer than this: */
+ * the axle, so the normal weave swings it sideways (+/-18 mm at +/-8 deg)
+ * and it slid off the bars, reading 19-53 mm "spaces". Holding straight
+ * blind fixed the heading but kept whatever sideways offset the car had
+ * at the first bar. So while a read is in progress the car keeps
+ * following the edge with a fixed +/-LINE_READ_BIAS_CDEG aim (no growth):
+ * C stays on the edge and the heading within ~+/-2 deg. Read mode lasts
+ * at most this far: */
 #define STRAIGHT_MAX_MM      400
-/* ...and read mode ends once C has been white this far: a code is
- * read with C on the line's edge, and off the line the fixed aim only
- * kept the car from steering back (v36 runs 1 and 2: ~50 mm held
- * straight just as the line curved away) */
-#define READ_WHITE_MAX_MM    30   /* 20 ended reads at a curve exit */
+/* ...and ends once C has been white this far. A code is read with C on
+ * the line's edge; with C off the line the fixed aim only stops the car
+ * steering back, and it once drove ~50 mm straight as the line curved
+ * away. 20 mm was too short: just after a curve C leaves the line
+ * briefly, and that ended reads in the middle of a code. */
+#define READ_WHITE_MAX_MM    30
 #define LINE_READ_BIAS_CDEG  100
 /* Line direction: the encoder heading averaged over ~LINE_DIR_MM of
  * following, so the weave and a knock just before the ramp (the IR
  * bracket hits it first) do not set the direction the ramp is held on */
 #define LINE_DIR_MM          100
-/* The obstacle avoid squares up to the line's direction: line_dir there
- * included a cross and a curve's end 120 mm back and the whole avoid came
- * out a few degrees off (c run, 31 Oct). Its own direction averages only
- * plain following (no curve turn, no curve settle, no junction, no hold)
- * over the last LINE_DIR_MM of it, if there are LINE_CLEAN_MIN_MM. */
+/* The obstacle avoid squares up to the line's direction and measures every
+ * move from it. line_dir can include a cross or a curve's end, which put
+ * the whole avoid a few degrees off. So the avoid has its own direction:
+ * the average of plain following only (no curve turn, no settle after a
+ * curve, no junction, no hold) over the last LINE_DIR_MM of it, used when
+ * there is at least LINE_CLEAN_MIN_MM of it; otherwise line_dir. */
 #define LINE_CLEAN_MIN_MM    30
 
 #define UM_PER_EDGE          328L
@@ -247,7 +244,7 @@ trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode,
     line_trace_t *p_t;
 
     /* rolling: a continuous run keeps its last LINE_TRACE_LEN periods,
-       where it failed (v35 runs failed past the first 830 mm) */
+       the ones before it stopped or failed, however far it went */
     p_t = &g_trace[g_trace_n % LINE_TRACE_LEN];
     p_t->d_mm = (int16_t)d;
     p_t->corr = (int16_t)corr;
@@ -308,7 +305,7 @@ search_turn(int32_t to_cdeg)
 
     /* ...and stop as soon as the ramp hold starts: a search that began
      * at the ramp's foot kept turning with a wheel on it until the hump
-     * mask limit raised a stall (ctrl_course_v15 run 2) */
+     * mask limit raised a stall */
     while ((waited < SEARCH_TIMEOUT_MS) && (0u == g_stop_req)
            && (0u == g_hold)
            && (0u == (fault_get() & FAULT_MOTION_MASK)))
@@ -658,11 +655,11 @@ line_task_main(INT stacd, void *exinf)
             }
             prev_d = d;
 
-            /* Right-edge following (mat runs 2026-10-23: with the centre on
-             * the line and the right spot 20 mm away, "neither black" could
-             * mean the line was left of centre OR between the two spots, and
-             * the guess made the car weave). The centre rides the line's
-             * right edge, so each reading has one meaning:
+            /* Right-edge following. Following the line's centre, with the
+             * right spot 20 mm away, "neither black" could mean the line
+             * was left of centre OR between the two spots, and the guess
+             * made the car weave. The centre rides the line's right edge
+             * instead, so each reading has one meaning:
              *   C R
              *   1 0  centre on the line   -> steer right, toward the edge
              *   0 0  centre on the white  -> steer left, toward the edge
@@ -676,8 +673,8 @@ line_task_main(INT stacd, void *exinf)
             if ((d < straight_until) && !b_c_on)
             {
                 /* C left the line during the arm's straight hold: a
-                 * right curve, not a cross (v40 run 2 held straight
-                 * 12 mm with the line under R alone) */
+                 * right curve, not a cross (holding straight on with the
+                 * line under R alone drove the car off the curve) */
                 straight_until = -1;
             }
             if (d < straight_until)
@@ -816,9 +813,9 @@ line_task_main(INT stacd, void *exinf)
             if (off != prev_off)
             {
                 run = 0;
-                /* the rate is kept until the side changes: the end of
-                 * the after-curve window mid-stretch dropped the bias
-                 * at once and flipped the steering (v37 run 4) */
+                /* the rate is kept until the side changes: if the
+                 * after-curve window ends mid-stretch, switching the rate
+                 * there drops the bias at once and flips the steering */
                 run_grow = b_after_curve ? LINE_BIAS_GROW_AFTER_CDEG
                                          : LINE_BIAS_GROW_CDEG;
             }
@@ -862,7 +859,8 @@ line_task_main(INT stacd, void *exinf)
                 /* right curve: at once, see LINE_BLIND_RIGHT_*, even
                  * just after a curve: the right IR saw the line, so
                  * this is the S-bend's right half, not an overshoot
-                 * (v40: held off 90 mm there, the car drove off it) */
+                 * (waiting out the after-curve window there, ~90 mm,
+                 * drove the car off the mat) */
                 curve_ff = (curve_ff > -LINE_BLIND_RIGHT_START_MM_S)
                            ? -LINE_BLIND_RIGHT_START_MM_S
                            : (curve_ff - LINE_CURVE_GROW_MM_S);

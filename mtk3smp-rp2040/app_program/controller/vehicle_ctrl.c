@@ -31,12 +31,11 @@
 #define CTRL_WATCH_SETTLE_MS 300u    /* a few pings before driving */
 #define CTRL_IMU_FAIL_MAX    10u     /* reads failed in a row = FAULT_IMU */
 #define CTRL_END_WAIT_MS     3000u   /* line task to wind down (a search) */
-/* Creep in before the scan: every scan has a fixed echo at ~290-315 mm
+/* Creep in before measuring: every reading has a fixed echo at ~290-315 mm
  * (the floor, the sonar points slightly down). Stopping from 100 mm/s
- * leaves the face at ~290 mm, inside it, and the width gate then took the
- * floor in across +/-32 deg (9 cm face read 151-169 mm, ctrl_course_v13).
- * At 200 mm the face is clear of it, as in the width calibration (stops
- * from 200 mm/s, face ~250 mm). Sonar ~60 mm behind the nose: nose gap
+ * leaves the face at ~290 mm, inside it, so the face and the floor mix
+ * in the readings (a 9 cm face read 151-169 mm wide). At 200 mm the face
+ * is clear of it. The sonar is ~60 mm behind the nose: nose gap
  * ~14 cm; the creep limit keeps it >= 8 cm even if every ping is lost. */
 #define CTRL_SCAN_RANGE_MM   200
 #define CTRL_CREEP_MM_S      40
@@ -44,7 +43,7 @@
 #define CTRL_CREEP_PING_MS   65u     /* >= 60 ms between pings */
 #define CTRL_CREEP_TIMEOUT_MS 6000u
 
-/* Impact confirmation (as in the roam demo, 21 Oct) */
+/* Impact confirmation */
 #define CTRL_SPD_WIN_MS      100u    /* forward speed window */
 #define CTRL_SPD_RING        8       /* > CTRL_SPD_WIN_MS / CTRL_PERIOD_MS */
 #define CTRL_SPD_SETTLE_MS   400u    /* no speed check while pulling away */
@@ -273,7 +272,7 @@ heading_raw_cdeg(void)
 /* Junction command: stop, drive on until the axle is over the junction,
  * turn on the spot to 90 deg (180 for a U-turn) from the LINE's direction:
  * at the junction the car is mid-weave, up to ~15 deg off the line, and
- * a plain 90 deg turn kept that error (runs 26 Oct ended 75-96 deg off).
+ * a plain 90 deg turn kept that error (turns ended 75-96 deg off).
  * Returns the angle turned (x0.01 deg) or a large value if a motion fault
  * stopped it. */
 static int32_t
@@ -352,11 +351,11 @@ creep_to_scan_range(void)
 }
 
 /*----------------------------------------------------------------------------
- * Obstacle width by side-stepping (28 Oct). The turning scan cannot see
+ * Obstacle width by side-stepping. Turning on the spot cannot measure
  * width: a flat face echoes only when the sonar looks at it square-on, the
  * sonar is ~70 mm ahead of the axle and barely moves sideways as the car
  * turns, so every face over ~7 cm was seen over the same ~50 deg (9 / 15 /
- * 23 cm faces: 47-52 / 50-56 / 49-57 deg, ctrl_course_v17). Instead the car
+ * 23 cm faces: 47-52 / 50-56 / 49-57 deg). Instead the car
  * faces the line's direction and steps sideways (turn 90, drive, turn
  * back, ping) until the face's echo is lost: that is an edge, at the
  * sonar's sideways position. Width = left edge - right edge, measured on
@@ -367,11 +366,11 @@ creep_to_scan_range(void)
 /* A reading is the face if it is no further than this beyond the median
  * of the face readings so far (a nearer one always is): the face's range
  * drifts 25-40 mm along it, and comparing with the first reading ended
- * probes early on one stray reading (ctrl_course_v19 runs 7, 8, 13) */
+ * probes early on one stray reading */
 #define PROBE_BAND_MM        25
 /* ...and a reading up to this beyond it is still the obstacle, a rounded
  * corner curving away (9.5 cm box: 188-194 mm face, 220 mm at the corner,
- * read as the edge and the width as 44 mm, c run 31 Oct); it holds the
+ * was taken as the edge and the width read 44 mm); it holds the
  * edge further out but is not a face reading */
 #define PROBE_SHOULDER_MM    60
 #define PROBE_OFF_NEEDED     2       /* off-face readings in a row = edge */
@@ -383,23 +382,23 @@ creep_to_scan_range(void)
 #define PROBE_SETTLE_MS      150u
 /* The echo runs on past each edge (the beam still clips the face near the
  * corner): 9 runs on 9 / 15 / 23 cm faces read 17 mm wide per edge on
- * average (28 Oct, ctrl_course_v18); with it taken off, 8 of 9 widths
+ * average; with it taken off, 8 of 9 widths
  * were within +/-2 cm, the worst 3.2 cm under */
 #define PROBE_EDGE_OVER_MM   17
 
 /* Drive past on the left (the car's right side faces the obstacle) */
 #define AVOID_HALF_R_MM      70      /* centre to the right wheel's outside */
-/* centre to the left IR bracket: wheel outside (70) + 20 mm, 29 Oct */
+/* centre to the left IR bracket: wheel outside (70) + 20 mm */
 #define AVOID_HALF_L_MM      90
 #define AVOID_SENSOR_AHEAD_MM 70     /* sonar ahead of the axle */
 #define AVOID_MARGIN_MM      40      /* beyond the width estimate's error */
 /* plan for at least this width (course obstacles are 10-20 cm): a low
- * estimate left too little room (v19, the car brushed the box) */
+ * estimate left too little room and the car brushed the box) */
 #define AVOID_MIN_WIDTH_MM   100
 /* Depth is not measurable from the front: taken as the planned width (the
  * obstacle square), at most this. 200 mm for every obstacle drove ~100 mm
- * further past a 10 cm box than needed and could rejoin on a curve
- * (31 Oct); a long narrow obstacle is the risk this cap keeps in check */
+ * further past a 10 cm box than needed and could rejoin on a curve; a
+ * long narrow obstacle is the risk this cap keeps in check */
 #define AVOID_DEPTH_MAX_MM   200
 /* Back to the line: stop over it when C or R sees it, not at the planned
  * sideways distance, so a line that curved away is met where it is. C

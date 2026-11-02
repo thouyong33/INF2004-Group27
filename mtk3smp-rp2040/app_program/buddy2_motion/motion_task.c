@@ -171,7 +171,7 @@ static int16_t g_target_right_x10 = 0;
 #define ENC_FAULT_DUTY_X10        400   /* wheel driven at >= 40 % duty... */
 #define ENC_FAULT_OTHER_PCT       50L   /* ...other wheel >= 50 % of setpoint */
 #define ENC_FAULT_MS              200u  /* ...and no edges for this long */
-/* The hump mask may not hide a stuck car: line ramp run 7 (2026-10-24) sat
+/* The hump mask may not hide a stuck car: in one ramp run the car sat
  * tilted on the ramp with the IR bracket dug in and a wheel spinning, so
  * the encoders kept counting and the mask stayed on. A real ramp takes
  * ~2 s at 100 mm/s; a mask held this long while driving is a stall. */
