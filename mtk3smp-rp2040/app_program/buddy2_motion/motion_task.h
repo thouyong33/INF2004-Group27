@@ -72,13 +72,6 @@ typedef struct {
 ER motion_task_create(void);
 
 /**
- * @brief Set motor speeds (non-blocking).
- * 
- * Values are % PWM duty, open loop; the motion task ramps toward them.
- */
-ER motion_set_speed(int8_t left, int8_t right);
-
-/**
  * @brief Set wheel speeds in mm/s under closed-loop PI control (non-blocking).
  *
  * Each wheel has its own PI loop with feed-forward from the open-loop duty

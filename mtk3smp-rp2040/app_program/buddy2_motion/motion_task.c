@@ -1040,12 +1040,6 @@ motion_send_cmd(int16_t left, int16_t right, uint8_t closed_loop)
 }
 
 ER
-motion_set_speed(int8_t left, int8_t right)
-{
-    return motion_send_cmd((int16_t)left, (int16_t)right, 0u);
-}
-
-ER
 motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s)
 {
     return motion_send_cmd(left_mm_s, right_mm_s, 1u);

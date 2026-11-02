@@ -21,7 +21,10 @@
 #define FAULT_IMU            (1u << 3)  /**< IMU not answering */
 #define FAULT_NO_ECHO        (1u << 4)  /**< ultrasonic gave no echo */
 #define FAULT_WIFI_LOSS      (1u << 5)  /**< Buddy 1: link to the broker lost */
-#define FAULT_SCAN_TIMEOUT   (1u << 6)  /**< obstacle scan ran over its limit */
+/** The servo-sweep obstacle scan ran over its limit. That scan is retired
+ * (the controller's side-step probe replaced it), so nothing raises this
+ * now; the bit is kept so the other faults keep their telemetry positions */
+#define FAULT_SCAN_TIMEOUT   (1u << 6)
 /** Buddy 3: line lost, on-spot search failed */
 #define FAULT_LINE_LOST      (1u << 7)
 

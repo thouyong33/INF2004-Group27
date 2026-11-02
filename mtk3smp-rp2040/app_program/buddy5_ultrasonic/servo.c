@@ -79,18 +79,3 @@ servo_set_us(uint16_t pulse_us)
     g_pulse_us = pulse_us;
     return pulse_us;
 }
-
-uint16_t
-servo_get_us(void)
-{
-    return g_pulse_us;
-}
-
-void
-servo_relax(void)
-{
-    uint32_t cc;
-
-    cc = in_w(PWM_REG(PWM_CHx_CC));
-    out_w(PWM_REG(PWM_CHx_CC), cc & 0xFFFF0000u);
-}

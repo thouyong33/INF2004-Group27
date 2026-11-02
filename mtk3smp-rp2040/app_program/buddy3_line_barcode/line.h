@@ -109,9 +109,6 @@ bool line_clean_ok(void);
 /** @brief LINE_END_* (LINE_END_NONE while following). */
 uint8_t line_follow_end(void);
 
-/** @brief Number of times the line was lost and found again by searching. */
-uint32_t line_recoveries(void);
-
 /** @brief Copy the trace, its latest LINE_TRACE_LEN periods (oldest
  * first); returns the number of entries. */
 uint32_t line_trace_get(line_trace_t *p_out);

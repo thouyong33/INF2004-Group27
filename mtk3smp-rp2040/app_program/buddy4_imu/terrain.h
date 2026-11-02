@@ -79,17 +79,7 @@ bool terrain_on_hump(void);
 /** @brief The side hump completed by the last TERRAIN_EVT_SIDE_HUMP. */
 void terrain_last_side_hump(side_hump_event_t *p_ev);
 
-/** @brief Largest |filtered roll| since terrain_reset, x0.01 deg. */
-int16_t terrain_max_roll_cdeg(void);
-
-/** @brief Pitch humps not reported because the car rolled during them
- *  (one-sided ramp, reported by the roll detector instead). */
-uint32_t terrain_pitch_humps_dropped(void);
-
 /** @brief Largest horizontal jolt seen since terrain_reset (for tuning). */
 int16_t terrain_max_jolt_mg(void);
-
-/** @brief Most nose-down filtered pitch change since reset, x0.01 deg. */
-int16_t terrain_min_pitch_cdeg(void);
 
 #endif /* BUDDY4_TERRAIN_H */

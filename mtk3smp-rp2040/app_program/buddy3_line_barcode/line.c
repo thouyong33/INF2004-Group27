@@ -209,7 +209,6 @@ static volatile int16_t g_base = 150;
 static volatile int16_t g_max_mm = 450;
 static volatile uint8_t g_end = LINE_END_NONE;
 static volatile uint8_t g_stop_req = 0u;
-static volatile uint32_t g_recoveries = 0u;
 static volatile uint8_t g_hold = 0u;
 static volatile uint8_t g_straight = 0u;
 static volatile int32_t g_line_dir = 0;     /* published for the controller */
@@ -611,7 +610,6 @@ line_task_main(INT stacd, void *exinf)
                     if (search_window(hold_dir, SEARCH_RAMP_CDEG, 1)
                         || (0u != g_hold))
                     {
-                        g_recoveries++;
                         corr = 0;
                         prev_d = dist_mm();
                         continue;
@@ -770,7 +768,6 @@ line_task_main(INT stacd, void *exinf)
                     if (search_window(line_dir, SEARCH_HALF_CDEG, last_side)
                         || (0u != g_hold))
                     {
-                        g_recoveries++;
                         prev_d = dist_mm();
                         corr = 0;
                         curve_ff = 0;
@@ -1026,12 +1023,6 @@ uint8_t
 line_follow_end(void)
 {
     return g_end;
-}
-
-uint32_t
-line_recoveries(void)
-{
-    return g_recoveries;
 }
 
 uint32_t

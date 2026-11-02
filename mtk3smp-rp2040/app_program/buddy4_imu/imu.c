@@ -173,34 +173,6 @@ i2c1_init(void)
 }
 
 ER
-i2c1_probe(uint8_t addr)
-{
-    uint32_t start;
-    ER err;
-
-    i2c1_set_target(addr);
-    (void)i2c1_check_abort();
-    (void)in_w(IC_CLR_STOP_DET);
-
-    start = now_ms();
-    out_w(IC_DATA_CMD, IC_DATA_CMD_READ | IC_DATA_CMD_STOP);
-
-    err = i2c1_wait_stop(start);
-    if (E_OK != i2c1_check_abort())
-    {
-        return E_IO;                /* address not acknowledged */
-    }
-
-    /* Drain the byte that was read */
-    while (0u != in_w(IC_RXFLR))
-    {
-        (void)in_w(IC_DATA_CMD);
-    }
-
-    return err;
-}
-
-ER
 i2c1_write_reg(uint8_t addr, uint8_t reg, uint8_t value)
 {
     uint32_t start;

@@ -36,12 +36,6 @@ typedef struct {
 /** @brief Reset I2C1, route GP2/GP3 to it and set 100 kHz. */
 void i2c1_init(void);
 
-/**
- * @brief Probe one 7-bit address with a 1-byte read.
- * @return E_OK if the device acknowledged, E_IO if not.
- */
-ER i2c1_probe(uint8_t addr);
-
 /** @brief Write one register. */
 ER i2c1_write_reg(uint8_t addr, uint8_t reg, uint8_t value);
 

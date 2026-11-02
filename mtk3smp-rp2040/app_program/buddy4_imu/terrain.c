@@ -437,25 +437,7 @@ terrain_last_side_hump(side_hump_event_t *p_ev)
 }
 
 int16_t
-terrain_max_roll_cdeg(void)
-{
-    return g_max_roll;
-}
-
-uint32_t
-terrain_pitch_humps_dropped(void)
-{
-    return g_pitch_dropped;
-}
-
-int16_t
 terrain_max_jolt_mg(void)
 {
     return g_max_jolt;
-}
-
-int16_t
-terrain_min_pitch_cdeg(void)
-{
-    return g_min_pitch;
 }

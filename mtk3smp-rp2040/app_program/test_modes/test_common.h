@@ -21,7 +21,6 @@
 #include "buddy4_imu/terrain.h"
 #include "buddy5_ultrasonic/ultrasonic.h"
 #include "buddy5_ultrasonic/servo.h"
-#include "buddy5_ultrasonic/scan.h"
 #include "buddy5_ultrasonic/obstacle.h"
 #include "common/console_in.h"
 #include "common/faults.h"

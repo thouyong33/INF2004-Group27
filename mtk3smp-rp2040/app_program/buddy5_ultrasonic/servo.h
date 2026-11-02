@@ -33,10 +33,4 @@ void servo_set_limits(uint16_t min_us, uint16_t max_us);
    used. */
 uint16_t servo_set_us(uint16_t pulse_us);
 
-/** @brief Last commanded pulse width. */
-uint16_t servo_get_us(void);
-
-/** @brief Stop pulses so the servo goes limp (no holding current). */
-void servo_relax(void);
-
 #endif /* BUDDY5_SERVO_H */

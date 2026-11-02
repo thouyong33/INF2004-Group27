@@ -69,7 +69,6 @@
 static ID g_bcs_tsk = 0;
 static ID g_bcs_flg = 0;
 static volatile uint8_t g_enabled = 0u;
-static volatile uint32_t g_reads = 0u;
 
 static uint16_t g_buf[BCS_LEN];
 static uint16_t g_lead[BCS_LEAD];
@@ -157,7 +156,6 @@ finish(uint32_t n, uint32_t quiet, bool b_clear)
     {
         ctrl_evt_post(EVT_BARCODE, 0u, (int16_t)ne);
     }
-    g_reads++;
 }
 
 static void
@@ -367,12 +365,6 @@ barcode_scan_enable(bool b_on)
         (void)tk_clr_flg(g_bcs_flg, (UINT)~BCS_FLG_RUN);
         line_set_straight(false);           /* a read in progress is dropped */
     }
-}
-
-uint32_t
-barcode_scan_count(void)
-{
-    return g_reads;
 }
 
 uint32_t
