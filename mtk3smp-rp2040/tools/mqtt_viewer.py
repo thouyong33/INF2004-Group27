@@ -57,6 +57,7 @@ EVENTS = ["NONE", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF",
           "IMPACT", "JOLT_IGNORED", "STOP_REQ", "BARCODE", "JUNCTION",
           "COMMAND", "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID",
           "OBST_DONE", "OBST_HDG"]
+# (the page matches these names; keep them in step with ctrl_events.h)
 FAULTS = ["STALL", "ENC_L", "ENC_R", "IMU", "NO_ECHO", "WIFI", "SCAN",
           "LINE_LOST"]
 COMMANDS = ["none", "left", "right", "straight", "U-turn"]
@@ -286,6 +287,9 @@ class Viewer:
             extra = "  %s done" % name(COMMANDS, arg)
         elif etype == 1:                                 # FAULT
             extra = "  " + fault_text(arg)
+        # structured copy for the page's Obstacle / Ramp / Barcode panels
+        HUB.send({"t": "evt", "type": name(EVENTS, etype), "arg": arg,
+                  "val": val, "d_mm": d_mm, "t_ms": t_ms})
         say("event #%d at %.1f s, %d mm: %s arg=%d val=%d%s"
             % (idx, t_ms / 1000.0, d_mm, name(EVENTS, etype), arg, val,
                extra), "fault" if etype == 1 else "event")
@@ -578,8 +582,8 @@ async def main():
     page = "http://localhost:%d" % args.web_port
     print("Buddy 1 MQTT broker + viewer")
     print("  this laptop: %s" % ", ".join(local_addresses()))
-    print("  put the hotspot one in config/mqtt_config.h "
-          "(UTK_MQTT_BROKER_ADDRESS)")
+    print("  put the hotspot one in lib/libnet/lwip/include/mqtt_config.h "
+          "(MQTT_BROKER_HOST)")
     print("  listening on 0.0.0.0:%d, Ctrl+C to stop" % args.port)
     print("  control page: %s" % page)
     print("  keys for the car: l o b a c r = start a run, s = stop, "

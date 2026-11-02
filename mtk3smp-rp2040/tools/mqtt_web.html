@@ -31,33 +31,45 @@
   .pill.up { color: var(--ok); border-color: var(--ok); }
   .pill.down { color: var(--bad); border-color: var(--bad); }
   .muted { color: var(--muted); font-size: 13px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
   section { background: var(--panel); border: 1px solid var(--line);
             border-radius: 10px; padding: 14px; }
   h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted);
        text-transform: uppercase; letter-spacing: .04em; }
+  .grid { display: grid; gap: 14px; margin-top: 14px; }
+  .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @media (max-width: 760px) { .g3, .g2 { grid-template-columns: 1fr; } }
+  .status { display: flex; justify-content: space-between; gap: 14px;
+            flex-wrap: wrap; align-items: center; }
   .state { font-size: 28px; font-weight: 700; }
-  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
-           margin-top: 10px; }
-  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
-  .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .stats { display: flex; gap: 18px; flex-wrap: wrap; }
+  .stat b { display: block; font-size: 17px;
+            font-variant-numeric: tabular-nums; }
   .stat span { font-size: 12px; color: var(--muted); }
   .faults.bad { color: var(--bad); }
-  .buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  button { font: inherit; padding: 12px 8px; border-radius: 8px; cursor: pointer;
-           border: 1px solid var(--line); background: var(--btn);
-           color: var(--text); text-align: left; }
+  .big { font-size: 24px; font-weight: 700;
+         font-variant-numeric: tabular-nums; }
+  .big small { font-size: 13px; font-weight: 400; color: var(--muted); }
+  .sub { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .kv { display: flex; justify-content: space-between; gap: 10px;
+        font-size: 13px; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+  .kv span:first-child { color: var(--muted); }
+  .kv span:last-child { font-variant-numeric: tabular-nums;
+                        text-align: right; }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .runrow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; font-size: 13px; padding: 6px 10px;
+           border-radius: 7px; cursor: pointer; border: 1px solid var(--line);
+           background: var(--btn); color: var(--text); }
   button:hover { background: var(--btn-hover); }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  button b { display: block; font-size: 15px; }
-  button small { color: var(--muted); font-size: 12px; }
-  button.stop { grid-column: 1 / -1; background: var(--bad); color: #fff;
-                border-color: var(--bad); text-align: center; font-size: 20px;
-                font-weight: 700; padding: 16px; }
-  button.stop:disabled { opacity: .6; }
+  button b { font-weight: 700; margin-right: 4px; }
+  button.stop { border-color: var(--bad); color: var(--bad);
+                font-weight: 700; }
   #note { margin-top: 8px; min-height: 1.4em; }
-  .log { height: 340px; overflow-y: auto; font: 12.5px/1.5 ui-monospace,
+  .log { height: 260px; overflow-y: auto; font: 12.5px/1.5 ui-monospace,
          Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
   .log div { padding: 1px 0; border-bottom: 1px dashed var(--line); }
   .k-event { color: var(--accent); }
@@ -65,7 +77,6 @@
   .k-timing { color: var(--ok); font-weight: 600; }
   .k-key { color: var(--warn); }
   .k-status { color: var(--muted); }
-  .wide { grid-column: 1 / -1; }
   label.tog { font-size: 13px; color: var(--muted); }
   #timing div { margin-bottom: 6px; }
 </style>
@@ -78,41 +89,72 @@
     <span id="feed" class="muted">connecting to the viewer...</span>
   </header>
 
-  <div class="grid">
-    <section>
-      <h2>Live status</h2>
-      <div class="state" id="state">-</div>
+  <section>
+    <h2>Car status</h2>
+    <div class="status">
+      <div>
+        <div class="state" id="state">-</div>
+        <div class="muted">faults: <span id="faults" class="faults">-</span></div>
+      </div>
       <div class="stats">
-        <div class="stat"><b id="left">-</b><span>left wheel, mm/s</span></div>
-        <div class="stat"><b id="right">-</b><span>right wheel, mm/s</span></div>
+        <div class="stat"><b><span id="left">-</span> / <span id="right">-</span></b>
+          <span>left / right, mm/s</span></div>
         <div class="stat"><b id="total">-</b><span>distance, m</span></div>
-        <div class="stat"><b id="sonar">-</b><span>sonar, mm</span></div>
-        <div class="stat"><b id="ramp">-</b><span>highest ramp, mm</span></div>
         <div class="stat"><b id="cmd">-</b><span>pending command</span></div>
         <div class="stat"><b id="hb">-</b><span>heartbeat</span></div>
         <div class="stat"><b id="rate">-</b><span>packets / s</span></div>
-        <div class="stat"><b id="width">-</b><span>obstacle width, mm</span></div>
       </div>
-      <div class="stat" style="margin-top:8px">
-        <b id="faults" class="faults">-</b><span>faults</span>
-      </div>
+    </div>
+  </section>
+
+  <div class="grid g3">
+    <section>
+      <h2>Obstacle</h2>
+      <div class="big" id="sonar">-</div>
+      <div class="sub">sonar now (- = nothing in range)</div>
+      <div class="kv"><span>detected</span><span id="o_det">-</span></div>
+      <div class="kv"><span>last width</span><span id="o_width">-</span></div>
+      <div class="kv"><span>last avoid</span><span id="o_avoid">-</span></div>
+      <div class="kv"><span>line on the way back</span><span id="o_back">-</span></div>
+      <div class="kv"><span>obstacles this run</span><span id="o_n">0</span></div>
     </section>
 
     <section>
-      <h2>Run</h2>
-      <div class="buttons">
-        <button data-k="l"><b>Line + ramp</b><small>l, stops at 450 mm</small></button>
-        <button data-k="o"><b>Obstacle stop</b><small>o</small></button>
-        <button data-k="a"><b>Obstacle avoid</b><small>a, go round on the left</small></button>
-        <button data-k="b"><b>Barcode command</b><small>b, act at the cross</small></button>
-        <button data-k="r"><b>Barcode read</b><small>r, read only</small></button>
-        <button data-k="c"><b>Continuous course</b><small>c, no limit</small></button>
-        <button data-k="p"><b>Print c-run log</b><small>p, on the serial</small></button>
-        <button class="stop" data-k="s">STOP</button>
-      </div>
-      <div id="note" class="muted">Set the car on the line, then pick a run.</div>
+      <h2>Ramp</h2>
+      <div class="big" id="r_now">-</div>
+      <div class="sub">live: on or off a ramp</div>
+      <div class="kv"><span>highest ramp</span><span id="r_max">-</span></div>
+      <div class="kv"><span>last ramp</span><span id="r_last">-</span></div>
+      <div class="kv"><span>ramps this run</span><span id="r_n">0</span></div>
     </section>
 
+    <section>
+      <h2>Barcode</h2>
+      <div class="big" id="b_code">-</div>
+      <div class="sub">last decoded code</div>
+      <div class="kv"><span>pending command</span><span id="b_cmd">-</span></div>
+      <div class="kv"><span>read at</span><span id="b_at">-</span></div>
+      <div class="kv"><span>decoded / tried</span><span id="b_count">0 / 0</span></div>
+      <div class="kv"><span>last miss</span><span id="b_miss">-</span></div>
+    </section>
+  </div>
+
+  <section style="margin-top:14px">
+    <div class="runrow">
+      <h2 style="margin:0 6px 0 0">Run</h2>
+      <button data-k="l"><b>l</b>line + ramp</button>
+      <button data-k="o"><b>o</b>obstacle stop</button>
+      <button data-k="a"><b>a</b>avoid</button>
+      <button data-k="b"><b>b</b>barcode command</button>
+      <button data-k="r"><b>r</b>barcode read</button>
+      <button data-k="c"><b>c</b>course</button>
+      <button data-k="p"><b>p</b>print log</button>
+      <button class="stop" data-k="s">STOP</button>
+    </div>
+    <div id="note" class="muted">Set the car on the line, then pick a run.</div>
+  </section>
+
+  <div class="grid g2">
     <section>
       <h2>Run timing</h2>
       <div id="timing" class="muted">Shown when a run ends.</div>
@@ -124,14 +166,14 @@
       <h2>Events</h2>
       <div class="log" id="events"></div>
     </section>
-
-    <section class="wide">
-      <h2>Viewer log
-        <label class="tog"><input type="checkbox" id="showStatus"> show status lines</label>
-      </h2>
-      <div class="log" id="log"></div>
-    </section>
   </div>
+
+  <section style="margin-top:14px">
+    <h2>Viewer log
+      <label class="tog"><input type="checkbox" id="showStatus"> show status lines</label>
+    </h2>
+    <div class="log" id="log"></div>
+  </section>
 </main>
 <script>
 (function () {
@@ -139,6 +181,15 @@
   var $ = function (id) { return document.getElementById(id); };
   var carUp = false;
   var running = false;
+  /* per-run figures for the panels, cleared when a run starts */
+  var run = null;
+
+  function newRun() {
+    run = { obst: 0, ramps: 0, rampMax: 0, reads: 0, decoded: 0 };
+    $("o_n").textContent = "0";
+    $("r_n").textContent = "0";
+    $("b_count").textContent = "0 / 0";
+  }
 
   function addLine(box, kind, text) {
     var el = $(box);
@@ -168,49 +219,95 @@
     }
   }
 
+  function m(v) { return (v / 1000).toFixed(2) + " m"; }
+
   function showStatus(s) {
+    if (s.running && !running) { newRun(); }
     running = s.running;
     $("state").textContent = s.state;
     $("left").textContent = s.left;
     $("right").textContent = s.right;
     $("total").textContent = s.total_m.toFixed(2);
-    $("sonar").textContent = s.sonar < 0 ? "-" : s.sonar;
-    $("ramp").textContent = s.ramp;
     $("hb").textContent = s.heartbeat;
     $("cmd").textContent = s.cmd;
+    $("b_cmd").textContent = s.cmd;
     $("rate").textContent = s.rate ? s.rate.toFixed(1) : "-";
     $("faults").textContent = s.faults;
     $("faults").className = "faults" + (s.fault_bits ? " bad" : "");
+    $("sonar").innerHTML = s.sonar < 0 ? "-" : s.sonar + " <small>mm</small>";
+    $("o_det").textContent = (s.state === "OBSTACLE") ? "yes, measuring" : "no";
+    $("r_now").textContent = (s.state === "RAMP") ? "on ramp" : "off ramp";
+    $("r_max").textContent = s.ramp ? s.ramp + " mm" : "-";
     refreshButtons();
   }
 
-  function showSys(m) {
-    $("sys").textContent = "motion loop " + m.rate + "/s, longest pass " +
-      m.pass + " us, busy " + m.busy_pct.toFixed(1) + "%; controller " +
-      m.samples + " samples/s, longest gap this run " + m.gap +
-      " ms; status drops " + m.drops;
+  function showEvent(e) {
+    if (run === null) { newRun(); }
+    if (e.type === "OBSTACLE") {
+      run.obst++;
+      $("o_n").textContent = run.obst;
+    } else if (e.type === "OBST_WIDTH") {
+      $("o_width").textContent = (e.arg === 0) ? "scan failed"
+        : ((e.arg === 2) ? "at least " : "") + e.val + " mm";
+    } else if (e.type === "OBST_DONE") {
+      $("o_avoid").textContent = e.arg ? "rejoined, " + (e.val / 10).toFixed(1) + " s"
+                                       : "FAILED";
+      $("o_avoid").className = e.arg ? "ok" : "bad";
+    } else if (e.type === "OBST_AVOID" && e.arg !== 0) {
+      $("o_back").textContent = (e.arg === 1)
+        ? Math.abs(e.val) + " mm " + (e.val < 0 ? "nearer" : "further") + " than planned"
+        : "not seen (planned distance)";
+    } else if (e.type === "RAMP_OFF") {
+      run.ramps++;
+      run.rampMax = Math.max(run.rampMax, e.val);
+      $("r_n").textContent = run.ramps;
+      $("r_last").textContent = e.val + " mm at " + m(e.d_mm);
+    } else if (e.type === "BARCODE") {
+      if (e.arg) {
+        run.reads++;
+        run.decoded++;
+        var cut = e.val >> 1;
+        $("b_code").innerHTML = String.fromCharCode(e.arg) + " <small>" +
+          ((e.val & 1) ? "reversed" : "forward") +
+          (cut === 1 ? ", last bar missing" : (cut === 2 ? ", first bar missing" : "")) +
+          "</small>";
+        $("b_at").textContent = m(e.d_mm);
+      } else if (e.val >= 9) {
+        /* a read long enough to be a code (fewer is a junction arm) */
+        run.reads++;
+        $("b_miss").textContent = e.val + " bars, no read, at " + m(e.d_mm);
+        $("b_miss").className = "warn";
+      }
+      $("b_count").textContent = run.decoded + " / " + run.reads;
+    }
   }
 
-  function handle(m) {
-    if (m.t === "status") { showStatus(m); }
-    else if (m.t === "sys") { showSys(m); }
-    else if (m.t === "car") { setCar(m.up); }
-    else if (m.t === "line") {
-      if (m.kind === "event" || m.kind === "fault") {
-        addLine("events", m.kind, m.text);
-        var w = / OBST_WIDTH arg=\d+ val=(-?\d+)/.exec(m.text);
-        if (w) { $("width").textContent = w[1]; }
+  function showSys(s) {
+    $("sys").textContent = "motion loop " + s.rate + "/s, longest pass " +
+      s.pass + " us, busy " + s.busy_pct.toFixed(1) + "%; controller " +
+      s.samples + " samples/s, longest gap this run " + s.gap +
+      " ms; status drops " + s.drops;
+  }
+
+  function handle(msg) {
+    if (msg.t === "status") { showStatus(msg); }
+    else if (msg.t === "sys") { showSys(msg); }
+    else if (msg.t === "car") { setCar(msg.up); }
+    else if (msg.t === "evt") { showEvent(msg); }
+    else if (msg.t === "line") {
+      if (msg.kind === "event" || msg.kind === "fault") {
+        addLine("events", msg.kind, msg.text);
       }
-      if (m.kind === "timing") {
+      if (msg.kind === "timing") {
         var t = $("timing");
         if (t.className === "muted") { t.textContent = ""; t.className = ""; }
         var d = document.createElement("div");
         d.className = "k-timing";
-        d.textContent = m.text;
+        d.textContent = msg.text;
         t.insertBefore(d, t.firstChild);
       }
-      if (m.kind !== "status" || $("showStatus").checked) {
-        addLine("log", m.kind, m.text);
+      if (msg.kind !== "status" || $("showStatus").checked) {
+        addLine("log", msg.kind, msg.text);
       }
     }
   }
@@ -242,6 +339,7 @@
     var b = e.target.closest("button[data-k]");
     if (b && !b.disabled) { send(b.getAttribute("data-k")); }
   });
+  newRun();
   refreshButtons();
   connect();
 })();
