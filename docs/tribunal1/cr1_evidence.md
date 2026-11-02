@@ -385,7 +385,60 @@ build:
 - the line trace (5.6 kB);
 - the status snapshots in the test mode.
 
-## 10. Known limits and open items
+## 10. Memory and CPU (2 Nov, course build v52)
+
+### Memory
+
+Measured from the build with `arm-none-eabi-size`, per object file. The
+RP2040 has 264 KB of RAM and 2 MB of flash.
+
+| Build | Code (flash) | Fixed RAM (data + bss) | Task stacks |
+|---|---|---|---|
+| Course build, no Wi-Fi | 79.0 KB | 31.7 KB | about 14 KB |
+| Course build with Wi-Fi and MQTT | 367.0 KB | 66.7 KB | about 14 KB, plus the radio's |
+
+| Part | Code | Fixed RAM | Stack | Largest RAM item |
+|---|---|---|---|---|
+| Buddy 2, motion | 5.1 KB | 4.4 KB | 4 KB | 4.2 KB speed-step trace (test mode 5) |
+| Buddy 3, line and barcode | 11.4 KB | 9.4 KB | 1 KB + 1 KB | 4.8 KB line trace, 2.2 KB scan buffer, 1.5 KB failed reads |
+| Buddy 4, IMU | 4.1 KB | 0.5 KB | runs in the controller's | ramp log |
+| Buddy 5, ultrasonic | 1.0 KB | ~0 | 2 KB | none |
+| Controller | 7.1 KB | 1.1 KB | 2 KB | 0.8 KB event log |
+| Common (incl. CPU meter, LED) | 0.9 KB | 0.2 KB | 4 KB (LED task) | 0.2 KB CPU meter |
+| Test log (`c` run and `p`) | 6.1 KB | 6.5 KB | runs in the start-up task | 4.8 KB copy of the line trace |
+| Kernel, drivers, libraries | 37 KB | 9.2 KB | kernel's own | task tables |
+
+About 18 KB of the fixed RAM (7% of the RAM) is diagnostic only: the
+line trace and its copy, the speed-step trace, the barcode bar lists and
+the status snapshots. They are kept in the final build on purpose: no
+resource is near its limit, and the logs are what the course is tuned
+from.
+
+### CPU
+
+Each task's time from waking to sleeping again is read from the RP2040's
+1 µs timer (`common/cpu_meter.c`). Time a task spends waiting on a
+motion command it asked for is charged to that task. Preemption by a
+higher-priority task counts in both, so each figure is an upper bound.
+The meter itself costs about 0.1–0.2% of the CPU (estimated), 164 B of
+RAM and 0.9 KB of code.
+
+`c` run of 16.1 m, v52 (2 Nov):
+
+| Task (Buddy) | Priority | Share of the run | Longest pass | What the time is |
+|---|---|---|---|---|
+| motion (2) | 5 | 1.3% | 161 µs | 2 ms control loop |
+| line (3) | 7 | 0.5% | 2.6 ms | 20 ms following loop; the longest pass is a search step |
+| barcode (3) | 8 | 0.3% | 3.6 ms | 2 ms sampling; the longest pass is decoding a read |
+| obstacle (5) | 6 | 7.7% | 9.2 ms | waiting in a loop for each sonar echo (up to ~6 ms per 65 ms ping) |
+| controller (all, incl. Buddy 4) | 6 | 8.7% | 4.2 ms | 20 ms loop, IMU reads over I2C (polled) |
+| **Total** | | **about 18.5%** | | about 81% idle |
+
+The two largest shares are polled waits on hardware (the echo pulse and
+the I2C bus), not computation. The motion loop's longest pass (161 µs)
+is 8% of its 2 ms period.
+
+## 11. Known limits and open items
 
 - **Obstacle width:**
   - About ±3 cm on flat faces. Rounded corners over-read, which is safe.
