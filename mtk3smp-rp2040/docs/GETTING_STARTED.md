@@ -505,7 +505,7 @@ Expected output once the link comes up and the session runs:
 ```
 
 The session then repeats every 5 s. Captured from a Pico W over USB-CDC
-against `tools/linux_echo.py` on a Raspberry Pi Zero 2 W.
+against `tools/bringup/linux_echo.py` on a Raspberry Pi Zero 2 W.
 
 ### How the WiFi reporting works
 
@@ -555,12 +555,12 @@ host side is a plain echo server - nothing parses the payload.
 | `WIFI_UDP=1` | UDP | 7007 | 64 packets x 48 bytes, stop-and-wait, 250 ms reply timeout |
 | `WIFI_TCP=1` | TCP | 7008 | connect, echo, close |
 
-[`tools/linux_echo.py`](../tools/linux_echo.py) serves both. It needs only
+[`tools/bringup/linux_echo.py`](../tools/bringup/linux_echo.py) serves both. It needs only
 Python 3 - no dependencies - so a Raspberry Pi Zero 2 W, or any Linux box on
 the same network, is enough:
 
 ```sh
-python3 tools/linux_echo.py
+python3 tools/bringup/linux_echo.py
 ```
 
 It prints the addresses it can see. Put the one on the Pico's network into
@@ -588,7 +588,7 @@ same subnet, since the Pico sends unicast to a literal address with no
 routing; and the session has a 30 s overall timeout, so start the server
 first.
 
-`tools/windows_udp_echo.ps1` and `tools/windows_tcp_echo.ps1` are the
+`tools/bringup/windows_udp_echo.ps1` and `tools/bringup/windows_tcp_echo.ps1` are the
 equivalent for a Windows host.
 
 ### No application protocol ships - that part is yours

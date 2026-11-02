@@ -15,7 +15,7 @@
  * Local endpoint for the opt-in Phase-6 UDP echo qualification profile.
  *
  * Copy this file to config/udp_test_config.h and set the address to the
- * Windows PC running tools/windows_udp_echo.ps1. The local copy is ignored
+ * Windows PC running tools/bringup/windows_udp_echo.ps1. The local copy is ignored
  * by Git because host addresses vary between networks.
  */
 #ifndef UTK3_UDP_TEST_CONFIG_H

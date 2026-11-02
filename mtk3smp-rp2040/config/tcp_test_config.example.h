@@ -15,7 +15,7 @@
  * Local endpoint for the opt-in Phase-7 TCP echo qualification profile.
  *
  * Copy this file to config/tcp_test_config.h and set the address to the
- * Windows PC running tools/windows_tcp_echo.ps1. The local copy is ignored
+ * Windows PC running tools/bringup/windows_tcp_echo.ps1. The local copy is ignored
  * by Git because host addresses vary between networks.
  *
  * The port deliberately differs from the Phase-6 UDP port so both peer
