@@ -163,6 +163,10 @@ class Viewer:
         self.status_count = 0
         self.first_status = None
         self.run = None               # timing seen during the current run
+        # the packet's distance is 16 bits of mm and wraps every 65.5 m:
+        # count the wraps so the shown distance keeps going
+        self.dist_wraps = 0
+        self.last_dist = None
         self.writer = None
         if csv_path:
             self.file = open(csv_path, "w", newline="")
@@ -210,8 +214,16 @@ class Viewer:
         if state in RUN_STATES and self.run is None:
             self.run = {"rate": None, "pass": 0, "busy": 0, "gap": 0,
                         "samples": None}
+            self.dist_wraps = 0           # a new run starts again from 0
+            self.last_dist = None
         elif state not in RUN_STATES and self.run is not None:
             self.run_summary()
+        # a drop of more than half the range is a wrap, not a new run
+        if self.last_dist is not None \
+                and t["dist_mm"] < self.last_dist - 32768:
+            self.dist_wraps += 1
+        self.last_dist = t["dist_mm"]
+        t["dist_mm"] += self.dist_wraps * 65536
         rate_now = 0.0
         if now > self.first_status + 1:
             rate_now = self.status_count / (now - self.first_status)
