@@ -1,13 +1,18 @@
+/**
+ * @file telemetry_codec.h
+ * @brief Buddy 1: Telemetry V2 packet (88 bits, 11 bytes).
+ */
+
 #ifndef TELEMETRY_CODEC_H
 #define TELEMETRY_CODEC_H
 
 #include <stdint.h>
 #include <stdbool.h>
 
-/* 88 bits (31 Oct integration): state 4 bits (9 controller states),
- * barcode command 3 bits (5 commands), faults 8 bits (8 fault bits),
- * 3 reserved bits to fill the 11th byte. Version 2 marks the change
- * from the 80-bit V1 layout. */
+/* 88 bits: state 4 bits (9 controller states), barcode command 3 bits
+ * (5 commands), faults 8 bits (8 fault bits), 3 reserved bits to fill
+ * the 11th byte. The 2-bit version field tells a decoder which layout
+ * it holds (2 since the 31 Oct integration). */
 #define TELEMETRY_V2_SIZE 11U
 #define TELEMETRY_V2_VERSION 2U
 
@@ -27,14 +32,12 @@ typedef struct
     uint8_t heartbeat;
 } telemetry_data_t;
 
-bool telemetry_encode(
-    const telemetry_data_t *data,
-    uint8_t output[TELEMETRY_V2_SIZE]
-);
+/** @brief Pack p_data into output; false if a field is out of range. */
+bool telemetry_encode(const telemetry_data_t *p_data,
+                      uint8_t output[TELEMETRY_V2_SIZE]);
 
-bool telemetry_decode(
-    const uint8_t input[TELEMETRY_V2_SIZE],
-    telemetry_data_t *data
-);
+/** @brief Unpack input into p_data; false if it is not a V2 packet. */
+bool telemetry_decode(const uint8_t input[TELEMETRY_V2_SIZE],
+                      telemetry_data_t *p_data);
 
-#endif
+#endif /* TELEMETRY_CODEC_H */
