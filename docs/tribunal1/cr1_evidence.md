@@ -17,7 +17,10 @@ design choice needs its reason.
   - `a`: obstacle measure, go round and rejoin
   - `b`: barcode, then the command at the junction
   - `r`: barcode read only
-  - `c`: continuous course, everything on with no distance limit
+  - `c`: continuous course, everything on with no distance limit,
+    barcode commands off (lapping test)
+  - `f`: full course, as `c` with barcode commands carried out (added
+    4 Nov; MQTT START now starts `f`)
 - **Test space:** two 30.5 cm mats (straight and cross), 100 mm/s,
   450 mm per run, unless stated otherwise.
 

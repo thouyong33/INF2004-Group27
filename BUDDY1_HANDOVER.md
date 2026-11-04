@@ -651,7 +651,7 @@ Telemetry V2 is now version 2, 88 bits (11 bytes): robot state 4 bits (9 control
 
 Live data: lwip_utk_mqtt_poll() fills the packet through buddy1_fill_telemetry() (app_program/buddy1_telemetry/tel_source.c): controller state, wheel speeds from the encoders, run distance (wraps at 65.5 m), pending barcode command, highest ramp, sonar reading, fault bits. The hooks are declared in lib/libnet/lwip/buddy1_hooks.h.
 
-Commands reach the car: 00 START starts the continuous course, 01 STOP stops it, 10-15 start the l, o, b, a, r runs and p prints the continuous run's log. They are fed to the course test as keystrokes.
+Commands reach the car: 00 START starts the full course (f: everything on, barcode commands carried out), 01 STOP stops it, 10-16 start the l, o, b, a, r runs, p prints the continuous run's log, and 16 starts c (the continuous course with barcode commands off, a lapping test). They are fed to the course test as keystrokes. (START moved from c to f on 4 Nov.)
 
 Added to the client: a last will ("0", retained, on inf2004/group27/online; "1" on connect; keep-alive 10 s), controller events on inf2004/group27/event (14 bytes each), timing figures on inf2004/group27/sys once a second, FAULT_WIFI_LOSS after 3 s without the broker (logged; the car drives on), and a Wi-Fi rejoin every 5 s in cyw43_utk.c. The periodic [wifi-debug] print is off unless BUDDY1_DEBUG=1.
 

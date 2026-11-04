@@ -100,17 +100,18 @@ static void pack_telemetry(
  * 0x01 = STOP
  *
  * FINISH (0x02) remains reserved until confirmed.
- * 0x10-0x15 = start one test run: l o b a r, and p (print the
- * continuous run's log) - added at integration (31 Oct).
+ * 0x10-0x16 = start one test run: l o b a r, p (print the
+ * continuous run's log) and c (the continuous course with barcode
+ * commands off, a lapping test) - added at integration.
  *
  * A valid command is passed to buddy1_command(), which feeds the
- * course test as a keystroke (START = c, the continuous course;
- * STOP = s).
+ * course test as a keystroke (START = f, the full course with barcode
+ * commands carried out; STOP = s).
  */
 #define MQTT_COMMAND_START 0x00U
 #define MQTT_COMMAND_STOP  0x01U
 #define MQTT_COMMAND_RUN_FIRST 0x10U
-#define MQTT_COMMAND_RUN_LAST  0x15U
+#define MQTT_COMMAND_RUN_LAST  0x16U
 
 static int command_known(uint8_t command)
 {
@@ -534,7 +535,7 @@ int lwip_utk_mqtt_get_command(char *buffer, uint16_t buffer_size)
         buffer[0] = 'P';
         buffer[1] = '\0';
     } else if (command_known(received_command)) {
-        buffer[0] = "lobarp"[received_command - MQTT_COMMAND_RUN_FIRST];
+        buffer[0] = "lobarpc"[received_command - MQTT_COMMAND_RUN_FIRST];
         buffer[1] = '\0';
     } else {
         command_received = 0U;

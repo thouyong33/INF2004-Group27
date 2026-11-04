@@ -13,8 +13,9 @@ lwip_utk_mqtt.c) connects to this laptop on port 1883 and publishes:
     inf2004/group27/online     "1" on connect, "0" as its last will
 
 and listens on inf2004/group27/command for one command byte: 00 START
-(the continuous course), 01 STOP, 10-15 = runs l o b a r and p (print
-the continuous run's log). Send them from the
+(f, the full course with barcode commands), 01 STOP, 10-16 = runs
+l o b a r, p (print the continuous run's log) and c (the continuous
+course with barcode commands off). Send them from the
 control page this script opens on http://localhost:8080 (live status,
 buttons, events and run timing; tools/mqtt_web.html), or type a key here
 and press Enter.
@@ -67,11 +68,11 @@ TELEMETRY_LEN = 11
 EVENT_FMT = "<IiBBhH"             # 14 bytes
 SYS_FMT = "<HIHHHH"               # 14 bytes
 RUN_STATES = (1, 2, 3, 5, 8)      # START FOLLOW RAMP OBSTACLE TURN
-KEYS = "lobacrsp"
+KEYS = "lobacrspf"
 # BARCODE event val >> 1 (barcode.h BC_CUT_*)
 CUT_TEXT = {1: ", last bar missing", 2: ", first bar missing"}
-KEY_BYTE = {"c": 0x00, "s": 0x01, "l": 0x10, "o": 0x11, "b": 0x12,
-            "a": 0x13, "r": 0x14, "p": 0x15}
+KEY_BYTE = {"f": 0x00, "s": 0x01, "l": 0x10, "o": 0x11, "b": 0x12,
+            "a": 0x13, "r": 0x14, "p": 0x15, "c": 0x16}
 
 
 def decode_telemetry(payload):
@@ -598,8 +599,9 @@ async def main():
           "(MQTT_BROKER_HOST)")
     print("  listening on 0.0.0.0:%d, Ctrl+C to stop" % args.port)
     print("  control page: %s" % page)
-    print("  keys for the car: l o b a c r = start a run, s = stop, "
-          "p = print the c-run log (type it, then Enter)\n")
+    print("  keys for the car: l o b a r c f = start a run (f = full "
+          "course, commands on), s = stop, p = print the c/f-run log "
+          "(type it, then Enter)\n")
     if not args.no_browser:
         webbrowser.open(page)
 

@@ -162,6 +162,7 @@ void ctrl_test_course(void)
     static bc_elem_t bel[BC_MAX_ELEMS];
     robot_status_t st;
     INT run, c, n, i, k, ns;
+    BOOL b_cont;
     uint32_t rate, rate_min, pass, pass_max;
     uint32_t fails0, nf, f;
     int32_t fd;
@@ -187,8 +188,10 @@ void ctrl_test_course(void)
                   "+ ramp,"
                   "  o = line + obstacle stop,  b = line + barcode command at "
                   "the cross,\n[CTRL]   a = line + obstacle: measure, go round"
-                  " on the left, rejoin the line,\n[CTRL]   c = continuous"
-                  " course: everything on, no distance limit,\n[CTRL]   r ="
+                  " on the left, rejoin the line,\n[CTRL]   f = full"
+                  " course: everything on, barcode commands carried out,"
+                  " no distance limit,\n[CTRL]   c = continuous course,"
+                  " barcode commands off (lapping test),\n[CTRL]   r ="
                   " line + barcode read only (no command)"
                   "\n[CTRL]   (any key while running stops it)\n", run);
         console_flush_input();
@@ -196,20 +199,23 @@ void ctrl_test_course(void)
             c = console_try_getc();
             tk_dly_tsk(50);
         } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a')
-                && (c != 'c') && (c != 'r'));
+                && (c != 'c') && (c != 'f') && (c != 'r'));
+        b_cont = (c == 'c') || (c == 'f');
         opts = (c == 'o') ? CTRL_OPT_OBSTACLE
                : ((c == 'a') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID)
+               : ((c == 'f') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID
+                                | CTRL_OPT_BARCODE)
                : ((c == 'c') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID
                                 | CTRL_OPT_BARCODE | CTRL_OPT_NO_CMD)
                : ((c == 'r') ? (CTRL_OPT_BARCODE | CTRL_OPT_NO_CMD)
-               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u))));
+               : ((c == 'b') ? CTRL_OPT_BARCODE : 0u)))));
         tk_dly_tsk(500);
         console_flush_input();
 
         fails0 = barcode_scan_fail_count();
         cpu_meter_reset();
         er = ctrl_run(CTRLT_MM_S,
-                      (c == 'c') ? 0 : ((c == 'r') ? CTRLT_READ_MM
+                      b_cont ? 0 : ((c == 'r') ? CTRLT_READ_MM
                                                    : CTRLT_MAX_MM), opts);
         if(E_OK != er) {
             tm_printf((UB *)"[CTRL] ctrl_run failed: %d\n", er);
@@ -218,7 +224,7 @@ void ctrl_test_course(void)
         ns = 0;
         rate_min = 0xFFFFFFFFu;
         pass_max = 0u;
-        if(c == 'c') {
+        if(b_cont) {
             tm_printf((UB *)"[CTRL] continuous run started: the serial wire can"
                             " be unplugged now. Press s to stop (or lift the"
                             " car: the line search fails and it stops).\n");
@@ -226,9 +232,9 @@ void ctrl_test_course(void)
         while(ctrl_running()) {
             for(i = 0; (i < CTRLT_SNAP_MS / 20) && ctrl_running(); i++) {
                 k = console_try_getc();
-                /* c runs: only 's' stops, so a loose serial wire's noise
-                   cannot end the run */
-                if((k >= 0) && ((c != 'c') || (k == 's'))) {
+                /* c and f runs: only 's' stops, so a loose serial wire's
+                   noise cannot end the run */
+                if((k >= 0) && (!b_cont || (k == 's'))) {
                     ctrl_stop();
                 }
                 tk_dly_tsk(20);
@@ -243,7 +249,7 @@ void ctrl_test_course(void)
             ns++;
         }
         ctrl_get_status(&st);
-        if(c == 'c') {
+        if(b_cont) {
             /* The log stays in RAM: reconnect the serial wire, then ask */
             tm_printf((UB *)"[CTRL] run ended; press p to print the log\n");
             do {
@@ -254,7 +260,8 @@ void ctrl_test_course(void)
 
         tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
                   " faults 0x%x, events dropped %d\n", run,
-                  (c == 'c') ? "continuous course"
+                  (c == 'f') ? "full course, commands on"
+                  : (c == 'c') ? "continuous course"
                   : (c == 'r') ? "line + barcode read only"
                   : (0u != (opts & CTRL_OPT_OBSTACLE)) ? "line + obstacle"
                   : ((0u != (opts & CTRL_OPT_BARCODE)) ? "line + "
@@ -383,7 +390,7 @@ void ctrl_test_course(void)
         if(0u != (opts & CTRL_OPT_OBSTACLE)) {
             ctrlt_print_probe();
         }
-        if((c == 'l') || (c == 'c') || (c == 'r')) {
+        if((c == 'l') || b_cont || (c == 'r')) {
             ctrlt_print_line_trace();
         }
         tm_printf((UB *)"[CTRL]   Note where the car ended up (and the nose "

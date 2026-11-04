@@ -132,17 +132,17 @@ buddy1_sys_pack(uint8_t p_out[BUDDY1_SYS_LEN])
 void
 buddy1_command(uint8_t command)
 {
-    static const char keys[] = "lobarp";
+    static const char keys[] = "lobarpc";
 
     if (0x00u == command)
     {
-        console_inject((uint8_t)'c');
+        console_inject((uint8_t)'f');   /* START: the full course */
     }
     else if (0x01u == command)
     {
         console_inject((uint8_t)'s');
     }
-    else if ((command >= 0x10u) && (command <= 0x15u))
+    else if ((command >= 0x10u) && (command <= 0x16u))
     {
         console_inject((uint8_t)keys[command - 0x10u]);
     }

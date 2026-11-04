@@ -84,7 +84,8 @@ After start-up the course test prints its menu and waits for a key:
 | `a` | as `o`, then go round it on the left and rejoin the line |
 | `b` | follow the line and act on a barcode at the next cross |
 | `r` | follow the line and read barcodes only |
-| `c` | the whole course, no distance limit; `s` stops it, `p` prints its log |
+| `f` | the full course: everything on, barcode commands carried out, no distance limit; `s` stops it, `p` prints its log |
+| `c` | as `f` but barcode commands off (a lapping test on a loop circuit) |
 
 Each run ends with its event log, the robot status every 500 ms and the
 line trace.
