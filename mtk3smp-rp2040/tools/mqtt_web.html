@@ -121,10 +121,11 @@
 
     <section>
       <h2>Ramp</h2>
-      <div class="big" id="r_now">-</div>
-      <div class="sub">live: on or off a ramp</div>
+      <div class="big" id="r_height">-</div>
+      <div class="sub">last measured ramp height</div>
+      <div class="kv"><span>status</span><span id="r_now">-</span></div>
       <div class="kv"><span>highest ramp</span><span id="r_max">-</span></div>
-      <div class="kv"><span>last ramp</span><span id="r_last">-</span></div>
+      <div class="kv"><span>last ramp at</span><span id="r_last">-</span></div>
       <div class="kv"><span>ramps this run</span><span id="r_n">0</span></div>
     </section>
 
@@ -262,7 +263,8 @@
       run.ramps++;
       run.rampMax = Math.max(run.rampMax, e.val);
       $("r_n").textContent = run.ramps;
-      $("r_last").textContent = e.val + " mm at " + m(e.d_mm);
+      $("r_height").innerHTML = e.val + " <small>mm</small>";
+      $("r_last").textContent = m(e.d_mm);
     } else if (e.type === "BARCODE") {
       if (e.arg) {
         run.reads++;
