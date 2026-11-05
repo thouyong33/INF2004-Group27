@@ -21,6 +21,9 @@ design choice needs its reason.
     barcode commands off (lapping test)
   - `f`: full course, as `c` with barcode commands carried out (added
     4 Nov; MQTT START now starts `f`)
+  - `m`: type the barcode mapping (forward, U-turn, left, right) by
+    hand; from v54 (5 Nov) the mapping is not in the firmware and the PC
+    normally sends it over MQTT
 - **Test space:** two 30.5 cm mats (straight and cross), 100 mm/s,
   450 mm per run, unless stated otherwise.
 

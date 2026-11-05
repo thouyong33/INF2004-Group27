@@ -102,6 +102,17 @@ int32_t line_direction_cdeg(void);
  * of it (line.c, LINE_CLEAN_MIN_MM). For squaring up at an obstacle. */
 int32_t line_clean_direction_cdeg(void);
 
+/** Following the line: straight or a curve turn (the feed-forward
+ * curve_ff in line.c); OTHER while searching, on the ramp hold or not
+ * following */
+#define LINE_TURN_STRAIGHT   0
+#define LINE_TURN_LEFT       1
+#define LINE_TURN_RIGHT      (-1)
+#define LINE_TURN_OTHER      2
+
+/** @brief LINE_TURN_* for the latest 20 ms period. */
+int8_t line_turn(void);
+
 /** @brief true if line_clean_direction_cdeg() comes from plain following
  * (not the fallback). */
 bool line_clean_ok(void);

@@ -11,11 +11,14 @@
 
 #if TM_WIFI_MQTT
 
+#include <tm/tmonitor.h>
+
 #include "controller/vehicle_ctrl.h"
 #include "buddy2_motion/motion_task.h"
 #include "common/faults.h"
 #include "common/remote_keys.h"
 #include "buddy1_hooks.h"
+#include "cmd_map.h"
 
 #define TEL_SPEED_MAX_MM_S   550     /* the codec's range */
 #define TEL_OBST_MAX_MM      4095
@@ -70,6 +73,7 @@ buddy1_fill_telemetry(telemetry_data_t *p_data)
         : ((st.obstacle_mm > TEL_OBST_MAX_MM) ? (uint16_t)TEL_OBST_MAX_MM
                                               : (uint16_t)st.obstacle_mm);
     p_data->fault_flags = st.faults;
+    p_data->motion = st.motion;
 }
 
 bool
@@ -127,8 +131,8 @@ buddy1_sys_pack(uint8_t p_out[BUDDY1_SYS_LEN])
     s_prev_samples = samples;
 }
 
-/* The command byte as a course-test key: START = the continuous course,
-   STOP = s, 0x10-0x15 = l o b a r p (lwip_utk_mqtt.c) */
+/* The command byte as a course-test key: START = f (the full course),
+   STOP = s, 0x10-0x16 = l o b a r p c (lwip_utk_mqtt.c) */
 void
 buddy1_command(uint8_t command)
 {
@@ -150,6 +154,29 @@ buddy1_command(uint8_t command)
     {
         /* rejected by the client already */
     }
+}
+
+bool
+buddy1_mapping(const uint8_t p_in[BUDDY1_MAPPING_LEN])
+{
+    char c[CMD_MAP_CHARS];
+
+    if (!cmd_map_set_packed(p_in))
+    {
+        tm_printf((UB *)"[mqtt] mapping rejected (not 4 different Code 39"
+                        " characters); the previous one stays\n");
+        return false;
+    }
+    (void)cmd_map_get(c);
+    tm_printf((UB *)"[mqtt] mapping: forward %c, U-turn %c, left %c,"
+                    " right %c\n", c[0], c[1], c[2], c[3]);
+    return true;
+}
+
+bool
+buddy1_mapping_get(uint8_t p_out[BUDDY1_MAPPING_LEN])
+{
+    return cmd_map_get_packed(p_out);
 }
 
 void

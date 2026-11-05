@@ -86,6 +86,13 @@ After start-up the course test prints its menu and waits for a key:
 | `r` | follow the line and read barcodes only |
 | `f` | the full course: everything on, barcode commands carried out, no distance limit; `s` stops it, `p` prints its log |
 | `c` | as `f` but barcode commands off (a lapping test on a loop circuit) |
+| `m` | type the barcode mapping by hand: four characters for forward, U-turn, left, right (normally the PC sends it over MQTT) |
+
+The barcode mapping (which character means forward, U-turn, left or right)
+is not in the firmware: the car starts with none and ignores barcode
+commands until the PC sends one. Set it in the control page's Barcode
+mapping box before an `f` or `b` run; the car keeps it until it restarts,
+and the menu prints the mapping in use.
 
 Each run ends with its event log, the robot status every 500 ms and the
 line trace.
@@ -109,6 +116,11 @@ New-NetFirewallRule -DisplayName "MQTT 1883" -Direction Inbound -Protocol TCP -L
 
 `mtk3smp-rp2040/buddy1_mqtt_decoder.py` decodes the telemetry packet on its
 own; the packet format is in `BUDDY1_HANDOVER.md`.
+
+The page's Barcode mapping box sends the four characters on
+`inf2004/group27/mapping` (retained, so a car that connects later still
+gets it); the car answers on `mapping/ack` and the page shows "car uses:"
+with what the car accepted.
 
 ## 7. Notes
 

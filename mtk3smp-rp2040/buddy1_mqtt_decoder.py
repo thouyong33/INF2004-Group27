@@ -32,7 +32,7 @@ def decode_telemetry(payload):
     obstacle_distance = read(12)
     faults = read(8)
     heartbeat = read(8)
-    read(3)  # reserved
+    motion = read(3)  # 0 stop, 1 stationary, 2 straight, 3 left, 4 right
 
     if version != 2:
         raise ValueError(f"Unsupported version: {version}")
@@ -51,6 +51,7 @@ def decode_telemetry(payload):
         "obstacle_distance": obstacle_distance,
         "faults": faults,
         "heartbeat": heartbeat,
+        "motion": motion,
     }
 
 
@@ -83,7 +84,8 @@ def on_message(client, userdata, msg):
         f"Obstacle={d['obstacle']} "
         f"({d['obstacle_distance']} mm) | "
         f"Faults={d['faults']} | "
-        f"Heartbeat={d['heartbeat']}",
+        f"Heartbeat={d['heartbeat']} | "
+        f"Motion={d['motion']}",
         flush=True
     )
 

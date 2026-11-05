@@ -77,7 +77,8 @@ telemetry_encode(const telemetry_data_t *p_data,
         || (p_data->right_speed_mm_s < -550)
         || (p_data->right_speed_mm_s > 550)
         || (p_data->barcode_command > 7U)
-        || (p_data->obstacle_distance_mm > 4095U))
+        || (p_data->obstacle_distance_mm > 4095U)
+        || (p_data->motion > 7U))
     {
         return false;
     }
@@ -101,7 +102,7 @@ telemetry_encode(const telemetry_data_t *p_data,
     write_bits(output, p_data->obstacle_distance_mm, &bit, 12U);
     write_bits(output, p_data->fault_flags, &bit, 8U);
     write_bits(output, p_data->heartbeat, &bit, 8U);
-    write_bits(output, 0U, &bit, 3U);              /* reserved */
+    write_bits(output, p_data->motion, &bit, 3U);
 
     return (TELEMETRY_V2_SIZE * 8U) == bit;
 }
@@ -143,7 +144,7 @@ telemetry_decode(const uint8_t input[TELEMETRY_V2_SIZE],
     decoded.obstacle_distance_mm = (uint16_t)read_bits(input, &bit, 12U);
     decoded.fault_flags = (uint8_t)read_bits(input, &bit, 8U);
     decoded.heartbeat = (uint8_t)read_bits(input, &bit, 8U);
-    (void)read_bits(input, &bit, 3U);              /* reserved */
+    decoded.motion = (uint8_t)read_bits(input, &bit, 3U);
 
     if ((TELEMETRY_V2_SIZE * 8U) != bit)
     {

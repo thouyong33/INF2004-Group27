@@ -78,6 +78,12 @@
   .k-key { color: var(--warn); }
   .k-status { color: var(--muted); }
   label.tog { font-size: 13px; color: var(--muted); }
+  label.map { font-size: 13px; color: var(--muted); }
+  label.map input { width: 2.2em; text-align: center; font: inherit;
+                    font-size: 15px; font-weight: 700; padding: 4px;
+                    border-radius: 6px; border: 1px solid var(--line);
+                    background: var(--bg); color: var(--text);
+                    text-transform: uppercase; }
   #timing div { margin-bottom: 6px; }
 </style>
 </head>
@@ -94,6 +100,7 @@
     <div class="status">
       <div>
         <div class="state" id="state">-</div>
+        <div class="muted">motion: <b id="motion">-</b></div>
         <div class="muted">faults: <span id="faults" class="faults">-</span></div>
       </div>
       <div class="stats">
@@ -139,6 +146,21 @@
       <div class="kv"><span>last miss</span><span id="b_miss">-</span></div>
     </section>
   </div>
+
+  <section style="margin-top:14px">
+    <div class="runrow">
+      <h2 style="margin:0 6px 0 0">Barcode mapping</h2>
+      <label class="map">forward <input id="m_f" maxlength="1"></label>
+      <label class="map">U-turn <input id="m_u" maxlength="1"></label>
+      <label class="map">left <input id="m_l" maxlength="1"></label>
+      <label class="map">right <input id="m_r" maxlength="1"></label>
+      <button id="sendMap">Send mapping</button>
+      <span class="muted">car uses: <b id="m_car">-</b></span>
+    </div>
+    <div id="mapNote" class="muted" style="margin-top:6px">Four different
+      Code 39 characters (A-Z, 0-9, - . space $ / + %). Sent retained, so
+      the car also gets it if it connects later.</div>
+  </section>
 
   <section style="margin-top:14px">
     <div class="runrow">
@@ -231,6 +253,8 @@
     $("right").textContent = s.right;
     $("total").textContent = s.total_m.toFixed(2);
     $("hb").textContent = s.heartbeat;
+    $("motion").textContent = s.motion || "-";
+    if (s.mapping !== undefined && s.mapping !== null) { showMapping(s.mapping); }
     $("cmd").textContent = s.cmd;
     $("b_cmd").textContent = s.cmd;
     $("rate").textContent = s.rate ? s.rate.toFixed(1) : "-";
@@ -285,6 +309,28 @@
     }
   }
 
+  function showMapping(chars) {
+    $("m_car").textContent = chars
+      ? "forward " + chars[0] + ", U-turn " + chars[1] + ", left " + chars[2] +
+        ", right " + chars[3]
+      : "none yet";
+  }
+
+  function sendMapping() {
+    var chars = ["m_f", "m_u", "m_l", "m_r"].map(function (id) {
+      return ($(id).value || "").toUpperCase();
+    }).join("");
+    $("mapNote").textContent = "sending mapping '" + chars + "'...";
+    fetch("/mapping", { method: "POST", headers: { "X-Car": "1" }, body: chars })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        $("mapNote").textContent = j.ok
+          ? "mapping sent; the car confirms it below the boxes"
+          : "not sent: give four different Code 39 characters";
+      })
+      .catch(function () { $("mapNote").textContent = "not sent: viewer not reachable"; });
+  }
+
   function showSys(s) {
     $("sys").textContent = "motion loop " + s.rate + "/s, longest pass " +
       s.pass + " us, busy " + s.busy_pct.toFixed(1) + "%; controller " +
@@ -297,6 +343,7 @@
     else if (msg.t === "sys") { showSys(msg); }
     else if (msg.t === "car") { setCar(msg.up); }
     else if (msg.t === "evt") { showEvent(msg); }
+    else if (msg.t === "mapping") { showMapping(msg.chars); }
     else if (msg.t === "line") {
       if (msg.kind === "event" || msg.kind === "fault") {
         addLine("events", msg.kind, msg.text);
@@ -342,6 +389,7 @@
     var b = e.target.closest("button[data-k]");
     if (b && !b.disabled) { send(b.getAttribute("data-k")); }
   });
+  $("sendMap").addEventListener("click", sendMapping);
   newRun();
   refreshButtons();
   connect();

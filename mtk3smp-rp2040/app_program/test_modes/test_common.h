@@ -27,6 +27,7 @@
 #include "common/cpu_meter.h"
 #include "common/ctrl_events.h"
 #include "controller/vehicle_ctrl.h"
+#include "buddy1_telemetry/cmd_map.h"
 
 #include "test_modes.h"
 

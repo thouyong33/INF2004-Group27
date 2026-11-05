@@ -35,6 +35,15 @@ void buddy1_sys_pack(uint8_t p_out[BUDDY1_SYS_LEN]);
 /* A validated command byte from the laptop (see lwip_utk_mqtt.c). */
 void buddy1_command(uint8_t command);
 
+/* Character -> movement mapping (app_program/buddy1_telemetry/cmd_map.h):
+ * 3 bytes from the laptop; true if the car applied it. */
+#define BUDDY1_MAPPING_LEN 3U
+bool buddy1_mapping(const uint8_t p_in[BUDDY1_MAPPING_LEN]);
+
+/* The car's current mapping, packed the same way, for the confirmation;
+ * false if it has none yet. */
+bool buddy1_mapping_get(uint8_t p_out[BUDDY1_MAPPING_LEN]);
+
 /* The broker has been unreachable for a while (true) or is back. */
 void buddy1_link_lost(bool b_lost);
 

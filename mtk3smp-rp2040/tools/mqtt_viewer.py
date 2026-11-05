@@ -62,6 +62,33 @@ EVENTS = ["NONE", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF",
 FAULTS = ["STALL", "ENC_L", "ENC_R", "IMU", "NO_ECHO", "WIFI", "SCAN",
           "LINE_LOST"]
 COMMANDS = ["none", "left", "right", "straight", "U-turn"]
+MOTIONS = ["stop", "stationary", "straight", "turning left",
+           "turning right"]
+# barcode mapping (app_program/buddy1_telemetry/cmd_map.h): four Code 39
+# characters for forward, U-turn, left, right, each a 6-bit index into
+# CHARSET, packed LSB first into 3 bytes
+CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-. $/+%"
+
+
+def pack_mapping(chars):
+    """4 characters (forward, U-turn, left, right) -> 3 bytes, or None."""
+    chars = chars.upper()
+    if len(chars) != 4 or len(set(chars)) != 4 \
+            or any(c not in CHARSET for c in chars):
+        return None
+    bits = 0
+    for i, c in enumerate(chars):
+        bits |= CHARSET.index(c) << (6 * i)
+    return bits.to_bytes(3, "little")
+
+
+def unpack_mapping(payload):
+    """3 bytes -> the 4 characters, or "" for none."""
+    bits = int.from_bytes(payload, "little")
+    idx = [(bits >> (6 * i)) & 0x3F for i in range(4)]
+    if any(i >= len(CHARSET) for i in idx):
+        return ""
+    return "".join(CHARSET[i] for i in idx)
 
 TOPIC = "inf2004/group27/"
 TELEMETRY_LEN = 11
@@ -80,17 +107,17 @@ def decode_telemetry(payload):
     telemetry_codec.c and buddy1_mqtt_decoder.py."""
     bits = int.from_bytes(payload, "little")
     out = []
-    for width in (2, 4, 11, 11, 16, 3, 1, 8, 1, 12, 8, 8):
+    for width in (2, 4, 11, 11, 16, 3, 1, 8, 1, 12, 8, 8, 3):
         out.append(bits & ((1 << width) - 1))
         bits >>= width
     (version, state, left, right, dist, cmd, valid, hump, obst, obst_mm,
-     faults, heartbeat) = out
+     faults, heartbeat, motion) = out
     if version != 2 or left > 1100 or right > 1100:
         raise ValueError("not a version 2 packet")
     return {"state": state, "left": left - 550, "right": right - 550,
             "dist_mm": dist, "cmd": cmd, "valid": valid, "hump": hump,
             "obstacle": obst, "obst_mm": obst_mm, "faults": faults,
-            "heartbeat": heartbeat}
+            "heartbeat": heartbeat, "motion": motion}
 
 
 def name(table, i):
@@ -168,6 +195,7 @@ class Viewer:
         # count the wraps so the shown distance keeps going
         self.dist_wraps = 0
         self.last_dist = None
+        self.car_mapping = None       # what the car confirmed it uses
         self.writer = None
         if csv_path:
             self.file = open(csv_path, "w", newline="")
@@ -196,8 +224,14 @@ class Viewer:
             self.event(struct.unpack(EVENT_FMT, payload))
         elif topic == TOPIC + "sys" and len(payload) == 14:
             self.sys(struct.unpack(SYS_FMT, payload))
-        elif topic == TOPIC + "command":
-            pass                                  # our own keys
+        elif topic == TOPIC + "command" or topic == TOPIC + "mapping":
+            pass                                  # our own keys / mapping
+        elif topic == TOPIC + "mapping/ack" and len(payload) == 3:
+            self.car_mapping = unpack_mapping(payload)
+            m = self.car_mapping
+            say("car mapping: %s" % ("forward %s, U-turn %s, left %s, "
+                "right %s" % tuple(m) if m else "none yet"), "key")
+            HUB.send({"t": "mapping", "chars": m})
         elif topic.startswith(TOPIC):
             say("%s: %d bytes %s" % (topic, len(payload), payload.hex()))
 
@@ -235,6 +269,8 @@ class Viewer:
                   "sonar": obst, "ramp": t["hump"],
                   "cmd": name(COMMANDS, t["cmd"]),
                   "heartbeat": t["heartbeat"],
+                  "motion": name(MOTIONS, t["motion"]),
+                  "mapping": self.car_mapping,
                   "faults": fault_text(faults), "fault_bits": faults,
                   "rate": round(rate_now, 1)})
         changed = state != self.last_state
@@ -247,9 +283,10 @@ class Viewer:
         if now > self.first_status + 1:
             rate = "  %.1f/s" % (self.status_count / (now - self.first_status))
         cmd = t["cmd"]
-        say("%-8s L=%4d R=%4d mm/s dist=%6.2f m sonar=%5s ramp=%2d%s "
+        say("%-8s %-13s L=%4d R=%4d mm/s dist=%6.2f m sonar=%5s ramp=%2d%s "
             "faults=%s hb=%3d%s"
-            % (name(STATES, state), t["left"], t["right"],
+            % (name(STATES, state), name(MOTIONS, t["motion"]),
+               t["left"], t["right"],
                t["dist_mm"] / 1000.0, "-" if obst < 0 else obst,
                t["hump"],
                " cmd=" + name(COMMANDS, cmd) if cmd else "",
@@ -335,6 +372,19 @@ class Broker:
             return False
         say("-> sent '%s' to the car" % ch, "key")
         self.route(TOPIC + "command", bytes([KEY_BYTE[ch]]), False)
+        return True
+
+    def mapping(self, chars):
+        """Send the barcode mapping (retained, so a car that connects
+        later still gets it); returns whether it was valid."""
+        payload = pack_mapping(chars)
+        if payload is None:
+            say("mapping '%s' not sent: give 4 different Code 39 "
+                "characters (forward, U-turn, left, right)" % chars, "warn")
+            return False
+        say("-> mapping sent: forward %s, U-turn %s, left %s, right %s"
+            % tuple(chars.upper()), "key")
+        self.route(TOPIC + "mapping", payload, True)
         return True
 
     def route(self, topic, payload, retain, sender=None):
@@ -562,6 +612,12 @@ class Web:
                     and headers.get("x-car") == "1":
                 ch = body.decode(errors="replace").strip()[:1].lower()
                 ok = bool(ch) and ch in KEYS and self.broker.key(ch)
+                self.reply(writer, "200 OK", "application/json",
+                           json.dumps({"ok": ok}).encode())
+            elif method == "POST" and path == "/mapping" \
+                    and headers.get("x-car") == "1":
+                chars = body.decode(errors="replace").strip()
+                ok = self.broker.mapping(chars)
                 self.reply(writer, "200 OK", "application/json",
                            json.dumps({"ok": ok}).encode())
             else:

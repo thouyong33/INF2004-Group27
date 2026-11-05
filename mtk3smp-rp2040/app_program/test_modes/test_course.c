@@ -155,6 +155,52 @@ LOCAL const char *ctrlt_cmd(UB c)
     return (c < 5u) ? txt[c] : "?";
 }
 
+LOCAL const char *ctrlt_motion(UB m)
+{
+    static const char *const txt[5] = {"stop", "stationary", "straight",
+                                       "turning left", "turning right"};
+    return (m < 5u) ? txt[m] : "?";
+}
+
+/* The barcode mapping in use (buddy1_telemetry/cmd_map.h) */
+LOCAL void ctrlt_print_mapping(void)
+{
+    char ch[CMD_MAP_CHARS];
+
+    if(cmd_map_get(ch)) {
+        tm_printf((UB *)"[CTRL]   barcode mapping: forward %c, U-turn %c, "
+                        "left %c, right %c\n", ch[0], ch[1], ch[2], ch[3]);
+    } else {
+        tm_printf((UB *)"[CTRL]   barcode mapping: none yet, so codes are"
+                        " read but no movement is made\n");
+    }
+}
+
+/* m: type the four characters (forward, U-turn, left, right) on the
+   serial console, for runs without Wi-Fi */
+LOCAL void ctrlt_type_mapping(void)
+{
+    char ch[CMD_MAP_CHARS];
+    UINT n = 0u;
+    INT k;
+
+    tm_printf((UB *)"[CTRL] type 4 characters: forward, U-turn, left, "
+                    "right (e.g. AZBC)\n");
+    console_flush_input();
+    while(n < CMD_MAP_CHARS) {
+        k = console_try_getc();
+        if(k > ' ') {
+            ch[n] = (char)((k >= 'a') && (k <= 'z') ? (k - 'a' + 'A') : k);
+            n++;
+        }
+        tk_dly_tsk(20);
+    }
+    if(!cmd_map_set_chars(ch)) {
+        tm_printf((UB *)"[CTRL] not 4 different Code 39 characters: the "
+                        "mapping is unchanged\n");
+    }
+}
+
 void ctrl_test_course(void)
 {
     static robot_status_t snaps[CTRLT_SNAPS];
@@ -193,13 +239,21 @@ void ctrl_test_course(void)
                   " no distance limit,\n[CTRL]   c = continuous course,"
                   " barcode commands off (lapping test),\n[CTRL]   r ="
                   " line + barcode read only (no command)"
+                  "\n[CTRL]   m = type a barcode mapping here (normally the PC"
+                  " sends it over MQTT)"
                   "\n[CTRL]   (any key while running stops it)\n", run);
+        ctrlt_print_mapping();
         console_flush_input();
         do {
             c = console_try_getc();
             tk_dly_tsk(50);
         } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a')
-                && (c != 'c') && (c != 'f') && (c != 'r'));
+                && (c != 'c') && (c != 'f') && (c != 'r') && (c != 'm'));
+        if(c == 'm') {
+            ctrlt_type_mapping();
+            run--;                   /* not a run: show the menu again */
+            continue;
+        }
         b_cont = (c == 'c') || (c == 'f');
         opts = (c == 'o') ? CTRL_OPT_OBSTACLE
                : ((c == 'a') ? (CTRL_OPT_OBSTACLE | CTRL_OPT_AVOID)
@@ -370,14 +424,16 @@ void ctrl_test_course(void)
                 ctrlt_print_bars(bel, n);
             }
         }
-        tm_printf((UB *)"[CTRL]   robot_status every %d ms (state, d_mm, "
-                        "heading, roll,"
+        tm_printf((UB *)"[CTRL]   robot_status every %d ms (state, motion,"
+                        " d_mm, heading, roll,"
                   " sonar_mm, flags R/I/W, pending command, last event):\n",
                       CTRLT_SNAP_MS);
         for(k = (ns > CTRLT_SNAPS) ? (ns - CTRLT_SNAPS) : 0; k < ns; k++) {
             i = k % CTRLT_SNAPS;
-            tm_printf((UB *)"[CTRL]     %s, %d, %d, %d, %d, %c%c%c, %s, %s\n",
-                      ctrlt_state(snaps[i].state), snaps[i].dist_mm,
+            tm_printf((UB *)"[CTRL]     %s, %s, %d, %d, %d, %d, %c%c%c, %s,"
+                            " %s\n",
+                      ctrlt_state(snaps[i].state),
+                      ctrlt_motion(snaps[i].motion), snaps[i].dist_mm,
                           snaps[i].heading_cdeg,
                       snaps[i].roll_cdeg, snaps[i].obstacle_mm,
                       (0u != (snaps[i].flags & CTRL_FLAG_ON_RAMP)) ? 'R' : '-',

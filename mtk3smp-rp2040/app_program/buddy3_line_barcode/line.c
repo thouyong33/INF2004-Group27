@@ -212,6 +212,8 @@ static volatile uint8_t g_straight = 0u;
 static volatile int32_t g_line_dir = 0;     /* published for the controller */
 static volatile int32_t g_clean_dir = 0;    /* see LINE_CLEAN_MIN_MM */
 static volatile int32_t g_clean_mm = 0;
+/* LINE_TURN_*: what the last traced period was doing */
+static volatile int8_t g_turn = LINE_TURN_OTHER;
 
 static line_trace_t g_trace[LINE_TRACE_LEN];
 static volatile uint32_t g_trace_n = 0u;
@@ -255,6 +257,11 @@ trace(int32_t d, int32_t corr, int32_t trim, uint32_t bits, uint8_t mode,
     p_t->heading_cdeg = (int16_t)turned_cdeg(0, 0);
     p_t->off = (int8_t)off;
     g_trace_n++;
+    /* following: the curve turn's side; a search or the ramp hold:
+       neither (the controller reads the wheels instead) */
+    g_turn = (LINE_TR_FOLLOW != mode) ? LINE_TURN_OTHER
+           : ((trim > 0) ? LINE_TURN_LEFT
+           : ((trim < 0) ? LINE_TURN_RIGHT : LINE_TURN_STRAIGHT));
 }
 
 /* Found the line: the centre IR only (the right IR also sees a black ramp
@@ -999,6 +1006,12 @@ int32_t
 line_direction_cdeg(void)
 {
     return g_line_dir;
+}
+
+int8_t
+line_turn(void)
+{
+    return g_turn;
 }
 
 bool

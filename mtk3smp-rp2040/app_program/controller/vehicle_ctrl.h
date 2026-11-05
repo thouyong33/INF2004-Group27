@@ -23,10 +23,10 @@
  * Barcodes (CTRL_OPT_BARCODE): the barcode task reads the left IR while
  * following and posts EVT_BARCODE; the controller keeps the command and
  * carries it out at the next junction (EVT_JUNCTION from the line task).
- * User's mapping (24 Oct): "A" = left, "A reversed" = right, "Z" =
- * straight, "Z reversed" = U-turn: a code read forward in the car's
- * direction of travel is the plain letter, one read backwards the
- * "reversed" one (confirmed with A and Z samples, 24 Oct). For a turn the car
+ * Which character means which movement (forward, U-turn, left, right)
+ * is not fixed in the code: the PC sends it over MQTT before the run
+ * (buddy1_telemetry/cmd_map.h), and a code means the same movement
+ * whichever way it is read. For a turn the car
  * stops, drives on until the axle is over the junction, turns on the
  * spot on the encoders, then follows the line again for after_mm (0 ends
  * the run there: the test mats have nothing beyond the cross).
@@ -66,6 +66,17 @@
 #define CTRL_CMD_STRAIGHT    3u
 #define CTRL_CMD_UTURN       4u
 
+/** What the car is doing (3 bits, robot_status.motion and telemetry):
+ * stop = no run; stationary = a run with the wheels still (measuring an
+ * obstacle, settling at a junction); while following the line, straight
+ * or a left / right curve turn (line.c); otherwise (junction turns, the
+ * obstacle avoid) from the wheel speeds */
+#define CTRL_MOTION_STOP        0u
+#define CTRL_MOTION_STATIONARY  1u
+#define CTRL_MOTION_STRAIGHT    2u
+#define CTRL_MOTION_LEFT        3u
+#define CTRL_MOTION_RIGHT       4u
+
 /** robot_status.flags */
 #define CTRL_FLAG_ON_RAMP    (1u << 0)
 #define CTRL_FLAG_IMU_OK     (1u << 1)
@@ -100,7 +111,8 @@ typedef struct {
     /** width from the scan after a stop, 0 = none */
     int16_t obstacle_width_mm;
     uint8_t max_ramp_mm;     /**< highest ramp (hump) this run, mm */
-    uint8_t spare;
+    /** CTRL_MOTION_*, worked out when the status is read */
+    uint8_t motion;
     uint16_t total_cm;       /**< since the run started, cm (655 m) */
 } robot_status_t;
 

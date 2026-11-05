@@ -27,13 +27,13 @@ Lower number = higher priority.
 
 On a Wi-Fi build the MQTT client (`lib/libnet/lwip/lwip_utk_mqtt.c`, Buddy 1)
 runs in the radio task and calls the hooks in `buddy1_telemetry/tel_source.c`
-for telemetry, events and run commands.
+for telemetry, events, run commands and the barcode mapping.
 
 ## Folders
 
 | Folder | Buddy | Contents |
 |---|---|---|
-| `buddy1_telemetry/` | 1 | MQTT hooks (telemetry packet, events, commands), Wi-Fi status |
+| `buddy1_telemetry/` | 1 | MQTT hooks (telemetry packet, events, commands), barcode mapping from the PC (`cmd_map.c`), Wi-Fi status |
 | `buddy2_motion/` | 2 | motors, encoders, PI speed control, odometry |
 | `buddy3_line_barcode/` | 3 | IR sensors, line following, barcode scanning and decoding |
 | `buddy4_imu/` | 4 | GY-511 accelerometer (pitch, roll), ramp height (`terrain.c`) |

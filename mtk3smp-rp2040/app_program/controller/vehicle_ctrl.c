@@ -19,6 +19,7 @@
 #include "../buddy4_imu/terrain.h"
 #include "../buddy5_ultrasonic/obstacle.h"
 #include "../buddy5_ultrasonic/ultrasonic.h"
+#include "../buddy1_telemetry/cmd_map.h"
 #include "vehicle_ctrl.h"
 
 /* Below motion (5) so the I2C reads never delay the motor loop; same as
@@ -199,24 +200,53 @@ rest_attitude(int32_t *p_roll0)
     return true;
 }
 
-/* Barcode command table: [letter - 'A'][0 = read forward, 1 = reversed].
- * Any Code 39 letter can appear on the course and the final mapping is not
- * fixed yet (it may be letter ranges, e.g. A-E = left); until then: A left,
- * A reversed right, Z straight, Z reversed U-turn, the rest no command. */
-static const uint8_t g_cmd_table[26][2] = {
-    ['A' - 'A'] = { CTRL_CMD_LEFT, CTRL_CMD_RIGHT },
-    ['Z' - 'A'] = { CTRL_CMD_STRAIGHT, CTRL_CMD_UTURN },
-};
-
-/* Barcode read -> command (user's mapping; see vehicle_ctrl.h) */
+/* Barcode read -> command: the mapping the PC sent over MQTT
+ * (buddy1_telemetry/cmd_map.h), the same whichever way the code was read;
+ * no command for a character outside it, or before any mapping */
 static uint8_t
-cmd_for(uint8_t ch, bool b_reversed)
+cmd_for(uint8_t ch)
 {
-    if ((ch < (uint8_t)'A') || (ch > (uint8_t)'Z'))
+    return cmd_map_lookup(ch);
+}
+
+/* What the car is doing now (CTRL_MOTION_*, see vehicle_ctrl.h) */
+#define MOTION_STILL_CM_S    1.0f    /* both wheels below: stationary */
+#define MOTION_TURN_CM_S     2.0f    /* wheel difference above: turning */
+static uint8_t
+motion_now(uint8_t state)
+{
+    odometry_t odo = {0};
+    float diff;
+    int8_t turn;
+
+    if (0u == g_running)
     {
-        return CTRL_CMD_NONE;
+        return CTRL_MOTION_STOP;
     }
-    return g_cmd_table[ch - (uint8_t)'A'][b_reversed ? 1u : 0u];
+    (void)motion_get_odometry(&odo);
+    if ((odo.left_speed_cm_s < MOTION_STILL_CM_S)
+        && (odo.left_speed_cm_s > -MOTION_STILL_CM_S)
+        && (odo.right_speed_cm_s < MOTION_STILL_CM_S)
+        && (odo.right_speed_cm_s > -MOTION_STILL_CM_S))
+    {
+        return CTRL_MOTION_STATIONARY;
+    }
+    turn = line_turn();
+    if ((CTRL_ST_FOLLOW == state) && (LINE_TURN_OTHER != turn))
+    {
+        /* the curve turn, not the weave's small corrections */
+        return (LINE_TURN_LEFT == turn) ? CTRL_MOTION_LEFT
+             : ((LINE_TURN_RIGHT == turn) ? CTRL_MOTION_RIGHT
+                                          : CTRL_MOTION_STRAIGHT);
+    }
+    if (CTRL_ST_RAMP == state)
+    {
+        return CTRL_MOTION_STRAIGHT;            /* held straight */
+    }
+    diff = odo.right_speed_cm_s - odo.left_speed_cm_s;
+    return (diff > MOTION_TURN_CM_S) ? CTRL_MOTION_LEFT
+         : ((diff < -MOTION_TURN_CM_S) ? CTRL_MOTION_RIGHT
+                                       : CTRL_MOTION_STRAIGHT);
 }
 
 /* Wind the line task down; its LINE_END(STOPPED) is ours, not news */
@@ -937,9 +967,9 @@ ctrl_task_main(INT stacd, void *exinf)
                     log_evt(evt.type, evt.arg, evt.val, d);
                     if ((0u != evt.arg) && (0u == (opts & CTRL_OPT_NO_CMD))
                         && (CTRL_CMD_NONE
-                            != cmd_for(evt.arg, 0 != (evt.val & 1))))
+                            != cmd_for(evt.arg)))
                     {
-                        cmd = cmd_for(evt.arg, 0 != (evt.val & 1));
+                        cmd = cmd_for(evt.arg);
                         flags = (uint8_t)((flags & 0x0Fu)
                                           | (cmd << CTRL_FLAG_CMD_SHIFT));
                     }
@@ -1304,6 +1334,7 @@ ctrl_get_status(robot_status_t *p_st)
     CRIT_ENTER(&g_status_lock, sts);
     *p_st = g_status;
     CRIT_EXIT(&g_status_lock, sts);
+    p_st->motion = motion_now(p_st->state);
 }
 
 uint32_t

@@ -63,7 +63,8 @@ telemetry_data_t max_test = {
     .obstacle_detected = true,
     .obstacle_distance_mm = 4095,
     .fault_flags = 255,
-    .heartbeat = 255
+    .heartbeat = 255,
+    .motion = 7
 };
 
 if (!telemetry_encode(&max_test, packet) ||
@@ -78,7 +79,8 @@ if (!telemetry_encode(&max_test, packet) ||
     !decoded.obstacle_detected ||
     decoded.obstacle_distance_mm != 4095 ||
     decoded.fault_flags != 255 ||
-    decoded.heartbeat != 255) {
+    decoded.heartbeat != 255 ||
+    decoded.motion != 7) {
     printf("MAXIMUM TEST FAILED\n");
     return 1;
 }
@@ -108,6 +110,17 @@ if (telemetry_encode(&max_test, packet)) {
 }
 
 printf("INVALID RANGE TEST PASSED\n");
+
+/* Motion is 3 bits: 8 must be rejected */
+max_test.left_speed_mm_s = 550;
+max_test.motion = 8;
+
+if (telemetry_encode(&max_test, packet)) {
+    printf("INVALID MOTION TEST FAILED\n");
+    return 1;
+}
+
+printf("INVALID MOTION TEST PASSED\n");
 
     return 0;
 }

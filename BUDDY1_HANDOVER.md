@@ -647,12 +647,16 @@ The current single-broker configuration is intended for local development and re
 
 Merged into the thouyong branch; this client replaces the earlier backup Buddy 1 client there (app_program/buddy1_telemetry/mqtt_tel.c, removed).
 
-Telemetry V2 is now version 2, 88 bits (11 bytes): robot state 4 bits (9 controller states), barcode command 3 bits (5 commands), fault flags 8 bits (8 fault bits), plus 3 reserved bits. telemetry_codec_test.c and buddy1_mqtt_decoder.py are updated and the codec tests pass.
+Telemetry V2 is now version 2, 88 bits (11 bytes): robot state 4 bits (9 controller states), barcode command 3 bits (5 commands), fault flags 8 bits (8 fault bits), plus 3 reserved bits (from 5 Nov these carry the motion, see below). telemetry_codec_test.c and buddy1_mqtt_decoder.py are updated and the codec tests pass.
 
 Live data: lwip_utk_mqtt_poll() fills the packet through buddy1_fill_telemetry() (app_program/buddy1_telemetry/tel_source.c): controller state, wheel speeds from the encoders, run distance (wraps at 65.5 m), pending barcode command, highest ramp, sonar reading, fault bits. The hooks are declared in lib/libnet/lwip/buddy1_hooks.h.
 
 Commands reach the car: 00 START starts the full course (f: everything on, barcode commands carried out), 01 STOP stops it, 10-16 start the l, o, b, a, r runs, p prints the continuous run's log, and 16 starts c (the continuous course with barcode commands off, a lapping test). They are fed to the course test as keystrokes. (START moved from c to f on 4 Nov.)
 
 Added to the client: a last will ("0", retained, on inf2004/group27/online; "1" on connect; keep-alive 10 s), controller events on inf2004/group27/event (14 bytes each), timing figures on inf2004/group27/sys once a second, FAULT_WIFI_LOSS after 3 s without the broker (logged; the car drives on), and a Wi-Fi rejoin every 5 s in cyw43_utk.c. The periodic [wifi-debug] print is off unless BUDDY1_DEBUG=1.
+
+Barcode mapping over MQTT (5 Nov, v54): which character means which movement is no longer hard-coded. The PC publishes 3 bytes, retained, on inf2004/group27/mapping: four 6-bit indexes into "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-. $/+%" (the Code 39 characters), packed least significant bit first in the order forward (bits 0-5), U-turn (6-11), left (12-17), right (18-23). Example: forward A, U-turn Z, left B, right C = ca b8 30. The car checks that all four are Code 39 characters and different, keeps the mapping until it restarts (app_program/buddy1_telemetry/cmd_map.c), and answers on inf2004/group27/mapping/ack with the 3 bytes it now uses (FF FF FF = none yet) on every mapping it receives and on every connect. A rejected payload leaves the old mapping in place. Until a mapping arrives, barcodes are still read and logged but no command is carried out. The serial menu's m key sets it by hand.
+
+Motion in the telemetry (5 Nov, v54): the last 3 bits of the packet, reserved before, are the motion: 0 stop (no run), 1 stationary (a run with the wheels still), 2 straight, 3 turning left, 4 turning right. While following the line it comes from the line task's steering (a curve counts as a turn); otherwise from the wheel speeds. buddy1_mqtt_decoder.py prints it as Motion=.
 
 Laptop: tools/mqtt_viewer.py is a broker and viewer in one (no Mosquitto needed) with a control page on http://localhost:8080; buddy1_mqtt_decoder.py also works against it.

@@ -10,8 +10,9 @@
 #include <stdbool.h>
 
 /* 88 bits: state 4 bits (9 controller states), barcode command 3 bits
- * (5 commands), faults 8 bits (8 fault bits), 3 reserved bits to fill
- * the 11th byte. The 2-bit version field tells a decoder which layout
+ * (5 commands), faults 8 bits (8 fault bits), and the motion state in
+ * the last 3 bits (5 values; these bits were reserved before 5 Nov and
+ * read 0, "stop"). The 2-bit version field tells a decoder which layout
  * it holds (2 since the 31 Oct integration). */
 #define TELEMETRY_V2_SIZE 11U
 #define TELEMETRY_V2_VERSION 2U
@@ -30,6 +31,7 @@ typedef struct
     uint16_t obstacle_distance_mm;
     uint8_t fault_flags;
     uint8_t heartbeat;
+    uint8_t motion;          /* CTRL_MOTION_* (vehicle_ctrl.h), 0-4 */
 } telemetry_data_t;
 
 /** @brief Pack p_data into output; false if a field is out of range. */

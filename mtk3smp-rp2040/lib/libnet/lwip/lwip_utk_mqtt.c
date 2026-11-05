@@ -17,6 +17,8 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/sys.h"
 
+#include <string.h>
+
 /* Console logging function provided by the project. */
 extern int tm_printf(const unsigned char *format, ...);
 
@@ -30,6 +32,15 @@ extern int tm_printf(const unsigned char *format, ...);
 #endif
 #ifndef MQTT_TOPIC_SYS
 #define MQTT_TOPIC_SYS    "inf2004/group27/sys"
+#endif
+/* Character -> movement mapping from the laptop (3 bytes, retained so a
+ * car that connects later still gets it), and the car's confirmation of
+ * the mapping it now uses (the same 3 bytes; 0xFFFFFF = none yet) */
+#ifndef MQTT_TOPIC_MAPPING
+#define MQTT_TOPIC_MAPPING     "inf2004/group27/mapping"
+#endif
+#ifndef MQTT_TOPIC_MAPPING_ACK
+#define MQTT_TOPIC_MAPPING_ACK "inf2004/group27/mapping/ack"
 #endif
 
 /* Events sent per poll at most (the output buffer is small) */
@@ -93,6 +104,13 @@ static uint32_t g_received_command_length;
 static uint8_t g_b_command_received;
 static uint8_t g_b_command_invalid;
 
+/* The mapping being received, and its confirmation still to be sent */
+static uint8_t g_b_rx_mapping;
+static uint8_t g_b_mapping_invalid;
+static uint8_t g_mapping_rx[BUDDY1_MAPPING_LEN];
+static uint32_t g_mapping_rx_len;
+static uint8_t g_b_mapping_ack_due;
+
 static int
 command_known(uint8_t command)
 {
@@ -107,7 +125,16 @@ static void
 mqtt_incoming_publish(void *arg, const char *topic, u32_t total_length)
 {
     (void)arg;
-    (void)topic;
+
+    /* The mapping: exactly BUDDY1_MAPPING_LEN bytes */
+    g_b_rx_mapping = (NULL != topic)
+                     && (0 == strcmp(topic, MQTT_TOPIC_MAPPING));
+    if (g_b_rx_mapping)
+    {
+        g_mapping_rx_len = 0U;
+        g_b_mapping_invalid = (BUDDY1_MAPPING_LEN != total_length);
+        return;
+    }
 
     g_received_command = 0U;
     g_received_command_length = 0U;
@@ -122,6 +149,31 @@ static void
 mqtt_incoming_data(void *arg, const u8_t *data, u16_t length, u8_t flags)
 {
     (void)arg;
+
+    if (g_b_rx_mapping)
+    {
+        u16_t i;
+
+        for (i = 0U; (i < length) && (NULL != data); i++)
+        {
+            if (g_mapping_rx_len < BUDDY1_MAPPING_LEN)
+            {
+                g_mapping_rx[g_mapping_rx_len] = data[i];
+            }
+            g_mapping_rx_len++;
+        }
+        if (0U != (flags & MQTT_DATA_FLAG_LAST))
+        {
+            if (!g_b_mapping_invalid
+                && (BUDDY1_MAPPING_LEN == g_mapping_rx_len))
+            {
+                (void)buddy1_mapping(g_mapping_rx);
+            }
+            g_b_mapping_ack_due = 1U;   /* confirm what the car now uses */
+            g_b_rx_mapping = 0U;
+        }
+        return;
+    }
 
     /*
      * Preserve the first byte if valid, and count all
@@ -205,9 +257,12 @@ mqtt_connection_callback(mqtt_client_t *client, void *arg,
         (void)mqtt_publish(client, MQTT_TOPIC_ONLINE, "1", 1, 0, 1,
                            NULL, NULL);
 
-        /* Subscribe to commands from the laptop. */
+        /* Subscribe to commands and the mapping from the laptop. */
         mqtt_subscribe(client, MQTT_TOPIC_COMMAND, 0,
                        mqtt_subscribe_callback, NULL);
+        mqtt_subscribe(client, MQTT_TOPIC_MAPPING, 0,
+                       mqtt_subscribe_callback, NULL);
+        g_b_mapping_ack_due = 1U;       /* say which mapping is in use */
     }
     else
     {
@@ -407,6 +462,20 @@ lwip_utk_mqtt_poll(struct netif *netif)
                 }
                 buddy1_event_done();
                 sent++;
+            }
+        }
+
+        /* The mapping in use, after a connect or a new mapping */
+        if (g_b_mapping_ack_due)
+        {
+            uint8_t map[BUDDY1_MAPPING_LEN] = {0xFFU, 0xFFU, 0xFFU};
+
+            (void)buddy1_mapping_get(map);
+            if (ERR_OK == mqtt_publish(g_p_mqtt_client,
+                                       MQTT_TOPIC_MAPPING_ACK, map,
+                                       sizeof(map), 0, 0, NULL, NULL))
+            {
+                g_b_mapping_ack_due = 0U;
             }
         }
 
