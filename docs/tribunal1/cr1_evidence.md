@@ -103,13 +103,13 @@ The pass mark for the all-tasks test is 495 passes/s or more.
   - the aim grows by 0.08° per 20 ms while the car stays on the same side
     (for curves), up to 45°.
 
-  The wheel speed difference is the heading error / 15 (mm/s), capped at
-  60 and slew-limited.
+  Each wheel is corrected by the heading error / 15 (mm/s, so the wheels
+  differ by twice that), capped at 60 and slew-limited.
 - **Right IR alone black:** the car has overshot left, so it turns hard
   right. This lasts only while the right IR's black stretch is arm-sized
-  (≤ 35 mm), and only until the car points more than 5° right of the
-  line's direction. A black ramp beside the line can therefore no longer
-  pull the car onto it.
+  (≤ 35 mm), so a black ramp beside the line can no longer pull the car
+  onto it. The 5° cap (`LINE_R_DEV_MAX_CDEG`) only decides whether a
+  right-curve turn starts.
 - **Lost line:** the centre IR white for 100 mm triggers an on-spot search
   within ±60° of the line's direction. A search counts as successful only
   when the centre IR sees black.
@@ -160,7 +160,7 @@ The cross was detected and crossed straight in every v26/v29 run
   once from the right IR, at a corner-sized radius, for up to 90°. If the
   90° runs out, the search looks right first (v51), the curve's own
   direction.
-- **Curve exit:** the curve turn fades over about 13 mm (v36), and for
+- **Curve exit:** the curve turn fades over about 10 mm (v36), and for
   100 mm after a curve the steering is capped at ±25 (v45), so the car
   does not swing into the opposite curve.
 - **Cross or curve:** a junction needs the centre black for 10 mm past
@@ -294,8 +294,9 @@ without the skid.
      off-face step, less 17 mm (calibrated).
    - Width = left edge − right edge, measured on the wheels. The range
      stays about 190 mm, clear of the floor echo at about 290 mm.
-   - A rounded corner counts as box (v48): a reading up to about 35 mm
-     beyond the face still counts, so a rounded box is not cut short.
+   - A rounded corner counts as box (v48): a reading up to 60 mm beyond
+     the face (`PROBE_SHOULDER_MM`) still counts, so a rounded box is not
+     cut short.
 4. **Go round** (on the left):
    - square up to the line's direction, measured only on plain following
      (no curve or junction, at least 30 mm; v47);
