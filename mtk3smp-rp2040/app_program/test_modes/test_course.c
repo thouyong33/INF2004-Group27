@@ -245,7 +245,8 @@ void ctrl_test_course(void)
                   " line + barcode read only (no command)"
                   "\n[CTRL]   m = type a barcode mapping here (normally the PC"
                   " sends it over MQTT)"
-                  "\n[CTRL]   (any key while running stops it)\n", run);
+                  "\n[CTRL]   (any key stops l o a b r; s stops c and f)\n",
+                  run);
         ctrlt_print_mapping();
         console_flush_input();
         do {

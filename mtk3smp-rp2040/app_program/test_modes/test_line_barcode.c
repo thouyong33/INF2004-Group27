@@ -251,7 +251,8 @@ void barcode_test_drive(void)
                                 &white,
                               &res);
         ne = (INT)une;
-        tm_printf((UB *)"[BCD]   white %d mV (fixed threshold %d mV); %d "
+        tm_printf((UB *)"[BCD]   white %d mV (fixed margin %d mV; the "
+                        "span share is tried first); %d "
                         "elements"
                   " (B width mm/peak mV, w width mm):\n[BCD]  ",
                   white, white + BC_ON_MV, ne);
