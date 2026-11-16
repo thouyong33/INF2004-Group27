@@ -66,6 +66,10 @@ obstacle_task_main(INT stacd, void *exinf)
             hist = 0u;
             g_near_hist = 0u;
             g_last_mm = -1;
+            /* a new watch: a still-dead sonar must raise the fault (and
+             * its event) again, or the next run drives unprotected */
+            dead = 0u;
+            fault_clear(FAULT_NO_ECHO);
         }
 
         er = ultrasonic_read_us_max(&echo_us, OBS_ECHO_MAX_US);

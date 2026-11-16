@@ -67,6 +67,9 @@ static volatile int16_t g_speed = 100;
 static volatile int16_t g_max_mm = 450;
 static volatile uint8_t g_opts = 0u;
 static volatile uint8_t g_running = 0u;
+/* STOP asked (ctrl_stop): seen by the sequences too, and not lost in
+ * the start-up event drain */
+static volatile uint8_t g_stop_req = 0u;
 static volatile int16_t g_after_mm = 0;
 static bool g_b_imu_ok = false;
 static volatile bool g_b_run_imu = false;   /* IMU usable this run */
@@ -192,6 +195,15 @@ rest_attitude(int32_t *p_roll0)
     *p_roll0 = r0 / n;
     terrain_reset((int16_t)(p0 / n), (int16_t)(r0 / n));
     return true;
+}
+
+/* A sequence (junction turn, obstacle probe and avoid) ends early on a
+ * motion fault (a lift included) or a STOP */
+static bool
+seq_abort(void)
+{
+    return (0u != g_stop_req)
+           || (0u != (fault_get() & FAULT_MOTION_MASK));
 }
 
 /* Lift check (Buddy 4, terrain_lift_update): p_att / p_raw are this
@@ -333,6 +345,16 @@ heading_raw_cdeg(void)
                      / (3.14159265f * (float)TRACK_MM * 1000.0f));
 }
 
+/* How far target_mm is ahead of the car, mm. The junction's distance
+ * comes in a 16-bit event, which wraps after 32.7 m of following without
+ * a restart: the difference is taken in 16 bits so it still holds. */
+static int32_t
+ahead16_mm(int32_t target_mm)
+{
+    return (int32_t)(int16_t)(uint16_t)((uint32_t)target_mm
+                                        - (uint32_t)dist_mm());
+}
+
 /* Junction command: stop, drive on until the axle is over the junction,
  * turn on the spot to 90 deg (180 for a U-turn) from the LINE's direction:
  * at the junction the car is mid-weave, up to ~15 deg off the line, and
@@ -351,11 +373,11 @@ junction_turn(uint8_t cmd, int32_t d_seen)
     dir = line_direction_cdeg();
     line_wind_down();
     target = d_seen + CTRL_JUNC_AHEAD_MM - CTRL_JUNC_BRAKE_MM;
-    if (dist_mm() < target)
+    if (ahead16_mm(target) > 0)
     {
         (void)motion_set_velocity(CTRL_JUNC_MM_S, CTRL_JUNC_MM_S);
-        while ((dist_mm() < target) && (waited < CTRL_JUNC_FWD_MS)
-               && (0u == (fault_get() & FAULT_MOTION_MASK)))
+        while ((ahead16_mm(target) > 0) && (waited < CTRL_JUNC_FWD_MS)
+               && (!seq_abort()))
         {
             seq_wait(CTRL_PERIOD_MS);
             waited += CTRL_PERIOD_MS;
@@ -363,7 +385,7 @@ junction_turn(uint8_t cmd, int32_t d_seen)
     }
     motion_stop();
     seq_wait(300u);
-    if (0u != (fault_get() & FAULT_MOTION_MASK))
+    if (seq_abort())
     {
         return 99999;
     }
@@ -372,7 +394,9 @@ junction_turn(uint8_t cmd, int32_t d_seen)
            : ((CTRL_CMD_RIGHT == cmd) ? -9000 : 18000);
     cdeg += dir - heading_raw_cdeg();
     got = motion_turn_cdeg(cdeg, CTRL_TURN_MM_S);
-    if (((cdeg - got) > CTRL_TRIM_CDEG) || ((got - cdeg) > CTRL_TRIM_CDEG))
+    if ((!seq_abort())
+        && (((cdeg - got) > CTRL_TRIM_CDEG)
+            || ((got - cdeg) > CTRL_TRIM_CDEG)))
     {
         got += motion_turn_cdeg(cdeg - got, CTRL_TRIM_MM_S);
     }
@@ -403,7 +427,7 @@ creep_to_scan_range(void)
             }
         }
         if (((dist_mm() - d0) >= CTRL_CREEP_MAX_MM)
-            || (0u != (fault_get() & FAULT_MOTION_MASK)))
+            || seq_abort())
         {
             break;
         }
@@ -505,6 +529,10 @@ probe_turn_to(int32_t target_cdeg)
     int32_t cdeg;
     int32_t got;
 
+    if (seq_abort())
+    {
+        return;
+    }
     cdeg = target_cdeg - heading_raw_cdeg();
     got = motion_turn_cdeg(cdeg, PROBE_TURN_MM_S);
     if (((cdeg - got) > CTRL_TRIM_CDEG) || ((got - cdeg) > CTRL_TRIM_CDEG))
@@ -531,12 +559,16 @@ probe_drive(int32_t mm, int16_t mm_s)
     uint32_t waited = 0u;
     uint32_t limit_ms;
 
+    if (seq_abort())
+    {
+        return 0;
+    }
     limit_ms = (uint32_t)((mm * 1000) / mm_s) + CTRL_JUNC_FWD_MS;
     d0 = dist_mm();
     (void)motion_set_velocity(mm_s, mm_s);
     while (((dist_mm() - d0) < (mm - PROBE_BRAKE_MM))
            && (waited < limit_ms)
-           && (0u == (fault_get() & FAULT_MOTION_MASK)))
+           && (!seq_abort()))
     {
         seq_wait(CTRL_PERIOD_MS);
         waited += CTRL_PERIOD_MS;
@@ -605,7 +637,7 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t *p_ref, int32_t *p_y,
     {
         if (((side > 0) && (*p_y >= PROBE_MAX_MM))
             || ((side < 0) && (*p_y <= -PROBE_MAX_MM))
-            || (0u != (fault_get() & FAULT_MOTION_MASK)))
+            || seq_abort())
         {
             *p_capped = true;
             return y_on;
@@ -721,7 +753,7 @@ avoid_return(int32_t y)
     d0 = dist_mm();
     (void)motion_set_velocity(AVOID_MM_S, AVOID_MM_S);
     while ((moved < (target - PROBE_BRAKE_MM)) && (waited < limit_ms)
-           && (0u == (fault_get() & FAULT_MOTION_MASK)))
+           && (!seq_abort()))
     {
         if ((seen < 0)
             && (0u != (ir_read() & (IR_BIT_CENTRE | IR_BIT_RIGHT))))
@@ -763,7 +795,7 @@ avoid_obstacle(void)
     int32_t past;
     int32_t width;
 
-    if (0 >= probe_obstacle(&dir, &y, &left, &face_mm))
+    if ((0 >= probe_obstacle(&dir, &y, &left, &face_mm)) || seq_abort())
     {
         return false;
     }
@@ -788,7 +820,7 @@ avoid_obstacle(void)
     y -= avoid_return(y);
     avoid_turn_to(dir, 4u);
     log_evt(EVT_OBST_AVOID, 0u, (int16_t)y, dist_mm());
-    return 0u == (fault_get() & FAULT_MOTION_MASK);
+    return !seq_abort();
 }
 
 uint32_t
@@ -864,10 +896,18 @@ ctrl_task_main(INT stacd, void *exinf)
         g_obst_width = 0;
         g_max_ramp = 0u;
         status_set(CTRL_ST_START, EVT_NONE, flags, 0, 0, 0);
+        if (!g_b_imu_ok)
+        {
+            /* one glitch at boot must not leave the ramp height and the
+             * lift stop off until a power cycle: try again each run */
+            i2c1_init();
+            g_b_imu_ok = (E_OK == imu_init());
+        }
         b_imu_ok = g_b_imu_ok && rest_attitude(&roll0);
         if (b_imu_ok)
         {
             flags |= CTRL_FLAG_IMU_OK;
+            fault_clear(FAULT_IMU);
         }
         g_b_run_imu = b_imu_ok;
         fault_clear(FAULT_MOTION_MASK | FAULT_LINE_LOST);
@@ -890,10 +930,18 @@ ctrl_task_main(INT stacd, void *exinf)
         t_obst = 0u;
         g_dist_base = 0;
         imu_fail = 0u;
-        (void)line_follow_start(g_speed, g_max_mm);
-        if (0u != (opts & CTRL_OPT_BARCODE))
+        if (0u != g_stop_req)
         {
-            barcode_scan_enable(true);
+            log_evt(EVT_STOP_REQ, 0u, 0, 0);
+            state = CTRL_ST_DONE;       /* stopped before it moved */
+        }
+        else
+        {
+            (void)line_follow_start(g_speed, g_max_mm);
+            if (0u != (opts & CTRL_OPT_BARCODE))
+            {
+                barcode_scan_enable(true);
+            }
         }
         g_t0 = now_ms();
         t_sample = g_t0;
@@ -919,6 +967,15 @@ ctrl_task_main(INT stacd, void *exinf)
                     {
                         /* Go round it and carry on along the line */
                         t_obst = now_ms();
+                        if (b_on_ramp)
+                        {
+                            /* not across a sequence: the hump mask would
+                             * end it with a stall fault after 4 s */
+                            b_on_ramp = false;
+                            motion_set_hump_mask(false);
+                            line_set_hold(false);
+                            flags &= (uint8_t)~CTRL_FLAG_ON_RAMP;
+                        }
                         status_set(CTRL_ST_OBSTACLE, EVT_OBSTACLE, flags, d,
                                    heading_cdeg(), roll);
                         barcode_scan_enable(false);
@@ -933,7 +990,8 @@ ctrl_task_main(INT stacd, void *exinf)
                             log_evt(EVT_OBST_DONE, 0u,
                                     (int16_t)((now_ms() - t_obst) / 100u),
                                     dist_mm());
-                            state = CTRL_ST_FAULT;
+                            state = (0u != g_stop_req) ? CTRL_ST_DONE
+                                                       : CTRL_ST_FAULT;
                             break;
                         }
                         log_evt(EVT_OBST_DONE, 1u,
@@ -1013,9 +1071,24 @@ ctrl_task_main(INT stacd, void *exinf)
                     }
                     else if (CTRL_CMD_NONE != cmd)
                     {
+                        if (b_on_ramp)
+                        {
+                            /* not across a sequence: the hump mask would
+                             * end it with a stall fault after 4 s */
+                            b_on_ramp = false;
+                            motion_set_hump_mask(false);
+                            line_set_hold(false);
+                            flags &= (uint8_t)~CTRL_FLAG_ON_RAMP;
+                        }
                         status_set(CTRL_ST_TURN, EVT_JUNCTION, flags, d,
                                    heading_cdeg(), roll);
                         barcode_scan_enable(false);
+                        if (0u != (opts & CTRL_OPT_OBSTACLE))
+                        {
+                            /* the sonar sweeps the side as the car turns:
+                             * no obstacle stop from that */
+                            obstacle_watch(false);
+                        }
                         got = junction_turn(cmd, evt.val);
                         log_evt(EVT_COMMAND, cmd,
                                 (int16_t)((got > 30000) ? 30000 : got),
@@ -1023,7 +1096,11 @@ ctrl_task_main(INT stacd, void *exinf)
                         cmd = CTRL_CMD_NONE;
                         flags &= 0x0Fu;
                         requeue_events();
-                        if (0u != (fault_get() & FAULT_MOTION_MASK))
+                        if (0u != g_stop_req)
+                        {
+                            state = CTRL_ST_DONE;
+                        }
+                        else if (0u != (fault_get() & FAULT_MOTION_MASK))
                         {
                             state = CTRL_ST_FAULT;
                         }
@@ -1033,6 +1110,11 @@ ctrl_task_main(INT stacd, void *exinf)
                         }
                         else
                         {
+                            if (0u != (opts & CTRL_OPT_OBSTACLE))
+                            {
+                                obstacle_watch(true);
+                                seq_wait(CTRL_WATCH_SETTLE_MS);
+                            }
                             g_dist_base += dist_mm();
                             (void)line_follow_start(g_speed,
                                                     (g_max_mm > 0) ? g_after_mm
@@ -1075,7 +1157,8 @@ ctrl_task_main(INT stacd, void *exinf)
                 {
                     imu_fail = 0u;
                     roll = att.roll_cdeg - roll0;
-                    ev = terrain_update(d, &att, motion_is_steady(), &hump);
+                    ev = terrain_update(g_dist_base + d, &att,
+                                        motion_is_steady(), &hump);
 
                     if (0u != (ev & TERRAIN_EVT_SIDE_HUMP))
                     {
@@ -1125,6 +1208,14 @@ ctrl_task_main(INT stacd, void *exinf)
                 }
             }
 
+            if ((0u != g_stop_req) && ((CTRL_ST_FOLLOW == state)
+                                       || (CTRL_ST_RAMP == state)))
+            {
+                log_evt(EVT_STOP_REQ, 0u, 0, d);
+                line_follow_stop();
+                state = CTRL_ST_DONE;
+            }
+
             /* Picked up (the end of the demo): stop now */
             b_got = b_imu_ok && (0u == imu_fail);
             if (lift_check(b_got ? &att : NULL, b_got ? &raw : NULL,
@@ -1160,7 +1251,7 @@ ctrl_task_main(INT stacd, void *exinf)
 
         /* Stopped at an obstacle: creep in, then find both edges by
          * side-stepping (see probe_obstacle) and report its width */
-        if (CTRL_ST_OBSTACLE == state)
+        if ((CTRL_ST_OBSTACLE == state) && (0u == g_stop_req))
         {
             seq_wait(300u);
             probe_turn_to(line_clean_direction_cdeg());
@@ -1276,6 +1367,7 @@ ctrl_run(int16_t speed_mm_s, int16_t max_mm, uint8_t opts)
     g_speed = (speed_mm_s > 0) ? speed_mm_s : 1;
     g_max_mm = max_mm;
     g_opts = opts;
+    g_stop_req = 0u;
     g_running = 1u;
     return tk_set_flg(g_ctrl_flg, CTRL_FLG_RUN);
 }
@@ -1289,6 +1381,11 @@ ctrl_set_after_turn_mm(int16_t after_mm)
 void
 ctrl_stop(void)
 {
+    if (0u != g_running)
+    {
+        g_stop_req = 1u;
+        motion_stop();          /* also ends a turn on the spot */
+    }
     ctrl_evt_post(EVT_STOP_REQ, 0u, 0);
 }
 
@@ -1311,6 +1408,10 @@ ctrl_get_status(robot_status_t *p_st)
     *p_st = g_status;
     CRIT_EXIT(&g_status_lock, sts);
     p_st->motion = motion_now(p_st->state);
+    /* live, not the copy: the copy is only refreshed in the follow loop
+     * (a Wi-Fi-loss fault stayed after the link was back) */
+    p_st->faults = fault_get();
+    p_st->obstacle_mm = obstacle_last_mm();
 }
 
 uint32_t

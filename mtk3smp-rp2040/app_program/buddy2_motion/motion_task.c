@@ -200,6 +200,7 @@ static uint32_t g_last_pi_ms = 0u;
 
 /* Safety */
 static volatile uint8_t g_stop_req = 0u;    /* byte store: no lock needed */
+static volatile uint32_t g_stop_count = 0u; /* motion_stop() calls, ever */
 static volatile uint8_t g_hump_mask = 0u;
 static uint32_t g_settled_ms = 0u;          /* settled for this long */
 static uint32_t g_stall_ms = 0u;
@@ -415,12 +416,16 @@ mm_s_to_eps(int32_t mm_s)
     return (mm_s * 1000L) / UM_PER_EDGE;
 }
 
-/* Restart a wheel's loop from its current speed so switching mode or
- * target does not kick the motor. */
+/* Restart a wheel's loop from rest when closed loop is (re)entered, so the
+ * setpoint ramps up from 0. meas_eps is only updated while the loop runs:
+ * after a fault stop (open loop) it still held the speed before the fault,
+ * and seeding from it drove the wheels at that speed again (bug hunt,
+ * 16 Nov). Closed loop is only entered from rest on the car. */
 static void
 pi_reset(wheel_pi_t *p_pi, int32_t count_now)
 {
-    p_pi->setpoint_eps = p_pi->meas_eps;
+    p_pi->meas_eps = 0;
+    p_pi->setpoint_eps = 0;
     p_pi->integ_x10 = 0;
     p_pi->last_count = count_now;
 }
@@ -862,8 +867,10 @@ motion_task_main(INT stacd, void *exinf)
             && ((0u == (fault_get() & FAULT_MOTION_MASK))
                 || ((0 == cmd.left_speed) && (0 == cmd.right_speed))))
         {
-            /* While a motion fault is latched only zero commands pass */
-            if (0u != cmd.closed_loop)
+            /* While a motion fault is latched only zero commands pass, and
+             * they stop in open loop: closed loop is not re-entered */
+            if ((0u != cmd.closed_loop)
+                && (0u == (fault_get() & FAULT_MOTION_MASK)))
             {
                 if (!g_b_closed_loop)
                 {
@@ -1050,6 +1057,7 @@ motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s)
 void
 motion_stop(void)
 {
+    g_stop_count++;          /* a turn in progress watches this */
     g_stop_req = 1u;
 }
 
@@ -1347,8 +1355,8 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
  * scales with speed: ~1.5 deg at 60 mm/s, ~1 deg at 40 mm/s (scan turns,
  * 2026-10-22), so 2.5 cdeg per mm/s. Then waits for the wheels to settle.
  * Returns the angle turned (x0.01 deg), or 0 if cdeg is under 0.5 deg.
- * A motion fault or the 6 s timeout returns the angle so far. STOP from
- * another task is not watched: the turn runs on to its target or timeout.
+ * A motion fault, a motion_stop() from another task or the 6 s timeout
+ * returns the angle so far.
  */
 #define TURN_TRACK_MM             114L
 #define TURN_BRAKE_CDEG_PER_MM_S  5L    /* /2: 2.5 cdeg per mm/s */
@@ -1383,6 +1391,7 @@ motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s)
     int16_t v = (int16_t)speed_mm_s;
     int32_t brake = ((int32_t)speed_mm_s * TURN_BRAKE_CDEG_PER_MM_S) / 2L;
     uint32_t waited = 0u;
+    uint32_t stops0 = g_stop_count;
 
     if ((cdeg > -50) && (cdeg < 50))
     {
@@ -1408,7 +1417,8 @@ motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s)
         a = turn_angle_cdeg(l0, r0);
         if (((cdeg > 0) && (a >= (cdeg - brake)))
             || ((cdeg < 0) && (a <= (cdeg + brake)))
-            || (0u != (fault_get() & FAULT_MOTION_MASK)))
+            || (0u != (fault_get() & FAULT_MOTION_MASK))
+            || (stops0 != g_stop_count))
         {
             break;
         }

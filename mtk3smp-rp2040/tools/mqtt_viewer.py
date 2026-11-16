@@ -94,7 +94,8 @@ TOPIC = "inf2004/group27/"
 TELEMETRY_LEN = 11
 EVENT_FMT = "<IiBBhH"             # 14 bytes
 SYS_FMT = "<HIHHHH"               # 14 bytes
-RUN_STATES = (1, 2, 3, 5, 8)      # START FOLLOW RAMP OBSTACLE TURN
+# A run is on while the car reports a motion other than STOP (0): the
+# state alone cannot tell, an o run also ends in OBSTACLE (5)
 KEYS = "lobacrspf"
 # BARCODE event val >> 1 (barcode.h BC_CUT_*)
 CUT_TEXT = {1: ", last bar missing", 2: ", first bar missing"}
@@ -246,12 +247,13 @@ class Viewer:
         self.log("telemetry", [t[k] for k in ("state", "left", "right",
                  "dist_mm", "cmd", "hump", "obst_mm", "faults",
                  "heartbeat")])
-        if state in RUN_STATES and self.run is None:
+        running = t["motion"] != 0
+        if running and self.run is None:
             self.run = {"rate": None, "pass": 0, "busy": 0, "gap": 0,
                         "samples": None}
             self.dist_wraps = 0           # a new run starts again from 0
             self.last_dist = None
-        elif state not in RUN_STATES and self.run is not None:
+        elif not running and self.run is not None:
             self.run_summary()
         # a drop of more than half the range is a wrap, not a new run
         if self.last_dist is not None \
@@ -263,7 +265,7 @@ class Viewer:
         if now > self.first_status + 1:
             rate_now = self.status_count / (now - self.first_status)
         HUB.send({"t": "status", "state": name(STATES, state),
-                  "running": state in RUN_STATES,
+                  "running": running,
                   "total_m": t["dist_mm"] / 1000.0,
                   "left": t["left"], "right": t["right"],
                   "sonar": obst, "ramp": t["hump"],
@@ -462,6 +464,14 @@ class Session:
             wt, i = self.string(body, i)
             wm, i = self.string(body, i)
             self.will = (wt.decode(), wm, bool(flags & 0x20))
+        # MQTT: a new connection with the same client id replaces the old
+        # one, without its will. Otherwise a car that reconnects before the
+        # old session's keep-alive runs out is marked offline by that will.
+        for old in list(self.broker.sessions):
+            if old is not self and old.client_id == self.client_id:
+                old.will = None
+                self.broker.sessions.discard(old)
+                old.writer.close()
         if self.is_car():
             HUB.send({"t": "car", "up": True})
         say("[broker] %s connected from %s (MQTT level %d, keep-alive %d s)"
@@ -616,7 +626,8 @@ class Web:
                            json.dumps({"ok": ok}).encode())
             elif method == "POST" and path == "/mapping" \
                     and headers.get("x-car") == "1":
-                chars = body.decode(errors="replace").strip()
+                # only line ends: a space is a valid Code 39 character
+                chars = body.decode(errors="replace").strip("\r\n")
                 ok = self.broker.mapping(chars)
                 self.reply(writer, "200 OK", "application/json",
                            json.dumps({"ok": ok}).encode())

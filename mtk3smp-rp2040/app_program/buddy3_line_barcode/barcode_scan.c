@@ -295,6 +295,22 @@ bcs_task_main(INT stacd, void *exinf)
                     line_set_straight(false);
                     finish(n, quiet,
                            (cap_start - last_end) >= ARM_CLEAR_STEPS);
+                    if (quiet < quiet_need)
+                    {
+                        /* Ended full, never quiet: the white level itself
+                         * rose (a grey patch), which the tracking above
+                         * never follows up by more than BC_OFF_MV. Take the
+                         * lowest of the last stretch as white, or every
+                         * capture from here would run to the end again. */
+                        white = 0xFFFFu;
+                        for (i = n - (uint32_t)BCS_QUIET_STEPS; i < n; i++)
+                        {
+                            if (g_buf[i] < white)
+                            {
+                                white = g_buf[i];
+                            }
+                        }
+                    }
                     last_end = k;
                     b_capturing = false;
                     lead_n = 0u;

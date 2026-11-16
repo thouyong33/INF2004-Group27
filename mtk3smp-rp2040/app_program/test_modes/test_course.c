@@ -212,6 +212,7 @@ void ctrl_test_course(void)
     static bc_elem_t bel[BC_MAX_ELEMS];
     robot_status_t st;
     INT run, c, n, i, k, ns;
+    INT next = -1;            /* a run key pressed at the end of a run */
     BOOL b_cont;
     uint32_t rate, rate_min, pass, pass_max;
     uint32_t fails0, nf, f;
@@ -248,12 +249,17 @@ void ctrl_test_course(void)
                   "\n[CTRL]   (any key stops l o a b r; s stops c and f)\n",
                   run);
         ctrlt_print_mapping();
-        console_flush_input();
-        do {
-            c = console_try_getc();
-            tk_dly_tsk(50);
-        } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a')
-                && (c != 'c') && (c != 'f') && (c != 'r') && (c != 'm'));
+        if(next >= 0) {
+            c = next;
+            next = -1;
+        } else {
+            console_flush_input();
+            do {
+                c = console_try_getc();
+                tk_dly_tsk(50);
+            } while((c != 'l') && (c != 'o') && (c != 'b') && (c != 'a')
+                    && (c != 'c') && (c != 'f') && (c != 'r') && (c != 'm'));
+        }
         if(c == 'm') {
             ctrlt_type_mapping();
             run--;                   /* not a run: show the menu again */
@@ -269,7 +275,19 @@ void ctrl_test_course(void)
                : ((c == 'r') ? (CTRL_OPT_BARCODE | CTRL_OPT_NO_CMD)
                : ((c == 'b') ? CTRL_OPT_BARCODE : 0u)))));
         tk_dly_tsk(500);
+        /* drop what came in meanwhile (serial noise), but not a STOP:
+           MQTT START then STOP within the half second must not start */
+        k = -1;
+        while((k = console_try_getc()) >= 0) {
+            if(k == 's') {
+                break;
+            }
+        }
         console_flush_input();
+        if(k == 's') {
+            tm_printf((UB *)"[CTRL] stopped before the run started\n");
+            continue;
+        }
 
         fails0 = barcode_scan_fail_count();
         cpu_meter_reset();
@@ -310,11 +328,18 @@ void ctrl_test_course(void)
         ctrl_get_status(&st);
         if(b_cont) {
             /* The log stays in RAM: reconnect the serial wire, then ask */
-            tm_printf((UB *)"[CTRL] run ended; press p to print the log\n");
+            tm_printf((UB *)"[CTRL] run ended; press p to print the log"
+                            " (or a run key to start the next run)\n");
             do {
                 k = console_try_getc();
                 tk_dly_tsk(50);
-            } while(k != 'p');
+            } while((k != 'p') && (k != 'l') && (k != 'o') && (k != 'a')
+                    && (k != 'b') && (k != 'r') && (k != 'f') && (k != 'c'));
+            if(k != 'p') {
+                /* a START from the page: run it, the log is skipped */
+                next = k;
+                continue;
+            }
         }
 
         tm_printf((UB *)"[CTRL] run %d (%s): %s at %d mm, heading %d x0.01 deg,"
