@@ -7,8 +7,8 @@
  *
  * Echo timing polls the RP2040 hardware microsecond timer (no
  * interrupts). A reading blocks the caller for up to the echo timeout, so
- * call it from a task that may busy-wait, and give that task a priority at
- * least as high as anything that must not stretch the measured pulse.
+ * call it from a task that may busy-wait. The obstacle task pings below
+ * the motor loop on purpose; its 2-of-3 stop vote absorbs a long ping.
  */
 
 #ifndef BUDDY5_ULTRASONIC_H

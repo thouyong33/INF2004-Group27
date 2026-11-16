@@ -148,9 +148,10 @@ void ir_test_log(void)
 /* Buddy 3 barcode step 2: driven scan with the slit-taped left IR. The car
    drives itself straight at BCD_MM_S for BCD_DIST_MM with the barcode
    under the left IR, storing the left AO once per encoder step (0.33 mm):
-   constant speed and height, unlike the hand-pushed passes. Decoder v2
-   (barcode.c, 24 Oct): threshold just above white, bars and spaces split
-   into narrow/wide separately, "*...*" searched both ways. Printed after
+   constant speed and height, unlike the hand-pushed passes. Decoder
+   (barcode.c): a share of the white-to-dark span first, then a fixed
+   margin above white; "*...*" searched both ways, one bar short
+   accepted at either end. Printed after
    the car stops: levels, every bar (width, peak) and space, the decode,
    and the profile every 1 mm. */
 #define BCD_MM_S                 50

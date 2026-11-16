@@ -2,10 +2,11 @@
  * @file ir_sensor.h
  * @brief Buddy 3: the three IR reflectance modules, digital outputs only.
  *
- * Layout (photo 2026-10-12): centre (GP4) and right (GP26) sit on the
- * front bracket ~10 mm apart, centred on the car, both inside the 18 mm
- * line when on track. Left (GP6) hangs out beside the left wheel and is
- * the only barcode reader; it also sees the left arm of a cross junction.
+ * Layout: centre (GP4) and right (GP26) sit on the front bracket 20 mm
+ * apart; the centre rides the 18 mm line's right edge and the right one
+ * is over white on a plain line. Left (GP6) hangs out beside the left
+ * wheel and is the only barcode reader; it also sees the left arm of a
+ * cross junction.
  *
  * Each module's comparator output reads 1 over black (no reflection) and
  * 0 over white, as found with the earlier Pico SDK test; the bring-up test

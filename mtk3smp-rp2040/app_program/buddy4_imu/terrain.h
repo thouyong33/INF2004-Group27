@@ -4,14 +4,14 @@
  *
  * Feed one attitude sample per control period with the distance travelled
  * (from the wheel encoders) and whether the car is at steady speed. The
- * detector reports a hump once the car has come off it, with its height,
- * and a collision on a sharp horizontal jolt.
- *
- * Hump method (validated 2026-10-09 on 1.0 / 2.4 cm ramps at 200 mm/s,
- * estimates 12 / 24 mm): the castor floats while the drive wheels climb,
- * then lands; while the wheels come down the far side the nose tips down
- * by asin(h / 80 mm). Height = 80 mm x sin(most nose-down mean over 30 mm
- * of travel), on pitch smoothed over 7 samples.
+ * detector reports a one-sided (side) hump and a full-width hump once the
+ * car has come off them, with their height, and a collision on a sharp
+ * horizontal jolt. The course uses the side hump: the car rolls, and
+ * height = 114 mm x sin(most-tilted 30 mm roll mean) (terrain.c).
+ * The pitch (full-width) hump is the earlier method, kept for
+ * terrain_on_hump(): height = 80 mm x sin(most nose-down 30 mm mean), on
+ * pitch smoothed over 7 samples (2026-10-09: 1.0 / 2.4 cm ramps read
+ * 12 / 24 mm).
  */
 
 #ifndef BUDDY4_TERRAIN_H
@@ -63,7 +63,7 @@ void terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg);
  * @param p_att     attitude from imu_read_attitude()
  * @param p_cal     calibrated sample from the same read (for the jolt)
  * @param steady    true while driving at constant speed: speeding up or
- *                  braking reads as tilt, so humps are only armed then
+ *                  braking reads as pitch, so only pitch humps wait for it
  * @param p_hump    filled when TERRAIN_EVT_HUMP is returned
  * @param p_coll    filled when TERRAIN_EVT_COLLISION is returned
  * @return TERRAIN_EVT_* flags for events completed by this sample

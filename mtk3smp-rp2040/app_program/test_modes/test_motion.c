@@ -17,8 +17,8 @@
 #if MOTION_TEST_MODE == MOTION_TEST_SAFETY
 /* Phase 1 check (Tribunal 1): car LIFTED, wheels free. Key-paced parts:
    A timing and PI error, B STOP with commands queued, C stall (hold both
-   wheels), D encoder plausibility (hold one wheel). Nothing is printed
-   while the wheels turn. */
+   wheels), D encoder plausibility (hold one wheel), E 10 s free running
+   at 300 mm/s (no false trip). Nothing is printed while the wheels turn. */
 LOCAL UW safe_now_ms(void)
 {
     SYSTIM tim;
@@ -237,7 +237,7 @@ LOCAL void motion_pi_steps(const char *name, const int16_t *steps, INT n)
     motion_trace_dump();
 
     for(i = 0; i < n; i++) {
-        /* edges over PI_MEASURE_MS -> mm/s at 322 um/edge */
+        /* edges over PI_MEASURE_MS -> mm/s at 328 um/edge */
         l_mm_s = (INT)(((l1[i].hw_count - l0[i].hw_count) * 1000
                         / PI_MEASURE_MS)
                        * SWEEP_UM_PER_EDGE / 1000);

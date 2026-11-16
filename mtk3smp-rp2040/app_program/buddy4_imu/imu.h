@@ -58,8 +58,8 @@ ER imu_read_raw(imu_raw_t *p_raw);
 /**
  * @brief Read one calibrated sample.
  * Car frame: X forward, Y right, Z down; at rest upright a = (0, 0, -1000) mg.
- * Accel: 6-face offset/scale (step 3). Mag: hard-iron offset and soft-iron
- * Y scale (step 4); still in counts.
+ * Accel: 6-face offset/scale. Mag: hard-iron offset and soft-iron
+ * Y scale; still in counts.
  */
 ER imu_read_cal(imu_raw_t *p_sample);
 

@@ -3,8 +3,8 @@
  * @brief Buddy 4: polled I2C1 master and LSM303D access.
  *
  * The RP2040 I2C block is a Synopsys DW_apb_i2c. This driver polls its
- * status registers; timeouts use the kernel clock (1 ms tick), because the
- * RP2040 hardware microsecond TIMER is held in reset by this port.
+ * status registers; timeouts use the kernel clock (1 ms tick), so they do
+ * not depend on ultrasonic_init() having started the hardware TIMER.
  */
 
 #include <stdint.h>

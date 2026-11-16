@@ -20,13 +20,15 @@
  *                            per sensor (encoder distance, motors off).
  *   MOTION_TEST_SAFETY     - Tribunal 1 phase 1, car lifted: loop rate and
  *                            PI error, STOP over queued commands, stall
- *                            (both wheels held), encoder check (one held).
+ *                            (both wheels held), encoder check (one held),
+ *                            no false trips running free.
  *   MOTION_TEST_CPU        - motion task CPU (busy us/s, longest pass) idle
  *                            and at 150/300/500 mm/s, and stack high-water.
  *   CTRL_TEST_COURSE       - vehicle controller task: course runs picked by
  *                            key (l line + ramp, o obstacle stop, a go
  *                            round it, b barcode command, r barcode read,
- *                            c the whole course), then the event log,
+ *                            f full course, c lapping test (commands
+ *                            off), m type the mapping), then the event log,
  *                            robot_status every 500 ms and the line trace.
  *   BARCODE_TEST_DRIVE     - Buddy 3 barcode: driven scan (50 mm/s) of the
  *                            slit-taped left IR AO, decoder v2 (barcode.c)

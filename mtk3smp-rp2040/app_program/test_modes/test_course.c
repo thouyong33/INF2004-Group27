@@ -1,8 +1,7 @@
 /*
  * test_course.c
- * Vehicle controller course runs (l / o / b keys).
- * Built only when MOTION_TEST_MODE (test_modes.h) selects one of these modes;
- * moved out of app_main.c unchanged on 28 Oct 2026.
+ * Vehicle controller course runs (keys l o a b r f c, m for the mapping).
+ * Built only when MOTION_TEST_MODE (test_modes.h) selects one of these modes.
  */
 
 #include "test_common.h"
@@ -15,6 +14,11 @@
      o  line following + obstacle stop (block on the line, >= 5 cm gap)
      b  line following + barcode on the straight, command at the cross
         (turns stop the run: the test mats have nothing past the cross)
+     a  as o, then go round it on the left and rejoin the line
+     r  line following + barcode read only (no command)
+     f  full course, no distance limit, barcode commands carried out
+     c  as f with barcode commands off (lapping test)
+     m  type a barcode mapping (normally sent over MQTT)
    The controller runs everything; this task only starts runs, samples
    robot_status every 500 ms like Buddy 1's telemetry will (kept, printed
    after the run: no printing while the wheels turn), and prints the

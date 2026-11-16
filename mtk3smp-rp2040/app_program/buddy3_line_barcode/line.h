@@ -4,7 +4,8 @@
  *
  * The centre (GP4) and right (GP26) spots are 20 mm apart, wider than the
  * 18 mm line (user, 2026-10-23), so the centre rides the line's RIGHT EDGE
- * and the right one only ever sees black on a junction arm:
+ * and the right one sees black only on a junction arm, a right curve, or
+ * when the car has overshot the line to the left:
  *   C R
  *   1 0  centre on the line  -> steer right, toward the edge
  *   0 0  centre on the white -> steer left, toward the edge
@@ -40,7 +41,7 @@
 /** One 20 ms control period, recorded for tests */
 typedef struct {
     int16_t d_mm;            /**< distance travelled since the start */
-    int16_t corr;            /**< wheel speed difference, mm/s, + = left */
+    int16_t corr;            /**< per-wheel correction, mm/s, + = left */
     int16_t trim;            /**< curve feed-forward, mm/s, + left */
     uint8_t bits;            /**< IR_BIT_LEFT/CENTRE/RIGHT at this period */
     uint8_t searching;       /**< LINE_TR_FOLLOW / SEARCH / HOLD */
@@ -76,8 +77,8 @@ void line_follow_stop(void);
  * @brief Ramp hold (Buddy 4 says the car is on the one-sided ramp). While
  * set, the line task ignores the IR (tilted, it reads false black) and
  * drives straight along the line's direction on the encoders. 50 mm after
- * the hold is released it follows the line again; if neither the centre
- * nor the right IR sees it then, it searches on the spot within +/-45 deg
+ * the hold is released it follows the line again; if the centre does
+ * not see it then, it searches on the spot within +/-45 deg
  * of that direction (FAULT_LINE_LOST if not found).
  * The line need not be followed on the ramp (course rule, user 2026-10-24).
  */
@@ -103,8 +104,8 @@ int32_t line_direction_cdeg(void);
 int32_t line_clean_direction_cdeg(void);
 
 /** Following the line: straight or a curve turn (the feed-forward
- * curve_ff in line.c); OTHER while searching, on the ramp hold or not
- * following */
+ * curve_ff in line.c); OTHER while searching or on the ramp hold. Kept
+ * from the last period once following ends (check the state too) */
 #define LINE_TURN_STRAIGHT   0
 #define LINE_TURN_LEFT       1
 #define LINE_TURN_RIGHT      (-1)

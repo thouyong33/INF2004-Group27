@@ -25,9 +25,9 @@
 static ID g_obs_tsk = 0;
 static ID g_obs_flg = 0;      /* OBS_FLG_WATCH */
 
-/* Shared with other tasks: one byte each, written only by the obstacle
- * task. The history byte is replaced whole (never read-modify-written by
- * readers), so a plain load is a consistent snapshot. */
+/* Shared with the controller: obstacle_watch(true) also clears
+ * g_near_hist and sets g_reset_req; g_last_mm is 16 bits, one store.
+ * Each is replaced whole, so a plain load is a consistent snapshot. */
 static volatile uint8_t g_near_hist = 0u;
 static volatile int16_t g_last_mm = -1;
 static volatile uint8_t g_reset_req = 0u;

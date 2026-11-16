@@ -4,8 +4,8 @@
  * lib/libnet/lwip/buddy1_hooks.h, used by the MQTT client in
  * lwip_utk_mqtt.c).
  *
- * Called from the radio task. It only copies under the controller's and
- * the motion task's own locks, so it never waits on the control loop.
+ * Called from the radio task. It copies published values (short locks or
+ * lock-free reads), so it never waits on the control loop.
  * Built only with WIFI_MQTT=1.
  */
 

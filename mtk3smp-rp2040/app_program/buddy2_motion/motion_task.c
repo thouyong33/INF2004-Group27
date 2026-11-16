@@ -11,7 +11,7 @@
  *   never waits behind queued commands. A stall or a silent encoder raises
  *   a bit in the shared fault mask and stops the motors until cleared.
  * - Nothing in the loop prints: a UART print blocks for milliseconds and
- *   would stretch the 1 ms control period. Counts shared with other tasks
+ *   would stretch the 2 ms control period. Counts shared with other tasks
  *   are written and read inside a short critical section.
  */
 
@@ -207,7 +207,7 @@ static uint32_t g_enc_l_silent_ms = 0u;
 static uint32_t g_enc_r_silent_ms = 0u;
 static uint32_t g_hump_ms = 0u;            /* driven with the mask on */
 
-/* Loop rate: passes of the 1 ms loop counted over LOOP_RATE_WINDOW_MS */
+/* Loop rate: passes of the 2 ms loop counted over LOOP_RATE_WINDOW_MS */
 static volatile uint32_t g_loop_rate = 0u;
 
 /* CPU evidence: time the loop spends working (not sleeping), from the
@@ -1346,9 +1346,9 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
  * early by the distance the car coasts after the stop command, which
  * scales with speed: ~1.5 deg at 60 mm/s, ~1 deg at 40 mm/s (scan turns,
  * 2026-10-22), so 2.5 cdeg per mm/s. Then waits for the wheels to settle.
- * Returns the
- * angle actually turned, or 0 if a motion fault, STOP from another task
- * or the timeout ended it early (the angle so far is still returned).
+ * Returns the angle turned (x0.01 deg), or 0 if cdeg is under 0.5 deg.
+ * A motion fault or the 6 s timeout returns the angle so far. STOP from
+ * another task is not watched: the turn runs on to its target or timeout.
  */
 #define TURN_TRACK_MM             114L
 #define TURN_BRAKE_CDEG_PER_MM_S  5L    /* /2: 2.5 cdeg per mm/s */

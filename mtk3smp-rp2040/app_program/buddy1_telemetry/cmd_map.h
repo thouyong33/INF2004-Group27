@@ -16,7 +16,8 @@
  * mapping arrives every character maps to no movement.
  *
  * The mapping is one 32-bit word (a character per byte), written by the
- * radio task and read by the controller: a single aligned load or store,
+ * radio task or the test menu's m key and read by the controller and the
+ * menu: a single aligned load or store,
  * so a reader never sees half of an update.
  */
 

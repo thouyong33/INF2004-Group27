@@ -24,7 +24,7 @@
  * line's direction (line_dir, the heading averaged over LINE_DIR_MM):
  * C black -> right of it, C white -> left, by LINE_BIAS_CDEG, growing
  * LINE_BIAS_GROW_CDEG a period while it stays on the same side, up to
- * LINE_BIAS_MAX_CDEG. The wheel speed difference is the heading error /
+ * LINE_BIAS_MAX_CDEG. The per-wheel correction is the heading error /
  * LINE_HDG_GAIN_DIV, so when C changes side the error flips at once and
  * the car turns back at once. Steering straight from the IR reading
  * instead (a wheel difference that grew while C stayed on one side)
@@ -73,10 +73,10 @@
  * to the left, and a hard right brings it back. This is the weave's normal
  * recovery; without it the car lost the line and searched on nearly every
  * run. A black ramp beside the line reads the same, so the hard right only
- * lasts while R's black stretch is arm-sized and stops once the heading is
- * LINE_R_DEV_MAX_CDEG right of the line's direction (without the cap it
- * turned 13 deg right onto a ramp). Past that it counts as "centre on the
- * white" or straight. */
+ * lasts while R's black stretch is arm-sized (LINE_R_ONLY_MAX_MM).
+ * LINE_R_DEV_MAX_CDEG only decides whether the right-curve turn starts
+ * (without a cap it turned 13 deg right onto a ramp). Past the arm size
+ * it counts as "centre on the white" or straight. */
 #define LINE_R_ONLY_MAX_MM   35
 #define LINE_R_DEV_MAX_CDEG  500
 /* Centre white this far (steering left): lost, so search. A swing back
@@ -97,7 +97,7 @@
  *     car has already turned LINE_R_DEV_MAX_CDEG right; grows while C or
  *     R alone is black. Starting on a long C-black stretch instead also
  *     fired on plain straights.
- * The fade is quick (~13 mm). A slow fade (~40 mm) carried the turn past
+ * The fade is quick (~10 mm). A slow fade (~40 mm) carried the turn past
  * the straight, the white that followed started a curve the other way,
  * and the weave grew at every swing.
  * While a curve turn is on, the reference direction follows the car and
@@ -158,7 +158,7 @@
  * toward the side the line was last seen, so a perpendicular junction arm
  * is never taken (a wider search on the ramp mats picked up a cross arm) */
 #define SEARCH_HALF_CDEG     6000    /* line lost while following */
-#define SEARCH_RAMP_CDEG     4500    /* line not under C/R right after a ramp */
+#define SEARCH_RAMP_CDEG     4500    /* line not under C right after a ramp */
 #define SEARCH_TIMEOUT_MS    8000u
 /* trace a search this often (keeps the trace short) */
 #define SEARCH_TRACE_MS      200u
@@ -279,7 +279,7 @@ heading_cdeg(void)
     return turned_cdeg(0, 0);
 }
 
-/* Turn on the spot until either centre or right sees the line, or the
+/* Turn on the spot until the centre sees the line, or the
  * heading reaches to_cdeg (absolute, since the start of following).
  * Returns true if found (car stopped). */
 static bool
@@ -603,7 +603,7 @@ line_task_main(INT stacd, void *exinf)
                 continue;
             }
 
-            /* Just off the ramp and the line is not under C or R: search
+            /* Just off the ramp and the centre does not see the line: search
              * on the spot now, only within +/-45 deg of the line's
              * direction (steering left blind could reach a junction arm) */
             if (b_after_hold)
@@ -675,8 +675,8 @@ line_task_main(INT stacd, void *exinf)
              *   1 0  centre on the line   -> steer right, toward the edge
              *   0 0  centre on the white  -> steer left, toward the edge
              *   0 1  line under the right spot (car overshot left) -> hard
-             *        right, limited by LINE_R_ONLY_MAX_MM and
-             *        LINE_R_DEV_MAX_CDEG (a black ramp beside the line)
+             *        right while R's black is arm-sized
+             *        (LINE_R_ONLY_MAX_MM: a black ramp beside the line)
              *   1 1  black under both: a junction arm (the right spot is
              *        20 mm out over white on a plain line) -> straight on,
              *        unless R has been black longer than an arm (a ramp
@@ -822,7 +822,7 @@ line_task_main(INT stacd, void *exinf)
                 last_side = 1;           /* default: the line is to the left */
             }
 
-            /* Target heading beside the line's direction (see LINE_BIAS):
+            /* Target heading beside the line's direction (LINE_BIAS_CDEG):
              * the bias grows the longer it stays on one side (curves) and
              * restarts small whenever the side changes */
             if (off != prev_off)

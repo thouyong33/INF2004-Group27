@@ -20,7 +20,7 @@
  *   7          host talking, enumeration not completing
  *   8          fully enumerated (plain 2 Hz blink)
  * On the UART console build the level is always 8.
- * If any console call blocks, this task stops and the LED freezes entirely.
+ * It makes no console call; only tm_usb_diag_level() (port) is read.
  */
 
 #include <stdint.h>

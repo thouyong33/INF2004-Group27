@@ -43,7 +43,8 @@
 #define BC_DARK_PCTL         90u     /**< "dark" level percentile of a read */
 #endif
 #define BC_MAX_ELEMS         64u
-#define BC_MAX_TEXT          6u      /**< data characters between the stars */
+/** data characters between the stars (4 in practice: BC_MAX_ELEMS) */
+#define BC_MAX_TEXT          6u
 
 /** One bar or space */
 typedef struct {
@@ -71,7 +72,7 @@ typedef struct {
  * @brief Split a profile into bars and spaces, without the white lead-in
  * and lead-out. Returns the number of elements (at most max).
  * @param p_white set to the white level used (10th percentile)
- * @param span_thr also use the BC_ON_PCT/BC_OFF_PCT share of the
+ * @param b_span_thr also use the BC_ON_PCT/BC_OFF_PCT share of the
  *        white-to-dark span when that is above the fixed margin
  */
 uint32_t barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,

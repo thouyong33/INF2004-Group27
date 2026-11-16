@@ -104,8 +104,9 @@ void motion_stop(void);
 void motion_set_hump_mask(bool b_on_hump);
 
 /**
- * @brief Passes of the 1 ms motion loop per second, over the last second.
- * About 995 or more means the loop keeps its period (timing evidence).
+ * @brief Passes of the motion loop per second, over the last second.
+ * About 500 means the loop keeps its period (2 ms: tk_dly_tsk(1) sleeps
+ * one full tick) (timing evidence).
  */
 uint32_t motion_loop_rate(void);
 

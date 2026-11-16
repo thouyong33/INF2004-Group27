@@ -9,10 +9,11 @@
  * for a larger-scale code: 4 x its narrowest bar, up to 30 mm), then
  * decodes (barcode.c) and posts EVT_BARCODE to the controller:
  *   arg = the character ('A', 'Z', ...) or 0 if nothing decoded,
- *   val = 1 if read backwards in the travel direction (0 forward), or,
- *         when nothing decoded, the number of bars and spaces seen.
+ *   val bit 0 = read backwards in the travel direction, bits 1-2 =
+ *         BC_CUT_*; when nothing decoded, the number of bars and spaces.
  * A junction arm or the line under the left IR posts a failed read
- * (arg 0); the controller just logs it.
+ * (arg 0), which the controller logs; a lone 10-35 mm bar also posts
+ * EVT_JUNCTION arg 1 (left IR).
  */
 
 #ifndef BUDDY3_BARCODE_SCAN_H

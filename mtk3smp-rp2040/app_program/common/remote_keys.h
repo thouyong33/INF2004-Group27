@@ -1,7 +1,8 @@
 /**
  * @file remote_keys.h
- * @brief Keys typed on the laptop (Buddy 1, topic car27/cmd), fed into the
- * console input so the test menus treat them like serial keystrokes.
+ * @brief Keys typed on the laptop (Buddy 1, topic
+ * inf2004/group27/command), fed into the console input so the test menus
+ * treat them like serial keystrokes.
  *
  * Plain C types only: called from the radio task's lwIP side, which must
  * not include tk/tkernel.h (see the size_t note in cyw43_utk.h).

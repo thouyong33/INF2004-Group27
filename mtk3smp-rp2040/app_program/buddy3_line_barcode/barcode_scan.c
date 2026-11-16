@@ -16,10 +16,11 @@
 #include "barcode_scan.h"
 #include "line.h"
 
-/* Lowest of the car's tasks: the ADC poll is short, and a few ms late
+/* Lowest of the control tasks (8, shared with wifi_status): the ADC
+ * poll is short, and a few ms late
  * only repeats one reading over the steps passed meanwhile */
 #define BCS_TASK_PRI         8u
-#define BCS_STACK_SIZE       1024u   /* barcode_decode: 512 B histogram */
+#define BCS_STACK_SIZE       1024u   /* barcode_read: 512 B histogram */
 #define BCS_FLG_RUN          (1u << 0)
 #define BCS_POLL_MS          1u      /* tk_dly_tsk(1) = 2 ms */
 
@@ -34,7 +35,7 @@
 /* End of a code: white for BCS_QUIET_MM, or for BCS_QUIET_NARROW_X times
  * the narrowest bar seen so far if that is longer (up to BCS_QUIET_MAX_MM).
  * A wide space is 3 narrow at any scale (1:3), so at the A4 scale (wide
- * space 18 mm) a fixed 15 mm cut codes into pieces; one piece could even
+ * space 18 mm) a fixed cut under 18 mm splits codes; one piece could even
  * look like a cross arm. Bars under BCS_BAR_MIN_STEPS are noise. */
 #define BCS_QUIET_NARROW_X   4u
 #define BCS_QUIET_MAX_MM     30
@@ -60,7 +61,7 @@
  * of the centreline, so its own speed along the barcode swings by tens of
  * mm/s around the centre's 100 mm/s: bar widths measured with the centre
  * distance came out distorted and no read decoded (line runs, 24 Oct).
- * Along the heading, s_IR = s_centre - theta * 80, theta = (sR - sL) / 114:
+ * Along the heading, s_IR = s_centre - theta * 65, theta = (sR - sL) / 114:
  * s_IR = sL * (0.5 + 65/114) + sR * (0.5 - 65/114), weights x4096.
  * 65 mm: the bracket moved out on 29 Oct (was ~50 mm left of the centre IR,
  * only ~8 mm inside the bars, which start 42 mm left of it) */

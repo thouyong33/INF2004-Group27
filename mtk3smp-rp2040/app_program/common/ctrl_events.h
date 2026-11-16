@@ -1,11 +1,11 @@
 /**
  * @file ctrl_events.h
- * @brief Event queue to the vehicle controller (ctrl_evt_mbf, Tribunal 1).
+ * @brief Event queue to the vehicle controller (Tribunal 1).
  *
  * The buddy tasks post what they see; only the controller decides what
- * the car does about it. Posting never blocks: if the queue is full the
- * event is dropped and counted (the controller also polls the state it
- * depends on, so a dropped event delays a decision by one period at most).
+ * the car does about it. Posting never blocks: if the 16-deep queue is
+ * full the event is dropped and counted (ctrl_evt_dropped). The controller
+ * does not poll for these, so a dropped event is lost.
  * Post from tasks only, never from an interrupt handler.
  */
 
@@ -30,8 +30,9 @@
 /** arg = character (0 = no read), val bit 0 = reversed, bits 1-2 =
  * BC_CUT_* (decoded one bar short); no read: val = bars/spaces */
 #define EVT_BARCODE          9u
-/** line task: junction arm under C and R, val = mm */
-#define EVT_JUNCTION         10u  /* arg 0 = right IR, 1 = left IR */
+/** junction arm, val = mm: line task (arg 0, C and R) or barcode task
+ * (arg 1, left IR) */
+#define EVT_JUNCTION         10u
 /** controller: command done, arg = CTRL_CMD_* */
 #define EVT_COMMAND          11u
 /** controller: arg = 1 found, 2 found but the face ran past the sweep

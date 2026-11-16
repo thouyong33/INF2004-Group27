@@ -108,7 +108,7 @@ dist_mm(void)
     return (((l.hw_count + r.hw_count) / 2) * UM_PER_EDGE) / 1000L;
 }
 
-/* Encoder heading since the run started (odometry reset), within +/-180 */
+/* Encoder heading since following (re)started (odometry reset), +/-180 */
 static int32_t
 heading_cdeg(void)
 {
@@ -552,7 +552,8 @@ probe_log(int32_t y, int32_t mm)
     }
 }
 
-/* Step sideways from *p_y (left +) by dir (+1 / -1) until the face's echo
+/* Step sideways from *p_y (left +) by side (+1 / -1), facing dir_cdeg,
+ * until the face's echo
  * is lost PROBE_OFF_NEEDED steps in a row; returns the edge (midway
  * between the last step on the face and the first off it), *p_capped if
  * PROBE_MAX_MM went by still on it. *p_ref is the face's median range. */
@@ -668,13 +669,6 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     return left - right;
 }
 
-/* Probe the obstacle, then go round it on the left and stop back on the
- * line's position behind it, facing the line's direction:
- *   out:  sideways to AVOID_HALF_R_MM + AVOID_MARGIN_MM left of its edge
- *   past: forward to the face, its assumed depth, and far enough that the
- *         car's widest side clears its back face after the turn
- *   in:   sideways back to the start's position
- * Returns false if the probe failed or a motion fault stopped it. */
 /* The sideways leg back to the line (facing it), planned as y mm: stops
  * over the line if C or R sees it (see AVOID_IR_AHEAD_MM), else after y.
  * Logs EVT_OBST_AVOID arg 1, val = where the line was against the plan
@@ -718,6 +712,13 @@ avoid_return(int32_t y)
     return moved;
 }
 
+/* Probe the obstacle, then go round it on the left and stop back on the
+ * line behind it, facing the line's direction:
+ *   out:  sideways to AVOID_HALF_R_MM + AVOID_MARGIN_MM left of its edge
+ *   past: forward to the face, a depth taken as its width (100-200 mm),
+ *         and far enough that the car's widest side clears its back face
+ *   in:   sideways back until the line is seen (avoid_return)
+ * Returns false if the probe failed or a motion fault stopped it. */
 static bool
 avoid_obstacle(void)
 {

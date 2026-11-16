@@ -2,7 +2,7 @@
  * @file vehicle_ctrl.h
  * @brief Vehicle controller: the one task that decides what the car does.
  *
- * The buddy tasks report through ctrl_evt_mbf (common/ctrl_events.h):
+ * The buddy tasks report through the event queue (common/ctrl_events.h):
  * the obstacle task posts EVT_OBSTACLE when its stop rule is first met,
  * the line task EVT_LINE_END when following ends, and fault_set() posts
  * EVT_FAULT for every newly raised fault bit. The controller also owns
@@ -22,14 +22,14 @@
  *
  * Barcodes (CTRL_OPT_BARCODE): the barcode task reads the left IR while
  * following and posts EVT_BARCODE; the controller keeps the command and
- * carries it out at the next junction (EVT_JUNCTION from the line task).
+ * carries it out at the next junction (EVT_JUNCTION, line or barcode task).
  * Which character means which movement (forward, U-turn, left, right)
  * is not fixed in the code: the PC sends it over MQTT before the run
  * (buddy1_telemetry/cmd_map.h), and a code means the same movement
  * whichever way it is read. For a turn the car
  * stops, drives on until the axle is over the junction, turns on the
  * spot on the encoders, then follows the line again for after_mm (0 ends
- * the run there: the test mats have nothing beyond the cross).
+ * a run with a distance limit there; a continuous run always carries on).
  *
  * Impacts (Tribunal 1): a jolt counts only if it comes while the motion
  * task is at a steady speed, not on the ramp, and the wheels then drop
@@ -105,7 +105,9 @@ typedef struct {
     /** since following last (re)started: a turn or an obstacle restarts
      * it (wraps after 32 m on a long straight) */
     int16_t dist_mm;
-    int16_t heading_cdeg;    /**< encoders, since the run started, left + */
+    /** encoders, since following last (re)started (a turn or an obstacle
+     * restarts it), left + */
+    int16_t heading_cdeg;
     int16_t roll_cdeg;       /**< from rest, x0.01 deg */
     int16_t obstacle_mm;     /**< last sonar reading, -1 = none */
     /** width from the scan after a stop, 0 = none */
@@ -129,16 +131,18 @@ typedef struct {
 #define CTRL_LOG_LEN         64u
 
 /**
- * @brief Create the event queue, the controller, line and obstacle tasks,
- * and start the IMU (the run carries on without it if it does not answer).
+ * @brief Create the event queue, the controller, line, obstacle and barcode
+ * tasks, and start i2c1 and the IMU (the run carries on without it).
  */
 ER ctrl_task_create(void);
 
-/** @brief Start a run (motion faults and the line-lost fault are cleared);
+/** @brief Start a run (the controller clears the motion, line-lost and
+ * scan-timeout faults; speed capped when watching obstacles);
  * max_mm 0 = no limit (continuous). */
 ER ctrl_run(int16_t speed_mm_s, int16_t max_mm, uint8_t opts);
 
-/** @brief Distance to follow after a junction turn (0 = end the run there). */
+/** @brief Distance to follow after a junction turn (0 = end the run there,
+ * for a run with a distance limit; a continuous run always carries on). */
 void ctrl_set_after_turn_mm(int16_t after_mm);
 
 /** @brief Ask the controller to end the run (from any task). */

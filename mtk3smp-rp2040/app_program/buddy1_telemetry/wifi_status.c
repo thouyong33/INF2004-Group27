@@ -8,7 +8,7 @@
  * wifi_status.c
  * The port's Wi-Fi status task, moved out of app_main.c (28 Oct 2026) as
  * the starting point for Buddy 1 (MQTT telemetry). Built only with
- * WIFI=cyw43; the robot builds use WIFI=none, so this compiles to nothing.
+ * WIFI=cyw43 (the Wi-Fi/MQTT build); a WIFI=none build compiles it out.
  */
 
 #include <tk/tkernel.h>

@@ -107,7 +107,7 @@ barcode_elements(const uint16_t *p_mv, uint32_t n, bc_elem_t *p_el,
         *p_white = white;
     }
     /* Threshold: a fixed margin above white (faint thin bars, 24 Oct), or
-     * with span_thr a share of the white-to-dark span if that is higher
+     * with b_span_thr a share of the white-to-dark span if that is higher
      * (strong contrast leaves the narrow spaces well above white, 26 Oct) */
     span = (b_span_thr && (dark > white)) ? (uint32_t)(dark - white) : 0u;
     on = (uint16_t)(white + (((span * BC_ON_PCT) / 100u > BC_ON_MV)
@@ -198,7 +198,7 @@ bits_diff(uint16_t a, uint16_t b)
     return c;
 }
 
-/* short: which star lacks BC_CUT_ELEMS elements (see BC_STAR_FIRST7),
+/* short_star: which star lacks BC_CUT_ELEMS elements (BC_STAR_FIRST7),
  * in decode order */
 static bool
 try_window(const bc_elem_t *p_el, uint32_t n, uint32_t st, uint32_t ln,
