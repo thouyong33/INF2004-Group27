@@ -31,6 +31,8 @@
 /** What gave the lift away (terrain_lift_update) */
 #define TERRAIN_LIFT_TILT       1u   /**< tilted past LIFT_TILT_CDEG */
 #define TERRAIN_LIFT_ACCEL      2u   /**< |a| off 1 g by LIFT_ACCEL_MG */
+/** held as "on the ramp" with no floor for 3 s (val = ms) */
+#define TERRAIN_LIFT_RAMP       3u
 
 typedef struct {
     int32_t start_mm;        /**< where the nose-down stretch began */
@@ -84,7 +86,9 @@ uint32_t terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
  * 2 s; it fires if all three IRs then read black (no floor under them)
  * for 0.3 s. A cross blackens all three for about 18 mm only, a ramp
  * tilts the car 4-13 deg; on the ramp (and 1 s after it) the
- * acceleration cue is ignored, its bumps being normal there.
+ * acceleration cue is ignored, its bumps being normal there, and on the
+ * ramp no floor for 3 s also counts (a lifted car's free wheels and a
+ * small tilt can make the hump detector hold it "on the ramp").
  * @param t_ms      now, ms
  * @param p_att     attitude, or NULL if no sample this period
  * @param p_cal     calibrated sample from the same read, or NULL

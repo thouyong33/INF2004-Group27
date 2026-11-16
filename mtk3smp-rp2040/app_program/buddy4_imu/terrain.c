@@ -50,6 +50,8 @@
 #define LIFT_CUE_KEEP_MS         2000u   /* a cue arms the IR check this long */
 #define LIFT_NO_FLOOR_MS         300u    /* all three IRs black this long */
 #define LIFT_RAMP_QUIET_MS       1000u   /* accel cue ignored after a ramp */
+/* "on the ramp" with no floor this long is a lift (a 20 cm ramp takes 2 s) */
+#define LIFT_NO_FLOOR_RAMP_MS    3000u
 #define ONE_G_MG                 1000
 
 typedef enum {
@@ -474,22 +476,27 @@ terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
     int16_t acc;
     bool b_ramp_quiet;
 
-    if (b_on_ramp)
-    {
-        /* the ramp's own bumps and black: no lift while on it */
-        g_b_ramp_seen = true;
-        g_ramp_t = t_ms;
-        g_b_lift_armed = false;
-        g_b_tilted = false;
-        g_b_no_floor = false;
-        return false;
-    }
     if (g_b_lifted)
     {
         return false;
     }
-    b_ramp_quiet = g_b_ramp_seen
-                   && ((t_ms - g_ramp_t) < LIFT_RAMP_QUIET_MS);
+    /* On the ramp only the acceleration cue is off (its bumps are normal
+     * there). The tilt cue and the no-floor timer keep running: a ramp
+     * never tilts the car 25 deg, and a lifted car's free wheels and the
+     * hand's tilt soon make the hump detector report a ramp, which must
+     * not switch the lift check off. */
+    if (b_on_ramp)
+    {
+        g_b_ramp_seen = true;
+        g_ramp_t = t_ms;
+        if (TERRAIN_LIFT_ACCEL == g_lift_cue.cue)
+        {
+            g_b_lift_armed = false;      /* that was the ramp's jolt */
+        }
+    }
+    b_ramp_quiet = b_on_ramp
+                   || (g_b_ramp_seen
+                       && ((t_ms - g_ramp_t) < LIFT_RAMP_QUIET_MS));
 
     if ((NULL != p_att) && (NULL != p_cal))
     {
@@ -540,8 +547,21 @@ terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
         g_b_no_floor = true;
         g_no_floor_since = t_ms;
     }
-    if (g_b_lift_armed && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_MS))
+    /* On the ramp an acceleration cue is the ramp's own jolt (the IRs may
+     * read black there), so only a tilt cue counts, or no floor for far
+     * longer than any ramp (a lifted car the hump detector holds as a
+     * ramp: its wheels turn free and the hand tilts it a little) */
+    if ((g_b_lift_armed
+         && ((!b_on_ramp) || (TERRAIN_LIFT_TILT == g_lift_cue.cue))
+         && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_MS))
+        || (b_on_ramp
+            && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_RAMP_MS)))
     {
+        if (b_on_ramp && (!g_b_lift_armed))
+        {
+            g_lift_cue.cue = TERRAIN_LIFT_RAMP;
+            g_lift_cue.cue_val = (int16_t)(t_ms - g_no_floor_since);
+        }
         g_b_lifted = true;
         if (NULL != p_lift)
         {

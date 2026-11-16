@@ -106,6 +106,18 @@ main(void)
     check(0U == run(400U, 0, 0, 350, -1400, 1, 0, &lift),
           "landing (acceleration ignored 1 s): no lift");
 
+    /* Lifted with a small tilt: the hump detector holds it "on the ramp" */
+    start(0, 0);
+    (void)run(40U, 0, 0, 0, -1450, 0, 0, &lift);
+    (void)run(200U, 0, 800, 0, -1000, 1, 0, &lift);
+    check((0U != run(4000U, 0, 800, 0, -1000, 1, 1, &lift))
+          && (TERRAIN_LIFT_RAMP == lift.cue),
+          "lifted, held as a ramp: fires after 3 s of no floor");
+    start(0, 0);
+    check((0U != run(1000U, 3000, 0, 0, -1000, 1, 1, &lift))
+          && (TERRAIN_LIFT_TILT == lift.cue),
+          "tilted past 25 deg while held as a ramp: fires");
+
     /* A cue only arms the IR check for 2 s */
     start(0, 0);
     (void)run(40U, 0, 0, 0, -1500, 0, 0, &lift);

@@ -265,6 +265,11 @@ Gentle following keeps both the heading and the sideways position.
   - it fires when all three IRs then read black (no floor) for 0.3 s. A
     cross blackens all three for only ~18 mm and a ramp tilts the car
     4–13°, so neither should fire it.
+  - A lifted car's free wheels and a small tilt can make the hump
+    detector call it "on the ramp" (bug hunt, 16 Nov). The check keeps
+    running there: a tilt cue still counts, an acceleration cue does
+    not (it is the ramp's own jolt), and no floor for 3 s while "on the
+    ramp" is a lift (a 20 cm ramp takes 2 s; v56).
   - On a lift the controller raises `FAULT_LIFTED` (bit 6, in the motion
     mask): the motors stop at once and stay off until the next run, and
     the run ends in state `LIFTED` (telemetry state 6) with a `LIFT`

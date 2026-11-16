@@ -285,8 +285,8 @@ void ctrl_test_course(void)
         pass_max = 0u;
         if(b_cont) {
             tm_printf((UB *)"[CTRL] continuous run started: the serial wire can"
-                            " be unplugged now. Press s to stop (or lift the"
-                            " car: the line search fails and it stops).\n");
+                            " be unplugged now. Press s to stop, or pick the"
+                            " car up: the motors stop.\n");
         }
         while(ctrl_running()) {
             for(i = 0; (i < CTRLT_SNAP_MS / 20) && ctrl_running(); i++) {
@@ -422,10 +422,12 @@ void ctrl_test_course(void)
             } else if(EVT_LIFT == lg[i].type) {
                 tm_printf((UB *)"   (picked up: motors stopped; cue %s %d%s)",
                           (TERRAIN_LIFT_TILT == lg[i].arg) ? "tilt"
-                                                           : "|a| off 1 g",
+                          : (TERRAIN_LIFT_RAMP == lg[i].arg)
+                          ? "no floor while 'on the ramp'" : "|a| off 1 g",
                           (TERRAIN_LIFT_TILT == lg[i].arg)
                           ? lg[i].val / 100 : lg[i].val,
-                          (TERRAIN_LIFT_TILT == lg[i].arg) ? " deg" : " mg");
+                          (TERRAIN_LIFT_TILT == lg[i].arg) ? " deg"
+                          : (TERRAIN_LIFT_RAMP == lg[i].arg) ? " ms" : " mg");
             }
             tm_printf((UB *)"\n");
         }
