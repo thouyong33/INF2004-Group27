@@ -45,13 +45,6 @@
 #define CTRL_CREEP_PING_MS   65u     /* >= 60 ms between pings */
 #define CTRL_CREEP_TIMEOUT_MS 6000u
 
-/* Impact confirmation */
-#define CTRL_SPD_WIN_MS      100u    /* forward speed window */
-#define CTRL_SPD_RING        8       /* > CTRL_SPD_WIN_MS / CTRL_PERIOD_MS */
-#define CTRL_SPD_SETTLE_MS   400u    /* no speed check while pulling away */
-#define CTRL_JOLT_CONFIRM_MS 250u
-#define CTRL_JOLT_SLOW_PCT   60
-
 /* Junction turn: the IR spots are ~130 mm ahead of the axle and the arm
  * is first seen at its near edge, 9 mm before its centre line */
 #define CTRL_JUNC_AHEAD_MM   139
@@ -76,6 +69,7 @@ static volatile uint8_t g_opts = 0u;
 static volatile uint8_t g_running = 0u;
 static volatile int16_t g_after_mm = 0;
 static bool g_b_imu_ok = false;
+static volatile bool g_b_run_imu = false;   /* IMU usable this run */
 
 static robot_status_t g_status = { .obstacle_mm = -1 };  /* no ping */
 static int16_t g_obst_width = 0;
@@ -200,6 +194,45 @@ rest_attitude(int32_t *p_roll0)
     return true;
 }
 
+/* Lift check (Buddy 4, terrain_lift_update): p_att / p_raw are this
+ * period's IMU sample or NULL. On a lift: log it, raise FAULT_LIFTED (in
+ * the motion mask, so the motion task, the line task and every sequence
+ * below stop) and stop the wheels. True once lifted. */
+static bool
+lift_check(const imu_attitude_t *p_att, const imu_raw_t *p_raw,
+           bool b_on_ramp)
+{
+    lift_event_t lift;
+    uint32_t all = IR_BIT_LEFT | IR_BIT_CENTRE | IR_BIT_RIGHT;
+
+    if (terrain_lift_update(now_ms(), p_att, p_raw,
+                            (all == (ir_read() & all)), b_on_ramp, &lift))
+    {
+        motion_stop();
+        log_evt(EVT_LIFT, lift.cue, lift.cue_val, dist_mm());
+        fault_set(FAULT_LIFTED);
+        return true;
+    }
+    return false;
+}
+
+/* Wait in the obstacle and junction sequences, which leave the main loop
+ * for up to a minute: a fresh IMU sample and a lift check, then ms. A
+ * lift shows there as FAULT_LIFTED, which ends the sequence. A turn on
+ * the spot (motion_turn_cdeg, up to a few s) is not watched: the wait
+ * after it catches the lift. */
+static void
+seq_wait(uint32_t ms)
+{
+    imu_attitude_t att;
+    imu_raw_t raw;
+    bool b_got;
+
+    b_got = g_b_run_imu && (E_OK == imu_read_attitude(&att, &raw));
+    (void)lift_check(b_got ? &att : NULL, b_got ? &raw : NULL, false);
+    cpu_dly(ms);
+}
+
 /* Barcode read -> command: the mapping the PC sent over MQTT
  * (buddy1_telemetry/cmd_map.h), the same whichever way the code was read;
  * no command for a character outside it, or before any mapping */
@@ -259,7 +292,7 @@ line_wind_down(void)
     for (j = 0u; (j < CTRL_END_WAIT_MS) && (LINE_END_NONE == line_follow_end());
          j += CTRL_PERIOD_MS)
     {
-        cpu_dly(CTRL_PERIOD_MS);
+        seq_wait(CTRL_PERIOD_MS);
     }
 }
 
@@ -324,12 +357,12 @@ junction_turn(uint8_t cmd, int32_t d_seen)
         while ((dist_mm() < target) && (waited < CTRL_JUNC_FWD_MS)
                && (0u == (fault_get() & FAULT_MOTION_MASK)))
         {
-            cpu_dly(CTRL_PERIOD_MS);
+            seq_wait(CTRL_PERIOD_MS);
             waited += CTRL_PERIOD_MS;
         }
     }
     motion_stop();
-    cpu_dly(300u);
+    seq_wait(300u);
     if (0u != (fault_get() & FAULT_MOTION_MASK))
     {
         return 99999;
@@ -343,7 +376,7 @@ junction_turn(uint8_t cmd, int32_t d_seen)
     {
         got += motion_turn_cdeg(cdeg - got, CTRL_TRIM_MM_S);
     }
-    cpu_dly(200u);
+    seq_wait(200u);
     return got;
 }
 
@@ -374,10 +407,10 @@ creep_to_scan_range(void)
         {
             break;
         }
-        cpu_dly(CTRL_CREEP_PING_MS);
+        seq_wait(CTRL_CREEP_PING_MS);
     }
     motion_stop();
-    cpu_dly(300u);
+    seq_wait(300u);
     return mm;
 }
 
@@ -505,11 +538,11 @@ probe_drive(int32_t mm, int16_t mm_s)
            && (waited < limit_ms)
            && (0u == (fault_get() & FAULT_MOTION_MASK)))
     {
-        cpu_dly(CTRL_PERIOD_MS);
+        seq_wait(CTRL_PERIOD_MS);
         waited += CTRL_PERIOD_MS;
     }
     motion_stop();
-    cpu_dly(PROBE_SETTLE_MS);
+    seq_wait(PROBE_SETTLE_MS);
     return dist_mm() - d0;
 }
 
@@ -527,7 +560,7 @@ probe_ping(void)
     {
         v[i] = (E_OK == ultrasonic_read_us(&echo_us))
                ? ultrasonic_us_to_mm(echo_us) : -1;
-        cpu_dly(PROBE_PING_MS);
+        seq_wait(PROBE_PING_MS);
     }
     for (i = 1u; i < PROBE_PINGS; i++)
     {
@@ -581,7 +614,7 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t *p_ref, int32_t *p_y,
         moved = probe_drive(PROBE_STEP_MM, PROBE_DRIVE_MM_S);
         *p_y += side * moved;
         probe_turn_to(dir_cdeg);
-        cpu_dly(PROBE_SETTLE_MS);
+        seq_wait(PROBE_SETTLE_MS);
         mm = probe_ping();
         probe_log(*p_y, mm);
         if ((mm > 0) && (mm <= (*p_ref + PROBE_BAND_MM)))
@@ -635,7 +668,7 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     log_evt(EVT_OBST_HDG, line_clean_ok() ? OBST_HDG_CLEAN : OBST_HDG_PLAIN,
             (int16_t)(dir - line_direction_cdeg()), dist_mm());
     avoid_turn_to(dir, 0u);
-    cpu_dly(PROBE_SETTLE_MS);
+    seq_wait(PROBE_SETTLE_MS);
     face_mm = probe_ping();
     probe_log(0, face_mm);
     if (face_mm <= 0)
@@ -698,12 +731,12 @@ avoid_return(int32_t y)
             target = (target > (y + AVOID_SEEK_EXTRA_MM))
                      ? (y + AVOID_SEEK_EXTRA_MM) : target;
         }
-        cpu_dly(CTRL_PERIOD_MS);
+        seq_wait(CTRL_PERIOD_MS);
         waited += CTRL_PERIOD_MS;
         moved = dist_mm() - d0;
     }
     motion_stop();
-    cpu_dly(PROBE_SETTLE_MS);
+    seq_wait(PROBE_SETTLE_MS);
     moved = dist_mm() - d0;
     log_evt(EVT_OBST_AVOID, (seen >= 0) ? 1u : 2u,
             (int16_t)((seen >= 0)
@@ -780,27 +813,17 @@ ctrl_task_main(INT stacd, void *exinf)
     imu_attitude_t att;
     imu_raw_t raw;
     hump_event_t hump;
-    collision_event_t coll;
     side_hump_event_t side;
-    uint32_t ring_t[CTRL_SPD_RING];
-    int32_t ring_d[CTRL_SPD_RING];
-    uint32_t ring_i;
-    uint32_t ring_n;
     uint32_t t;
     uint32_t t_sample;
-    uint32_t t_jolt = 0u;
     uint32_t imu_fail;
     uint32_t ev;
     uint32_t j;
-    uint32_t k;
     int32_t roll0;
     int32_t roll;
     int32_t d;
     int32_t hdg;
-    int32_t v_pct;
-    int32_t min_pct = 100;
     int32_t ramp_h;
-    int16_t jolt_mg = 0;
     uint8_t state;
     uint8_t flags;
     uint8_t opts;
@@ -809,7 +832,7 @@ ctrl_task_main(INT stacd, void *exinf)
     int32_t got;
     bool b_imu_ok;
     bool b_on_ramp;
-    bool b_jolt_pending;
+    bool b_got;
     int32_t junc_last;
     uint32_t t_obst;
     TMO wait;
@@ -846,7 +869,8 @@ ctrl_task_main(INT stacd, void *exinf)
         {
             flags |= CTRL_FLAG_IMU_OK;
         }
-        fault_clear(FAULT_MOTION_MASK | FAULT_LINE_LOST | FAULT_SCAN_TIMEOUT);
+        g_b_run_imu = b_imu_ok;
+        fault_clear(FAULT_MOTION_MASK | FAULT_LINE_LOST);
         if (0u != (opts & CTRL_OPT_OBSTACLE))
         {
             obstacle_watch(true);
@@ -862,13 +886,10 @@ ctrl_task_main(INT stacd, void *exinf)
         cmd = CTRL_CMD_NONE;
         b_on_ramp = false;
         ramp_h = 0;
-        b_jolt_pending = false;
         junc_last = -10000;
         t_obst = 0u;
         g_dist_base = 0;
         imu_fail = 0u;
-        ring_i = 0u;
-        ring_n = 0u;
         (void)line_follow_start(g_speed, g_max_mm);
         if (0u != (opts & CTRL_OPT_BARCODE))
         {
@@ -903,7 +924,7 @@ ctrl_task_main(INT stacd, void *exinf)
                         barcode_scan_enable(false);
                         line_wind_down();
                         obstacle_watch(false);
-                        cpu_dly(300u);
+                        seq_wait(300u);
                         probe_turn_to(line_clean_direction_cdeg());
                         log_evt(EVT_OBST_CREEP, 0u,
                                 (int16_t)creep_to_scan_range(), dist_mm());
@@ -919,7 +940,7 @@ ctrl_task_main(INT stacd, void *exinf)
                                 (int16_t)((now_ms() - t_obst) / 100u),
                                 dist_mm());
                         obstacle_watch(true);
-                        cpu_dly(CTRL_WATCH_SETTLE_MS);
+                        seq_wait(CTRL_WATCH_SETTLE_MS);
                         requeue_events();
                         g_dist_base += dist_mm();
                         (void)line_follow_start(g_speed,
@@ -930,7 +951,6 @@ ctrl_task_main(INT stacd, void *exinf)
                             barcode_scan_enable(true);
                         }
                         junc_last = -10000;
-                        ring_n = 0u;
                         t_sample = now_ms();
                         d = dist_mm();
                     }
@@ -942,8 +962,7 @@ ctrl_task_main(INT stacd, void *exinf)
                     break;
                 case EVT_FAULT:
                     log_evt(evt.type, evt.arg, evt.val, d);
-                    stop_bits = (uint8_t)(FAULT_MOTION_MASK
-                                          | FAULT_SCAN_TIMEOUT);
+                    stop_bits = (uint8_t)FAULT_MOTION_MASK;
                     if (0u != (opts & CTRL_OPT_OBSTACLE))
                     {
                         stop_bits |= FAULT_NO_ECHO;
@@ -951,7 +970,8 @@ ctrl_task_main(INT stacd, void *exinf)
                     if (0u != (evt.arg & stop_bits))
                     {
                         line_follow_stop();
-                        state = CTRL_ST_FAULT;
+                        state = (0u != (evt.arg & FAULT_LIFTED))
+                                ? CTRL_ST_LIFTED : CTRL_ST_FAULT;
                     }
                     break;
                 case EVT_LINE_END:
@@ -1022,7 +1042,6 @@ ctrl_task_main(INT stacd, void *exinf)
                             {
                                 barcode_scan_enable(true);
                             }
-                            ring_n = 0u;
                             t_sample = now_ms();
                         }
                         d = dist_mm();
@@ -1050,38 +1069,13 @@ ctrl_task_main(INT stacd, void *exinf)
             d = dist_mm();
             hdg = heading_cdeg();
 
-            /* Forward speed over the last CTRL_SPD_WIN_MS, % of the run
-               speed */
-            ring_t[ring_i] = t;
-            ring_d[ring_i] = d;
-            ring_i = (ring_i + 1u) % CTRL_SPD_RING;
-            if (ring_n < CTRL_SPD_RING)
-            {
-                ring_n++;
-            }
-            v_pct = 100;
-            if ((t - g_t0) >= CTRL_SPD_SETTLE_MS)
-            {
-                for (j = 1u; j < ring_n; j++)
-                {
-                    k = (ring_i + CTRL_SPD_RING - 1u - j) % CTRL_SPD_RING;
-                    if ((t - ring_t[k]) >= CTRL_SPD_WIN_MS)
-                    {
-                        v_pct = ((d - ring_d[k]) * 100000L)
-                                / ((int32_t)(t - ring_t[k]) * g_speed);
-                        break;
-                    }
-                }
-            }
-
             if (b_imu_ok)
             {
                 if (E_OK == imu_read_attitude(&att, &raw))
                 {
                     imu_fail = 0u;
                     roll = att.roll_cdeg - roll0;
-                    ev = terrain_update(d, &att, &raw, motion_is_steady(),
-                                        &hump, &coll);
+                    ev = terrain_update(d, &att, motion_is_steady(), &hump);
 
                     if (0u != (ev & TERRAIN_EVT_SIDE_HUMP))
                     {
@@ -1097,7 +1091,6 @@ ctrl_task_main(INT stacd, void *exinf)
                         {
                             flags |= CTRL_FLAG_ON_RAMP;
                             state = CTRL_ST_RAMP;
-                            b_jolt_pending = false;
                             ramp_h = 0;
                             log_evt(EVT_RAMP_ON, 0u, 0, d);
                             status_set(state, EVT_RAMP_ON, flags, d, hdg, roll);
@@ -1116,23 +1109,12 @@ ctrl_task_main(INT stacd, void *exinf)
                                        roll);
                         }
                     }
-
-                    /* A jolt is an impact only at steady speed, off the
-                     * ramp, and only if the wheels then slow right down */
-                    if ((0u != (ev & TERRAIN_EVT_COLLISION))
-                        && (!b_jolt_pending)
-                        && (!b_on_ramp) && motion_is_steady())
-                    {
-                        b_jolt_pending = true;
-                        t_jolt = t;
-                        jolt_mg = coll.jolt_mg;
-                        min_pct = v_pct;
-                    }
                 }
                 else if (++imu_fail >= CTRL_IMU_FAIL_MAX)
                 {
                     fault_set(FAULT_IMU);
                     b_imu_ok = false;
+                    g_b_run_imu = false;
                     flags &= (uint8_t)~CTRL_FLAG_IMU_OK;
                     if (b_on_ramp)
                     {
@@ -1143,32 +1125,21 @@ ctrl_task_main(INT stacd, void *exinf)
                 }
             }
 
-            if (b_jolt_pending)
+            /* Picked up (the end of the demo): stop now */
+            b_got = b_imu_ok && (0u == imu_fail);
+            if (lift_check(b_got ? &att : NULL, b_got ? &raw : NULL,
+                           b_on_ramp))
             {
-                if (v_pct < min_pct)
-                {
-                    min_pct = v_pct;
-                }
-                if (min_pct < CTRL_JOLT_SLOW_PCT)
-                {
-                    b_jolt_pending = false;
-                    log_evt(EVT_IMPACT, (uint8_t)((min_pct < 0) ? 0 : min_pct),
-                            jolt_mg, d);
-                    if (0u != (opts & CTRL_OPT_IMPACT_STOP))
-                    {
-                        line_follow_stop();
-                        state = CTRL_ST_IMPACT;
-                    }
-                    status_set(state, EVT_IMPACT, flags, d, hdg, roll);
-                }
-                else if ((t - t_jolt) > CTRL_JOLT_CONFIRM_MS)
-                {
-                    b_jolt_pending = false;
-                    log_evt(EVT_JOLT_IGNORED, (uint8_t)min_pct, jolt_mg, d);
-                }
+                line_follow_stop();
+                state = CTRL_ST_LIFTED;
             }
 
             status_set(state, EVT_NONE, flags, d, hdg, roll);
+        }
+
+        if (0u != (fault_get() & FAULT_LIFTED))
+        {
+            state = CTRL_ST_LIFTED;     /* also when a sequence saw it */
         }
 
         /* Wind down: the line task stops the wheels and ends its loop */
@@ -1191,7 +1162,7 @@ ctrl_task_main(INT stacd, void *exinf)
          * side-stepping (see probe_obstacle) and report its width */
         if (CTRL_ST_OBSTACLE == state)
         {
-            cpu_dly(300u);
+            seq_wait(300u);
             probe_turn_to(line_clean_direction_cdeg());
             log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
                     dist_mm());
@@ -1202,6 +1173,10 @@ ctrl_task_main(INT stacd, void *exinf)
                 int32_t face_mm;
 
                 (void)probe_obstacle(&dir, &y, &left, &face_mm);
+            }
+            if (0u != (fault_get() & FAULT_LIFTED))
+            {
+                state = CTRL_ST_LIFTED;     /* picked up while probing */
             }
         }
         flags &= (uint8_t)~(CTRL_FLAG_ON_RAMP | CTRL_FLAG_WATCHING);

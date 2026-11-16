@@ -23,9 +23,10 @@
 #define EVT_RAMP_ON          4u   /**< controller: on the one-sided ramp */
 /** controller: val = height, mm (0 if unknown) */
 #define EVT_RAMP_OFF         5u
-#define EVT_IMPACT           6u   /**< controller: val = jolt, mg */
-/** controller: val = jolt, mg (wheels kept speed) */
-#define EVT_JOLT_IGNORED     7u
+/** controller: the car was picked up; arg = TERRAIN_LIFT_* cue (1 tilt,
+ * 2 acceleration), val = the cue's tilt (x0.01 deg) or |a| - 1 g (mg) */
+#define EVT_LIFT             6u
+/* 7 was the ignored jolt, removed with collision detection (16 Nov) */
 #define EVT_STOP_REQ         8u   /**< someone asked the controller to stop */
 /** arg = character (0 = no read), val bit 0 = reversed, bits 1-2 =
  * BC_CUT_* (decoded one bar short); no read: val = bars/spaces */

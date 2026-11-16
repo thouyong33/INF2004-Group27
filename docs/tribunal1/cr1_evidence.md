@@ -39,6 +39,7 @@ design choice needs its reason.
 | Line following (Buddy 3) | right-edge following by heading; curve mode for bends; junction = both IRs black for 6–35 mm, from either side | 3/3 bare-mat runs and 2/2 more on v29; lab circuit lapped 13 m each way (v45), clockwise laps consistent (v51) | Done |
 | Barcode (Buddy 3) | Code 39, ratio decoding at any 1:3 scale, one bar short accepted at either end; mapping sent from the PC over MQTT; gentle following while reading | 5/5 decoded on v29; commands at the cross 8/8 correct; on the circuit the A4 code read every lap, the 50% `A` after a curve 2/3 laps (v49) | Done |
 | Ramp (Buddy 4) | height from roll over a 30 mm plateau, h = 114 mm × sin(roll); straight hold on the ramp | small ramp (10 mm) read 11–12 mm; tall ramp (24 mm) read 23–26 mm | Done |
+| Lift (Buddy 4) | IMU tilt or acceleration cue confirmed by all three IRs seeing no floor; motors stop, run ends LIFTED | host test passes (v55); lift runs on the car to come | On-car test due |
 | Obstacle (Buddy 5) | stop at 300 mm, creep to 200 mm, side-step to both edges, width = left − right; go round on the left with depth = width, return until the line is seen | every stop ≥ 5 cm (about 13 cm after the creep); width ±3 cm typical over 13 runs; rounded 9.5 cm box 95/96 mm, line met within 5–7 mm (v49) | Done |
 | Controller | event-driven task; ramp, barcode and obstacle sequences; continuous course (`c`, `f`); rolling log and scenario reports; motion state | each sequence on its own; continuous laps on the lab circuit (v45–v52) | Done (`f` with commands to run on the course) |
 | Telemetry (Buddy 1) | MQTT over Wi-Fi: 11-byte bit-packed status every 500 ms, events, last will, run commands, barcode mapping from the PC | codec tests pass; on the car 29 Oct (status, events, reconnect, last will); mapping round trip with a simulated car (v54) | Done (v54 mapping to confirm on the car) |
@@ -254,10 +255,25 @@ Gentle following keeps both the heading and the sideways position.
   - 50 mm after the ramp, following resumes, with a search within ±45° if
     needed.
 - **Report:** the highest ramp of a run is reported (`max_ramp_mm`).
-- **Impacts:** logged only (user decision, 26 Oct). A jolt over 500 mg
-  counts only if the wheels then drop below 60 % within 250 ms, at a
-  steady speed and off the ramp. IR-bracket strikes on the ramp (up to
-  1659 mg) were all correctly ignored.
+- **Lift (end of the demo; v55, 16 Nov):** the professor replaced
+  collision detection with one rule: picking the car up stops the motors.
+  Buddy 4's lift check (`terrain_lift_update`) runs every 20 ms of a run,
+  in the obstacle and junction sequences too:
+  - an IMU cue arms it for 2 s: tilted more than 25° from rest for 0.1 s,
+    or the acceleration's size more than 300 mg off 1 g (a pull up or a
+    drop; ignored on the ramp and for 1 s after it);
+  - it fires when all three IRs then read black (no floor) for 0.3 s. A
+    cross blackens all three for only ~18 mm and a ramp tilts the car
+    4–13°, so neither should fire it.
+  - On a lift the controller raises `FAULT_LIFTED` (bit 6, in the motion
+    mask): the motors stop at once and stay off until the next run, and
+    the run ends in state `LIFTED` (telemetry state 6) with a `LIFT`
+    event. Each run's printout gives the largest tilt and acceleration
+    seen off the ramp, the margin a normal run keeps below the cues.
+  - Host test (`tests/host`): a bump then a cross, the ramp and its
+    landing, and a cue older than 2 s do not fire; level, tilted,
+    upside-down and dropped lifts do.
+  - Lift runs on the car: to be added.
 - **Compass:** not used for heading. On this floor it reported a 48° turn
   over 50 cm while the encoders showed 1.5°.
 
@@ -576,6 +592,12 @@ is 8% of its 2 ms period.
   - The depth is taken as the width (100–200 mm), so an obstacle much
     deeper than it is wide could be clipped at its far corner.
   - Only the left side is used to go round.
+- **Lift:**
+  - needs the IMU: with FAULT_IMU there is no cue, so no lift;
+  - a lift during a turn on the spot acts when the turn ends (a few s at
+    most);
+  - a very slow, level lift (under 300 mg and 25°) does not arm it; the
+    lift runs will show the real margins.
 - **Line following:** a mat join where the line steps sideways can be
   taken for a right curve (v51 run); the mats must be joined in line.
 - **Barcode:**

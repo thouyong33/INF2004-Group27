@@ -31,11 +31,12 @@
  * spot on the encoders, then follows the line again for after_mm (0 ends
  * a run with a distance limit there; a continuous run always carries on).
  *
- * Impacts (Tribunal 1): a jolt counts only if it comes while the motion
- * task is at a steady speed, not on the ramp, and the wheels then drop
- * below CTRL_JOLT_SLOW_PCT of the run speed within CTRL_JOLT_CONFIRM_MS.
- * Whether an impact stops the car is a run option (CTRL_OPT_IMPACT_STOP)
- * until the IR bracket's ramp strike has been checked against the rule.
+ * Lift (the end of the demo; it replaced collision detection, 16 Nov):
+ * every period, and in the obstacle and junction sequences, the
+ * controller runs Buddy 4's lift check (terrain_lift_update: an IMU tilt
+ * or acceleration cue, confirmed by all three IRs seeing no floor). On a
+ * lift it raises FAULT_LIFTED, which stops the motors at once, and the
+ * run ends in CTRL_ST_LIFTED; the wheels stay off until the next run.
  *
  * robot_status is a small snapshot, copied under a lock, that Buddy 1's
  * telemetry reads (every 500 ms per Tribunal 1).
@@ -55,7 +56,7 @@
 #define CTRL_ST_RAMP         3u   /**< on the ramp: driving straight */
 #define CTRL_ST_DONE         4u   /**< ended: distance limit or ctrl_stop() */
 #define CTRL_ST_OBSTACLE     5u   /**< ended: stopped at an obstacle */
-#define CTRL_ST_IMPACT       6u   /**< ended: confirmed impact */
+#define CTRL_ST_LIFTED       6u   /**< ended: the car was picked up */
 #define CTRL_ST_FAULT        7u   /**< ended: fault or line lost */
 #define CTRL_ST_TURN         8u   /**< carrying out a barcode command */
 
@@ -86,7 +87,7 @@
 /** Run options */
 /** watch for obstacles, stop at one */
 #define CTRL_OPT_OBSTACLE     (1u << 0)
-#define CTRL_OPT_IMPACT_STOP  (1u << 1)  /**< stop on a confirmed impact */
+/* (1u << 1) was the impact stop, removed with collision detection */
 /** read barcodes, act at the next junction */
 #define CTRL_OPT_BARCODE      (1u << 2)
 /** with CTRL_OPT_OBSTACLE: measure it, go round on the left, rejoin the

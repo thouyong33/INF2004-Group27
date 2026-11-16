@@ -1,6 +1,6 @@
 /**
  * @file terrain.c
- * @brief Buddy 4: real-time hump and collision detection.
+ * @brief Buddy 4: real-time hump and lift detection.
  *
  * Thresholds come from the ramp logs of 2026-10-09 (200 mm/s):
  *   flat floor, filtered pitch noise RMS 0.7 deg
@@ -34,14 +34,23 @@
 #define HUMP_EXIT_CDEG           (-200)  /* ... back within -2 deg ... */
 #define HUMP_HOLD_MM             15      /* ... for this much travel */
 #define WHEELBASE_MM             80.0f   /* drive axle to castor */
-/* first guess; see terrain_max_jolt_mg */
-#define COLL_JOLT_MG             500
 #define SIDE_ENTER_CDEG          250     /* |roll| past 2.5 deg ... */
 #define SIDE_ENTER_MM            20      /* ... for this much travel */
 #define SIDE_EXIT_CDEG           150     /* back within 1.5 deg ... */
 #define SIDE_EXIT_MM             15      /* ... for this much travel */
 #define TRACK_MM                 114.0f  /* wheel track: lever for roll */
-#define COLL_HOLDOFF_MM          100     /* one collision per 10 cm */
+
+/* Lift (the demo's end: picked up, the motors stop). The tallest ramp
+ * rolls the car 13 deg and a ramp bump never lasts 0.1 s past 25 deg; a
+ * cross blackens all three IRs for ~18 mm (0.18 s at 100 mm/s). First
+ * values, to be checked against the lift runs and terrain_lift_peaks. */
+#define LIFT_TILT_CDEG           2500    /* tilted past 25 deg from rest */
+#define LIFT_TILT_MS             100u    /* ... for this long */
+#define LIFT_ACCEL_MG            300     /* |a| this far from 1 g */
+#define LIFT_CUE_KEEP_MS         2000u   /* a cue arms the IR check this long */
+#define LIFT_NO_FLOOR_MS         300u    /* all three IRs black this long */
+#define LIFT_RAMP_QUIET_MS       1000u   /* accel cue ignored after a ramp */
+#define ONE_G_MG                 1000
 
 typedef enum {
     STATE_LEVEL = 0,
@@ -81,12 +90,21 @@ static int32_t g_below_since = -1;
 static int32_t g_above_since = -1;
 static hump_event_t g_hump;
 
-static bool g_b_have_prev = false;
-static int16_t g_prev_ax = 0;
-static int16_t g_prev_ay = 0;
-static int32_t g_last_coll_mm = -1000000;
-static int16_t g_max_jolt = 0;
 static int16_t g_min_pitch = 0;
+
+/* Lift check */
+static bool g_b_lift_armed = false;      /* an IMU cue in the last 2 s */
+static uint32_t g_lift_cue_t = 0u;
+static lift_event_t g_lift_cue;
+static bool g_b_tilted = false;
+static uint32_t g_tilt_since = 0u;
+static bool g_b_no_floor = false;
+static uint32_t g_no_floor_since = 0u;
+static bool g_b_ramp_seen = false;
+static uint32_t g_ramp_t = 0u;           /* last period on the ramp */
+static bool g_b_lifted = false;          /* reported once per run */
+static int16_t g_peak_tilt = 0;
+static int16_t g_peak_accel = 0;
 
 /* sin of hundredths of a degree, Taylor to x^7 (no libm) */
 static float
@@ -279,26 +297,27 @@ terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg)
     g_state = STATE_LEVEL;
     g_below_since = -1;
     g_above_since = -1;
-    g_b_have_prev = false;
-    g_last_coll_mm = -1000000;
-    g_max_jolt = 0;
     g_min_pitch = 0;
+    g_b_lift_armed = false;
+    g_b_tilted = false;
+    g_b_no_floor = false;
+    g_b_ramp_seen = false;
+    g_b_lifted = false;
+    g_peak_tilt = 0;
+    g_peak_accel = 0;
 }
 
 uint32_t
-terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
-               const imu_raw_t *p_cal, bool b_steady,
-               hump_event_t *p_hump, collision_event_t *p_coll)
+terrain_update(int32_t dist_mm, const imu_attitude_t *p_att, bool b_steady,
+               hump_event_t *p_hump)
 {
     uint32_t events = 0u;
     int16_t fp;
     int16_t fr;
     int16_t mean;
     int32_t from_mm;
-    int16_t jolt;
 
-    if ((NULL == p_att) || (NULL == p_cal) || (NULL == p_hump)
-        || (NULL == p_coll))
+    if ((NULL == p_att) || (NULL == p_hump))
     {
         return 0u;
     }
@@ -393,32 +412,157 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
         }
     }
 
-    /* ---- Collision: a sharp jump in horizontal acceleration ---- */
-    if (g_b_have_prev)
+    return events;
+}
+
+/* Tilt from rest, x0.01 deg: the larger of |pitch| and |roll| */
+static int16_t
+tilt_from_rest(const imu_attitude_t *p_att)
+{
+    int32_t p = (int32_t)p_att->pitch_cdeg - g_rest_pitch;
+    int32_t r = (int32_t)p_att->roll_cdeg - g_rest_roll;
+
+    p = (p < 0) ? -p : p;
+    r = (r < 0) ? -r : r;
+    p = (p > 18000) ? (36000 - p) : p;     /* across +/-180 deg */
+    r = (r > 18000) ? (36000 - r) : r;
+    return (int16_t)((p > r) ? p : r);
+}
+
+/* |a| - 1 g, mg (a = the calibrated accelerometer, mg) */
+static int16_t
+accel_off_1g(const imu_raw_t *p_cal)
+{
+    int32_t sq = ((int32_t)p_cal->ax * p_cal->ax)
+                 + ((int32_t)p_cal->ay * p_cal->ay)
+                 + ((int32_t)p_cal->az * p_cal->az);
+    int32_t m = ONE_G_MG;
+    int32_t off;
+
+    /* integer square root by Newton steps from 1 g (|a| < 8 g here) */
+    if (sq > 0)
     {
-        jolt = abs16((int16_t)(p_cal->ax - g_prev_ax));
-        if (abs16((int16_t)(p_cal->ay - g_prev_ay)) > jolt)
+        m = (m + (sq / m)) / 2;
+        m = (m + (sq / m)) / 2;
+        m = (m + (sq / m)) / 2;
+        m = (m + (sq / m)) / 2;
+        m = (m + (sq / m)) / 2;
+    }
+    else
+    {
+        m = 0;
+    }
+    off = m - ONE_G_MG;
+    return (int16_t)((off < 0) ? -off : off);
+}
+
+static void
+lift_cue(uint32_t t_ms, uint8_t cue, int16_t val)
+{
+    g_b_lift_armed = true;
+    g_lift_cue_t = t_ms;
+    g_lift_cue.cue = cue;
+    g_lift_cue.cue_val = val;
+}
+
+bool
+terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
+                    const imu_raw_t *p_cal, bool b_no_floor, bool b_on_ramp,
+                    lift_event_t *p_lift)
+{
+    int16_t tilt;
+    int16_t acc;
+    bool b_ramp_quiet;
+
+    if (b_on_ramp)
+    {
+        /* the ramp's own bumps and black: no lift while on it */
+        g_b_ramp_seen = true;
+        g_ramp_t = t_ms;
+        g_b_lift_armed = false;
+        g_b_tilted = false;
+        g_b_no_floor = false;
+        return false;
+    }
+    if (g_b_lifted)
+    {
+        return false;
+    }
+    b_ramp_quiet = g_b_ramp_seen
+                   && ((t_ms - g_ramp_t) < LIFT_RAMP_QUIET_MS);
+
+    if ((NULL != p_att) && (NULL != p_cal))
+    {
+        tilt = tilt_from_rest(p_att);
+        acc = accel_off_1g(p_cal);
+        if (tilt > g_peak_tilt)
         {
-            jolt = abs16((int16_t)(p_cal->ay - g_prev_ay));
+            g_peak_tilt = tilt;
         }
-        if (jolt > g_max_jolt)
+        if ((!b_ramp_quiet) && (acc > g_peak_accel))
         {
-            g_max_jolt = jolt;
+            g_peak_accel = acc;
         }
-        if ((jolt >= COLL_JOLT_MG)
-            && ((dist_mm - g_last_coll_mm) >= COLL_HOLDOFF_MM))
+
+        if (tilt > LIFT_TILT_CDEG)
         {
-            p_coll->dist_mm = dist_mm;
-            p_coll->jolt_mg = jolt;
-            g_last_coll_mm = dist_mm;
-            events |= TERRAIN_EVT_COLLISION;
+            if (!g_b_tilted)
+            {
+                g_b_tilted = true;
+                g_tilt_since = t_ms;
+            }
+            if ((t_ms - g_tilt_since) >= LIFT_TILT_MS)
+            {
+                lift_cue(t_ms, TERRAIN_LIFT_TILT, tilt);
+            }
+        }
+        else
+        {
+            g_b_tilted = false;
+        }
+        if ((!b_ramp_quiet) && (acc > LIFT_ACCEL_MG))
+        {
+            lift_cue(t_ms, TERRAIN_LIFT_ACCEL, acc);
         }
     }
-    g_prev_ax = p_cal->ax;
-    g_prev_ay = p_cal->ay;
-    g_b_have_prev = true;
+    if (g_b_lift_armed && ((t_ms - g_lift_cue_t) > LIFT_CUE_KEEP_MS))
+    {
+        g_b_lift_armed = false;
+    }
 
-    return events;
+    if (!b_no_floor)
+    {
+        g_b_no_floor = false;
+        return false;
+    }
+    if (!g_b_no_floor)
+    {
+        g_b_no_floor = true;
+        g_no_floor_since = t_ms;
+    }
+    if (g_b_lift_armed && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_MS))
+    {
+        g_b_lifted = true;
+        if (NULL != p_lift)
+        {
+            *p_lift = g_lift_cue;
+        }
+        return true;
+    }
+    return false;
+}
+
+void
+terrain_lift_peaks(int16_t *p_tilt_cdeg, int16_t *p_accel_mg)
+{
+    if (NULL != p_tilt_cdeg)
+    {
+        *p_tilt_cdeg = g_peak_tilt;
+    }
+    if (NULL != p_accel_mg)
+    {
+        *p_accel_mg = g_peak_accel;
+    }
 }
 
 bool
@@ -434,10 +578,4 @@ terrain_last_side_hump(side_hump_event_t *p_ev)
     {
         *p_ev = g_side;
     }
-}
-
-int16_t
-terrain_max_jolt_mg(void)
-{
-    return g_max_jolt;
 }

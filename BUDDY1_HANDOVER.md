@@ -659,4 +659,6 @@ Barcode mapping over MQTT (5 Nov, v54): which character means which movement is 
 
 Motion in the telemetry (5 Nov, v54): the last 3 bits of the packet, reserved before, are the motion: 0 stop (no run), 1 stationary (a run with the wheels still), 2 straight, 3 turning left, 4 turning right. While following the line it comes from the line task's steering (a curve counts as a turn); otherwise from the wheel speeds. buddy1_mqtt_decoder.py prints it as Motion=.
 
+Lift replaces collision (16 Nov, v55): telemetry state 6 is now LIFTED (was IMPACT), fault bit 6 is FAULT_LIFTED (was the unused scan timeout), and event 6 is LIFT (event 7 is unused). The packet layout is unchanged; the viewer uses the new names (the decoder prints the numbers).
+
 Laptop: tools/mqtt_viewer.py is a broker and viewer in one (no Mosquitto needed) with a control page on http://localhost:8080; buddy1_mqtt_decoder.py also works against it.

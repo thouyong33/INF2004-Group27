@@ -1,12 +1,14 @@
 /**
  * @file terrain.h
- * @brief Buddy 4: real-time hump and collision detection from the IMU.
+ * @brief Buddy 4: real-time hump and lift detection from the IMU.
  *
  * Feed one attitude sample per control period with the distance travelled
  * (from the wheel encoders) and whether the car is at steady speed. The
  * detector reports a one-sided (side) hump and a full-width hump once the
- * car has come off them, with their height, and a collision on a sharp
- * horizontal jolt. The course uses the side hump: the car rolls, and
+ * car has come off them, with their height. A separate check
+ * (terrain_lift_update) tells when the car has been picked up, which ends
+ * the demo (it replaced collision detection, 16 Nov). The course uses the
+ * side hump: the car rolls, and
  * height = 114 mm x sin(most-tilted 30 mm roll mean) (terrain.c).
  * The pitch (full-width) hump is the earlier method, kept for
  * terrain_on_hump(): height = 80 mm x sin(most nose-down 30 mm mean), on
@@ -24,8 +26,11 @@
 #include "imu.h"
 
 #define TERRAIN_EVT_HUMP        (1u << 0)
-#define TERRAIN_EVT_COLLISION   (1u << 1)
 #define TERRAIN_EVT_SIDE_HUMP   (1u << 2)
+
+/** What gave the lift away (terrain_lift_update) */
+#define TERRAIN_LIFT_TILT       1u   /**< tilted past LIFT_TILT_CDEG */
+#define TERRAIN_LIFT_ACCEL      2u   /**< |a| off 1 g by LIFT_ACCEL_MG */
 
 typedef struct {
     int32_t start_mm;        /**< where the nose-down stretch began */
@@ -45,10 +50,11 @@ typedef struct {
     uint8_t right_side;      /**< 1 = right wheel went over it */
 } side_hump_event_t;
 
+/** A lift, for the log */
 typedef struct {
-    int32_t dist_mm;         /**< where the jolt happened */
-    int16_t jolt_mg;         /**< horizontal accel jump that triggered it */
-} collision_event_t;
+    uint8_t cue;             /**< TERRAIN_LIFT_* that armed it */
+    int16_t cue_val;         /**< tilt, x0.01 deg, or |a| - 1 g, mg */
+} lift_event_t;
 
 /**
  * @brief Start detection; call with the car at rest and level.
@@ -61,25 +67,45 @@ void terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg);
  * @brief Process one sample.
  * @param dist_mm   distance travelled (encoders), increasing forwards
  * @param p_att     attitude from imu_read_attitude()
- * @param p_cal     calibrated sample from the same read (for the jolt)
  * @param steady    true while driving at constant speed: speeding up or
  *                  braking reads as pitch, so only pitch humps wait for it
  * @param p_hump    filled when TERRAIN_EVT_HUMP is returned
- * @param p_coll    filled when TERRAIN_EVT_COLLISION is returned
  * @return TERRAIN_EVT_* flags for events completed by this sample
  *         (for TERRAIN_EVT_SIDE_HUMP read it with terrain_last_side_hump)
  */
 uint32_t terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
-                        const imu_raw_t *p_cal, bool b_steady,
-                        hump_event_t *p_hump, collision_event_t *p_coll);
+                        bool b_steady, hump_event_t *p_hump);
+
+/**
+ * @brief Lift check (the end of the demo: picked up, the motors stop).
+ * Call every control period during a run, with or without a new IMU
+ * sample. An IMU cue (tilted past 25 deg from rest for 0.1 s, or the
+ * acceleration's size off 1 g by 300 mg: a pull up or a drop) arms it for
+ * 2 s; it fires if all three IRs then read black (no floor under them)
+ * for 0.3 s. A cross blackens all three for about 18 mm only, a ramp
+ * tilts the car 4-13 deg; on the ramp (and 1 s after it) the
+ * acceleration cue is ignored, its bumps being normal there.
+ * @param t_ms      now, ms
+ * @param p_att     attitude, or NULL if no sample this period
+ * @param p_cal     calibrated sample from the same read, or NULL
+ * @param b_no_floor all three IRs black
+ * @param b_on_ramp on the one-sided ramp
+ * @param p_lift    filled when it returns true
+ * @return true once, when the car has been lifted (until terrain_reset)
+ */
+bool terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
+                         const imu_raw_t *p_cal, bool b_no_floor,
+                         bool b_on_ramp, lift_event_t *p_lift);
+
+/** @brief Largest tilt from rest (x0.01 deg) and |a| - 1 g (mg) seen off
+ * the ramp since terrain_reset: the margin a normal run keeps below the
+ * lift cues (tuning and evidence). */
+void terrain_lift_peaks(int16_t *p_tilt_cdeg, int16_t *p_accel_mg);
 
 /** @brief True while inside a hump: nose-down stretch or one-sided roll. */
 bool terrain_on_hump(void);
 
 /** @brief The side hump completed by the last TERRAIN_EVT_SIDE_HUMP. */
 void terrain_last_side_hump(side_hump_event_t *p_ev);
-
-/** @brief Largest horizontal jolt seen since terrain_reset (for tuning). */
-int16_t terrain_max_jolt_mg(void);
 
 #endif /* BUDDY4_TERRAIN_H */

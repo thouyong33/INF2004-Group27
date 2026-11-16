@@ -52,14 +52,14 @@ import threading
 import time
 import webbrowser
 
-STATES = ["IDLE", "START", "FOLLOW", "RAMP", "DONE", "OBSTACLE", "IMPACT",
+STATES = ["IDLE", "START", "FOLLOW", "RAMP", "DONE", "OBSTACLE", "LIFTED",
           "FAULT", "TURN"]
 EVENTS = ["NONE", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF",
-          "IMPACT", "JOLT_IGNORED", "STOP_REQ", "BARCODE", "JUNCTION",
+          "LIFT", "-", "STOP_REQ", "BARCODE", "JUNCTION",
           "COMMAND", "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID",
           "OBST_DONE", "OBST_HDG"]
 # (the page matches these names; keep them in step with ctrl_events.h)
-FAULTS = ["STALL", "ENC_L", "ENC_R", "IMU", "NO_ECHO", "WIFI", "SCAN",
+FAULTS = ["STALL", "ENC_L", "ENC_R", "IMU", "NO_ECHO", "WIFI", "LIFTED",
           "LINE_LOST"]
 COMMANDS = ["none", "left", "right", "straight", "U-turn"]
 MOTIONS = ["stop", "stationary", "straight", "turning left",

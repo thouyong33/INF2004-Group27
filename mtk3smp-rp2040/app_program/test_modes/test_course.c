@@ -136,7 +136,7 @@ LOCAL const char *ctrlt_state(UB s)
 {
     static const char *const txt[9] = {
         "idle", "starting", "following", "on ramp", "DONE (distance or stop)",
-        "OBSTACLE: stopped", "IMPACT: stopped", "FAULT / line lost", "turning"
+        "OBSTACLE: stopped", "LIFTED: stopped", "FAULT / line lost", "turning"
     };
     return (s < 9u) ? txt[s] : "?";
 }
@@ -144,8 +144,8 @@ LOCAL const char *ctrlt_state(UB s)
 LOCAL const char *ctrlt_evt(UB e)
 {
     static const char *const txt[18] = {
-        "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "IMPACT",
-        "jolt ignored", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND",
+        "-", "FAULT", "OBSTACLE", "LINE_END", "RAMP_ON", "RAMP_OFF", "LIFT",
+        "-", "STOP_REQ", "BARCODE", "JUNCTION", "COMMAND",
         "OBST_WIDTH", "OBST_CREEP", "OBST_EDGE", "OBST_AVOID", "OBST_DONE",
         "OBST_HDG"
     };
@@ -336,6 +336,16 @@ void ctrl_test_course(void)
                       st.obstacle_width_mm);
         }
         tm_printf((UB *)"\n");
+        {
+            int16_t tilt;
+            int16_t acc;
+
+            terrain_lift_peaks(&tilt, &acc);
+            tm_printf((UB *)"[CTRL]   LIFT CHECK: largest tilt %d.%02d deg,"
+                      " |a| off 1 g %d mg off the ramp (cues 25 deg,"
+                      " 300 mg)%s\n", tilt / 100, tilt % 100, acc,
+                      (CTRL_ST_LIFTED == st.state) ? "; LIFTED" : "");
+        }
         tm_printf((UB *)"[CTRL]   TIMING: motion loop at least %u/s"
                   " (500 = on time, 2 ms loop), longest pass %u us;"
                   " controller longest sample gap %u ms (period 20)\n",
@@ -409,6 +419,13 @@ void ctrl_test_course(void)
                 tm_printf((UB *)"   (%s done, turned %d x0.01 deg)",
                           ctrlt_cmd(lg[i].arg),
                           lg[i].val);
+            } else if(EVT_LIFT == lg[i].type) {
+                tm_printf((UB *)"   (picked up: motors stopped; cue %s %d%s)",
+                          (TERRAIN_LIFT_TILT == lg[i].arg) ? "tilt"
+                                                           : "|a| off 1 g",
+                          (TERRAIN_LIFT_TILT == lg[i].arg)
+                          ? lg[i].val / 100 : lg[i].val,
+                          (TERRAIN_LIFT_TILT == lg[i].arg) ? " deg" : " mg");
             }
             tm_printf((UB *)"\n");
         }
