@@ -124,6 +124,9 @@ with what the car accepted.
 
 ## 7. Notes
 
+- `REQUIREMENTS.md` maps each demo requirement to its code, test and
+  evidence. The PC unit tests run with
+  `bash mtk3smp-rp2040/tests/host/run_host_tests.sh`.
 - The status LED (the blink task) is on GP16 and the console on GP0/GP1;
   the car's own pins are in `app_program/common/pin_defs.h`.
 - Test builds kept for the CR1 evidence are in `tests/`
