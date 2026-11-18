@@ -41,7 +41,7 @@ design choice needs its reason.
 | Ramp (Buddy 4) | height from roll over a 30 mm plateau, h = 114 mm × sin(roll); straight hold on the ramp | small ramp (10 mm) read 11–12 mm; tall ramp (24 mm) read 23–26 mm | Done |
 | Lift (Buddy 4) | IMU tilt or acceleration cue confirmed by all three IRs seeing no floor; motors stop, run ends LIFTED | host test passes (v55); lift runs on the car to come | On-car test due |
 | Obstacle (Buddy 5) | stop at 300 mm, creep to 200 mm, side-step to both edges, width = left − right; go round on the left with depth = width, return until the line is seen | every stop ≥ 5 cm (about 13 cm after the creep); width ±3 cm typical over 13 runs; rounded 9.5 cm box 95/96 mm, line met within 5–7 mm (v49) | Done |
-| Controller | event-driven task; ramp, barcode and obstacle sequences; continuous course (`c`, `f`); rolling log and scenario reports; motion state | each sequence on its own; continuous laps on the lab circuit (v45–v52) | Done (`f` with commands to run on the course) |
+| Controller | event-driven task; ramp, barcode and obstacle sequences; continuous course (`c`, `f`); rolling log and scenario reports; motion state | each sequence on its own; continuous laps on the lab circuit (v45–v52); full course with commands, 13.3 m (v57) | Done |
 | Telemetry (Buddy 1) | MQTT over Wi-Fi: 11-byte bit-packed status every 500 ms, events, last will, run commands, barcode mapping from the PC | codec tests pass; on the car 29 Oct (status, events, reconnect, last will); mapping round trip with a simulated car (v54) | Done (v54 mapping to confirm on the car) |
 
 ## 2. Motion (Buddy 2)
@@ -419,8 +419,24 @@ without the skid.
   in each direction with no fault (v45), every scenario chained: curves,
   crosses, the ramp (26–27 mm black ramp), barcodes and obstacles. The
   v52 CPU figures come from a 16.1 m `c` run (section 11).
-- **`f`, with commands:** built (v53, v54); to be run on a layout where
-  a cross follows a code.
+- **`f`, full course with barcode commands (v57, 18 Nov):** on a new,
+  larger circuit, with the mapping sent from the dashboard over MQTT
+  (forward C, U-turn A, left Q, right S):
+
+  | Run | Distance | Result |
+  |---|---|---|
+  | 3 | 4.9 m | `S` read reversed twice; both right turns done (90.2°, 89.2°) |
+  | 4 | 13.3 m | obstacle measured 145 mm and gone round in 78.7 s (line met 9 mm from plan, every turn within 0.34°); ramp 13 mm (ramp under the left wheel); `F` (not mapped) crossed straight; `Q` read reversed, left turn 89.4° |
+
+  Both runs ended on STOP with no fault and no event dropped. Junction
+  arms under the left IR log as one-bar failed reads, as expected.
+  `LIFT CHECK` in run 4: largest tilt 27.7° and acceleration 138 mg off
+  the ramp in normal driving. The tilt passed the 25° cue without a
+  false stop (the IRs still saw the floor), so the IR "no floor" check is
+  the lift's real guard.
+  MQTT: telemetry stalled for stretches (send buffer full) while the
+  phone and laptop were far from the car; the link recovers when it is
+  closer, so keep the phone near the middle of the course.
 - **Cycle time estimate** for one ramp, one barcode and a ~20 cm obstacle
   on 9 mats:
   - normally about 2 min: 31 s of following, 5–6.5 s of turn, about 85 s
@@ -611,7 +627,7 @@ is 8% of its 2 ms period.
     swings out of the curve;
   - the IR height needs about 9 mm ± 0.5 mm, because the bars blur at
     10 mm.
-- **Full course with commands (`f`):** to be run where a cross follows a
-  code, with the mapping sent over MQTT.
+- **MQTT range:** telemetry stalls when the car is far from the phone
+  hotspot; place the phone near the middle of the course.
 - **CR1 packing:** the MQTT data is packed; `robot_status` and the event
   messages are not.
