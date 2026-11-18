@@ -39,7 +39,7 @@ design choice needs its reason.
 | Line following (Buddy 3) | right-edge following by heading; curve mode for bends; junction = both IRs black for 6–35 mm, from either side | 3/3 bare-mat runs and 2/2 more on v29; lab circuit lapped 13 m each way (v45), clockwise laps consistent (v51) | Done |
 | Barcode (Buddy 3) | Code 39, ratio decoding at any 1:3 scale, one bar short accepted at either end; mapping sent from the PC over MQTT; gentle following while reading | 5/5 decoded on v29; commands at the cross 8/8 correct; on the circuit the A4 code read every lap, the 50% `A` after a curve 2/3 laps (v49) | Done |
 | Ramp (Buddy 4) | height from roll over a 30 mm plateau, h = 114 mm × sin(roll); straight hold on the ramp | small ramp (10 mm) read 11–12 mm; tall ramp (24 mm) read 23–26 mm | Done |
-| Lift (Buddy 4) | all three IRs see no floor for 1 s, or 0.3 s after an IMU tilt or acceleration cue; motors stop, run ends LIFTED | v57: quick and slow hand lifts both stopped (after 3 s, the fallback then); light ramp never read as no floor; v58 host tests pass | v58 lift runs due |
+| Lift (Buddy 4) | all three IRs see no floor for 1 s, or 0.3 s after an IMU tilt or acceleration cue; motors stop, run ends LIFTED | v58: quick lift stopped in ~0.3 s (acceleration cue), slow lift in 1.0 s (no floor); light ramp never read as no floor; host tests pass | Done (black ramp untested) |
 | Obstacle (Buddy 5) | stop at 300 mm, creep to 200 mm, side-step to both edges, width = left − right; go round on the left with depth = width, return until the line is seen | every stop ≥ 5 cm (about 13 cm after the creep); width ±3 cm typical over 13 runs; rounded 9.5 cm box 95/96 mm, line met within 5–7 mm (v49) | Done |
 | Controller | event-driven task; ramp, barcode and obstacle sequences; continuous course (`c`, `f`); rolling log and scenario reports; motion state | each sequence on its own; continuous laps on the lab circuit (v45–v52); full course with commands, 13.3 m (v57) | Done |
 | Telemetry (Buddy 1) | MQTT over Wi-Fi: 11-byte bit-packed status every 500 ms, events, last will, run commands, barcode mapping from the PC | codec tests pass; on the car 29 Oct (status, events, reconnect, last will); mapping round trip with a simulated car (v54) | Done (v54 mapping to confirm on the car) |
@@ -282,7 +282,14 @@ Gentle following keeps both the heading and the sideways position.
     of black on the ramp after a jolt, the landing and a stale cue do
     not fire; quick, tilted, slow level, "held as a ramp", upside-down
     and dropped lifts do.
-  - Lift runs on v58: to be added.
+  - **Lift runs on v58 (18 Nov), car following a taped line:**
+
+    | Lift | All three IRs black from | Stopped | Cue |
+    |---|---|---|---|
+    | Quick | 518 mm | 546 mm, ~0.3 s later | acceleration, 375 mg |
+    | Slow | 610 mm | 710 mm, 1.0 s later | no floor, 1015 ms |
+
+    Both runs ended LIFTED with `FAULT_LIFTED` and the motors off.
 - **Compass:** not used for heading. On this floor it reported a 48° turn
   over 50 cm while the encoders showed 1.5°.
 
