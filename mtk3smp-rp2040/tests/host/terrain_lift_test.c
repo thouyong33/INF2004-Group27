@@ -93,26 +93,33 @@ main(void)
           && (TERRAIN_LIFT_TILT == lift.cue),
           "tilted lift fires on the tilt cue");
 
-    /* No floor with no IMU cue (a dark patch) */
+    /* No floor with no IMU cue: a slow, level lift (v57 run 9) */
     start(0, 0);
-    check(0U == run(3000U, 0, 0, 0, -1000, 1, 0, &lift),
-          "no floor without an IMU cue: no lift");
+    check(0U == run(900U, 0, 0, 0, -1000, 1, 0, &lift),
+          "slow level lift: nothing before 1 s");
+    check((0U != run(200U, 0, 0, 0, -1000, 1, 0, &lift))
+          && (TERRAIN_LIFT_NO_FLOOR == lift.cue),
+          "slow level lift: fires at 1 s of no floor");
 
-    /* The ramp: entry jolt, on it (tilted IR reads black), landing */
+    /* The ramp: entry jolt, on it, landing. A light ramp leaves the
+     * floor in view (v57 run 6); a short dark stretch on it must not
+     * fire with the jolt's cue */
     start(0, 0);
-    (void)run(40U, 0, 1300, 500, -1500, 1, 0, &lift);
-    check(0U == run(800U, 0, 1300, 300, -1400, 1, 1, &lift),
-          "on the ramp: no lift");
-    check(0U == run(400U, 0, 0, 350, -1400, 1, 0, &lift),
+    (void)run(40U, 0, 1300, 500, -1500, 0, 0, &lift);
+    check(0U == run(800U, 0, 1300, 300, -1400, 0, 1, &lift),
+          "on a light ramp: no lift");
+    check(0U == run(500U, 0, 1300, 300, -1400, 1, 1, &lift),
+          "0.5 s dark on the ramp after a jolt: no lift");
+    check(0U == run(400U, 0, 0, 350, -1400, 0, 0, &lift),
           "landing (acceleration ignored 1 s): no lift");
 
     /* Lifted with a small tilt: the hump detector holds it "on the ramp" */
     start(0, 0);
     (void)run(40U, 0, 0, 0, -1450, 0, 0, &lift);
     (void)run(200U, 0, 800, 0, -1000, 1, 0, &lift);
-    check((0U != run(4000U, 0, 800, 0, -1000, 1, 1, &lift))
-          && (TERRAIN_LIFT_RAMP == lift.cue),
-          "lifted, held as a ramp: fires after 3 s of no floor");
+    check((0U != run(1000U, 0, 800, 0, -1000, 1, 1, &lift))
+          && (TERRAIN_LIFT_NO_FLOOR == lift.cue),
+          "lifted, held as a ramp: fires at 1 s of no floor");
     start(0, 0);
     check((0U != run(1000U, 3000, 0, 0, -1000, 1, 1, &lift))
           && (TERRAIN_LIFT_TILT == lift.cue),
@@ -122,8 +129,8 @@ main(void)
     start(0, 0);
     (void)run(40U, 0, 0, 0, -1500, 0, 0, &lift);
     (void)run(2100U, 0, 0, 0, -1000, 0, 0, &lift);
-    check(0U == run(1000U, 0, 0, 0, -1000, 1, 0, &lift),
-          "a cue older than 2 s does not arm");
+    check(0U == run(900U, 0, 0, 0, -1000, 1, 0, &lift),
+          "a cue older than 2 s does not arm the 0.3 s check");
 
     /* Upside down (roll across 180 deg) and a drop (|a| under 1 g) */
     start(0, 0);

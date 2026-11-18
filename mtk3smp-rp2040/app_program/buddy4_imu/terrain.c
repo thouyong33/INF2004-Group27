@@ -40,18 +40,20 @@
 #define SIDE_EXIT_MM             15      /* ... for this much travel */
 #define TRACK_MM                 114.0f  /* wheel track: lever for roll */
 
-/* Lift (the demo's end: picked up, the motors stop). The tallest ramp
- * rolls the car 13 deg and a ramp bump never lasts 0.1 s past 25 deg; a
- * cross blackens all three IRs for ~18 mm (0.18 s at 100 mm/s). First
- * values, to be checked against the lift runs and terrain_lift_peaks. */
+/* Lift (the demo's end: picked up, the motors stop). A cross blackens all
+ * three IRs for ~18 mm (0.18 s at 100 mm/s). On the car (v57, 18 Nov) the
+ * IRs saw every lift, while the IMU missed a slow one (17 deg, 251 mg) and
+ * normal driving reached 27.7 deg in turns; a light ramp (13 mm, under a
+ * wheel) never blackened all three. So no floor for 1 s is a lift on its
+ * own, and an IMU cue only makes it quicker (0.3 s). */
 #define LIFT_TILT_CDEG           2500    /* tilted past 25 deg from rest */
 #define LIFT_TILT_MS             100u    /* ... for this long */
 #define LIFT_ACCEL_MG            300     /* |a| this far from 1 g */
 #define LIFT_CUE_KEEP_MS         2000u   /* a cue arms the IR check this long */
 #define LIFT_NO_FLOOR_MS         300u    /* all three IRs black this long */
 #define LIFT_RAMP_QUIET_MS       1000u   /* accel cue ignored after a ramp */
-/* "on the ramp" with no floor this long is a lift (a 20 cm ramp takes 2 s) */
-#define LIFT_NO_FLOOR_RAMP_MS    3000u
+/* all three IRs black this long is a lift with or without an IMU cue */
+#define LIFT_NO_FLOOR_ALONE_MS   1000u
 #define ONE_G_MG                 1000
 
 typedef enum {
@@ -547,19 +549,19 @@ terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
         g_b_no_floor = true;
         g_no_floor_since = t_ms;
     }
-    /* On the ramp an acceleration cue is the ramp's own jolt (the IRs may
-     * read black there), so only a tilt cue counts, or no floor for far
-     * longer than any ramp (a lifted car the hump detector holds as a
-     * ramp: its wheels turn free and the hand tilts it a little) */
+    /* No floor for 1 s is a lift by itself (in or out of a "ramp": a
+     * lifted car's free wheels and a small tilt make the hump detector
+     * hold it as one). An IMU cue makes it 0.3 s; on the ramp only a
+     * tilt cue counts, an acceleration cue being the ramp's own jolt. */
     if ((g_b_lift_armed
          && ((!b_on_ramp) || (TERRAIN_LIFT_TILT == g_lift_cue.cue))
          && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_MS))
-        || (b_on_ramp
-            && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_RAMP_MS)))
+        || ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_ALONE_MS))
     {
-        if (b_on_ramp && (!g_b_lift_armed))
+        if ((!g_b_lift_armed)
+            || (b_on_ramp && (TERRAIN_LIFT_TILT != g_lift_cue.cue)))
         {
-            g_lift_cue.cue = TERRAIN_LIFT_RAMP;
+            g_lift_cue.cue = TERRAIN_LIFT_NO_FLOOR;
             g_lift_cue.cue_val = (int16_t)(t_ms - g_no_floor_since);
         }
         g_b_lifted = true;

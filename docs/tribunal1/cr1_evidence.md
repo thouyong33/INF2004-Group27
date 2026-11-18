@@ -39,7 +39,7 @@ design choice needs its reason.
 | Line following (Buddy 3) | right-edge following by heading; curve mode for bends; junction = both IRs black for 6–35 mm, from either side | 3/3 bare-mat runs and 2/2 more on v29; lab circuit lapped 13 m each way (v45), clockwise laps consistent (v51) | Done |
 | Barcode (Buddy 3) | Code 39, ratio decoding at any 1:3 scale, one bar short accepted at either end; mapping sent from the PC over MQTT; gentle following while reading | 5/5 decoded on v29; commands at the cross 8/8 correct; on the circuit the A4 code read every lap, the 50% `A` after a curve 2/3 laps (v49) | Done |
 | Ramp (Buddy 4) | height from roll over a 30 mm plateau, h = 114 mm × sin(roll); straight hold on the ramp | small ramp (10 mm) read 11–12 mm; tall ramp (24 mm) read 23–26 mm | Done |
-| Lift (Buddy 4) | IMU tilt or acceleration cue confirmed by all three IRs seeing no floor; motors stop, run ends LIFTED | host test passes (v55); lift runs on the car to come | On-car test due |
+| Lift (Buddy 4) | all three IRs see no floor for 1 s, or 0.3 s after an IMU tilt or acceleration cue; motors stop, run ends LIFTED | v57: quick and slow hand lifts both stopped (after 3 s, the fallback then); light ramp never read as no floor; v58 host tests pass | v58 lift runs due |
 | Obstacle (Buddy 5) | stop at 300 mm, creep to 200 mm, side-step to both edges, width = left − right; go round on the left with depth = width, return until the line is seen | every stop ≥ 5 cm (about 13 cm after the creep); width ±3 cm typical over 13 runs; rounded 9.5 cm box 95/96 mm, line met within 5–7 mm (v49) | Done |
 | Controller | event-driven task; ramp, barcode and obstacle sequences; continuous course (`c`, `f`); rolling log and scenario reports; motion state | each sequence on its own; continuous laps on the lab circuit (v45–v52); full course with commands, 13.3 m (v57) | Done |
 | Telemetry (Buddy 1) | MQTT over Wi-Fi: 11-byte bit-packed status every 500 ms, events, last will, run commands, barcode mapping from the PC | codec tests pass; on the car 29 Oct (status, events, reconnect, last will); mapping round trip with a simulated car (v54) | Done (v54 mapping to confirm on the car) |
@@ -259,26 +259,30 @@ Gentle following keeps both the heading and the sideways position.
   collision detection with one rule: picking the car up stops the motors.
   Buddy 4's lift check (`terrain_lift_update`) runs every 20 ms of a run,
   in the obstacle and junction sequences too:
-  - an IMU cue arms it for 2 s: tilted more than 25° from rest for 0.1 s,
-    or the acceleration's size more than 300 mg off 1 g (a pull up or a
-    drop; ignored on the ramp and for 1 s after it);
-  - it fires when all three IRs then read black (no floor) for 0.3 s. A
-    cross blackens all three for only ~18 mm and a ramp tilts the car
-    4–13°, so neither should fire it.
-  - A lifted car's free wheels and a small tilt can make the hump
-    detector call it "on the ramp" (bug hunt, 16 Nov). The check keeps
-    running there: a tilt cue still counts, an acceleration cue does
-    not (it is the ramp's own jolt), and no floor for 3 s while "on the
-    ramp" is a lift (a 20 cm ramp takes 2 s; v56).
+  - all three IRs black (no floor) for 1 s is a lift (v58);
+  - an IMU cue makes it quicker: tilted more than 25° from rest for
+    0.1 s, or the acceleration's size more than 300 mg off 1 g (a pull
+    up or a drop; ignored on the ramp and for 1 s after it) arms a 2 s
+    window in which 0.3 s of no floor is a lift;
+  - a cross blackens all three IRs for only ~18 mm (0.18 s).
+  - Why the IRs lead (v57 runs, 18 Nov): two `l` runs lifted by hand
+    stopped only after 3 s (the v56 fallback). In both the IRs lost the
+    floor at once, while the IMU saw 24.5° and 449 mg on a quick lift
+    and only 17° and 251 mg on a slow one, and the hump detector called
+    the lifted car "on the ramp" within ~26 mm. Normal driving reached
+    27.7° of tilt in turns (full-course run 4) without a stop, and a
+    light 13 mm ramp under a wheel never put all three IRs on black
+    (run 6). A black ramp has not been tried.
   - On a lift the controller raises `FAULT_LIFTED` (bit 6, in the motion
     mask): the motors stop at once and stay off until the next run, and
     the run ends in state `LIFTED` (telemetry state 6) with a `LIFT`
     event. Each run's printout gives the largest tilt and acceleration
     seen off the ramp, the margin a normal run keeps below the cues.
-  - Host test (`tests/host`): a bump then a cross, the ramp and its
-    landing, and a cue older than 2 s do not fire; level, tilted,
-    upside-down and dropped lifts do.
-  - Lift runs on the car: to be added.
+  - Host test (`tests/host`): a bump then a cross, a light ramp, 0.5 s
+    of black on the ramp after a jolt, the landing and a stale cue do
+    not fire; quick, tilted, slow level, "held as a ramp", upside-down
+    and dropped lifts do.
+  - Lift runs on v58: to be added.
 - **Compass:** not used for heading. On this floor it reported a 48° turn
   over 50 cm while the encoders showed 1.5°.
 

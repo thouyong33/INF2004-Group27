@@ -447,12 +447,13 @@ void ctrl_test_course(void)
             } else if(EVT_LIFT == lg[i].type) {
                 tm_printf((UB *)"   (picked up: motors stopped; cue %s %d%s)",
                           (TERRAIN_LIFT_TILT == lg[i].arg) ? "tilt"
-                          : (TERRAIN_LIFT_RAMP == lg[i].arg)
-                          ? "no floor while 'on the ramp'" : "|a| off 1 g",
+                          : (TERRAIN_LIFT_NO_FLOOR == lg[i].arg)
+                          ? "no floor" : "|a| off 1 g",
                           (TERRAIN_LIFT_TILT == lg[i].arg)
                           ? lg[i].val / 100 : lg[i].val,
                           (TERRAIN_LIFT_TILT == lg[i].arg) ? " deg"
-                          : (TERRAIN_LIFT_RAMP == lg[i].arg) ? " ms" : " mg");
+                          : (TERRAIN_LIFT_NO_FLOOR == lg[i].arg) ? " ms"
+                                                                 : " mg");
             }
             tm_printf((UB *)"\n");
         }
