@@ -1044,6 +1044,12 @@ line_follow_end(void)
     return g_end;
 }
 
+void
+line_trace_clear(void)
+{
+    g_trace_n = 0u;
+}
+
 uint32_t
 line_trace_get(line_trace_t *p_out)
 {

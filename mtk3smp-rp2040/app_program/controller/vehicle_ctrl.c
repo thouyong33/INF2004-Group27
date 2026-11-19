@@ -929,6 +929,7 @@ ctrl_task_main(INT stacd, void *exinf)
         /* a run that stops before it moves must not report the last
          * run's distance (line_follow_start resets it too) */
         motion_reset_odometry();
+        line_trace_clear();
         status_set(CTRL_ST_START, EVT_NONE, flags, 0, 0, 0);
         if (!g_b_imu_ok)
         {
@@ -968,6 +969,15 @@ ctrl_task_main(INT stacd, void *exinf)
         {
             log_evt(EVT_STOP_REQ, 0u, 0, 0);
             state = CTRL_ST_DONE;       /* stopped before it moved */
+        }
+        else if ((0u != (opts & CTRL_OPT_OBSTACLE))
+                 && (0u != (fault_get() & FAULT_NO_ECHO)))
+        {
+            /* A dead sonar is found within the watch settle (5 pings), so
+             * its EVT_FAULT went in the drain above and was lost: the
+             * car drove unprotected (19 Nov). Do not start. */
+            log_evt(EVT_FAULT, FAULT_NO_ECHO, 0, 0);
+            state = CTRL_ST_FAULT;
         }
         else
         {

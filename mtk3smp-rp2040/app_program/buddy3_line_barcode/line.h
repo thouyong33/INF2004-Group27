@@ -125,4 +125,8 @@ uint8_t line_follow_end(void);
  * first); returns the number of entries. */
 uint32_t line_trace_get(line_trace_t *p_out);
 
+/** @brief Empty the trace (a run that ends before following starts must
+ * not show the last run's); call only while not following. */
+void line_trace_clear(void);
+
 #endif /* BUDDY3_LINE_H */
