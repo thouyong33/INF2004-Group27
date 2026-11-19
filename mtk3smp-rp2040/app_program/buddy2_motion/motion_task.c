@@ -1054,6 +1054,14 @@ motion_set_velocity(int16_t left_mm_s, int16_t right_mm_s)
     return motion_send_cmd(left_mm_s, right_mm_s, 1u);
 }
 
+static volatile motion_turn_abort_fn g_turn_abort = NULL;
+
+void
+motion_set_turn_abort(motion_turn_abort_fn fn)
+{
+    g_turn_abort = fn;
+}
+
 void
 motion_stop(void)
 {
@@ -1355,8 +1363,9 @@ motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
  * scales with speed: ~1.5 deg at 60 mm/s, ~1 deg at 40 mm/s (scan turns,
  * 2026-10-22), so 2.5 cdeg per mm/s. Then waits for the wheels to settle.
  * Returns the angle turned (x0.01 deg), or 0 if cdeg is under 0.5 deg.
- * A motion fault, a motion_stop() from another task or the 6 s timeout
- * returns the angle so far.
+ * A motion fault, a motion_stop() from another task, the caller's turn
+ * check (motion_set_turn_abort) or the 6 s timeout returns the angle so
+ * far.
  */
 #define TURN_TRACK_MM             114L
 #define TURN_BRAKE_CDEG_PER_MM_S  5L    /* /2: 2.5 cdeg per mm/s */
@@ -1418,7 +1427,8 @@ motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s)
         if (((cdeg > 0) && (a >= (cdeg - brake)))
             || ((cdeg < 0) && (a <= (cdeg + brake)))
             || (0u != (fault_get() & FAULT_MOTION_MASK))
-            || (stops0 != g_stop_count))
+            || (stops0 != g_stop_count)
+            || ((NULL != g_turn_abort) && g_turn_abort()))
         {
             break;
         }

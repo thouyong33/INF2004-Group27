@@ -245,6 +245,29 @@ seq_wait(uint32_t ms)
     cpu_dly(ms);
 }
 
+/* The check a turn on the spot runs every 4 ms (motion_set_turn_abort),
+ * in this task: the lift check every 20 ms, as seq_wait does between the
+ * steps, then the sequence abort. Without it a lift during a turn was
+ * only seen once the turn ended: 2.3 s instead of 1 s (19 Nov). */
+static uint32_t g_turn_chk_ms = 0u;
+
+static bool
+turn_abort(void)
+{
+    imu_attitude_t att;
+    imu_raw_t raw;
+    uint32_t t = now_ms();
+    bool b_got;
+
+    if ((t - g_turn_chk_ms) >= CTRL_PERIOD_MS)
+    {
+        g_turn_chk_ms = t;
+        b_got = g_b_run_imu && (E_OK == imu_read_attitude(&att, &raw));
+        (void)lift_check(b_got ? &att : NULL, b_got ? &raw : NULL, false);
+    }
+    return seq_abort();
+}
+
 /* Barcode read -> command: the mapping the PC sent over MQTT
  * (buddy1_telemetry/cmd_map.h), the same whichever way the code was read;
  * no command for a character outside it, or before any mapping */
@@ -1332,6 +1355,8 @@ ctrl_task_create(void)
     {
         fault_set(FAULT_IMU);
     }
+    /* only the controller turns on the spot in a course run */
+    motion_set_turn_abort(turn_abort);
 
     cflg.flgatr = TA_TFIFO | TA_WSGL;
     cflg.iflgptn = 0u;

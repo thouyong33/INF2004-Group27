@@ -177,4 +177,11 @@ ER motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s);
  */
 int32_t motion_turn_cdeg(int32_t cdeg, uint16_t speed_mm_s);
 
+/** A check motion_turn_cdeg calls every 4 ms, from the caller's task;
+ * true ends the turn early. NULL (the default) = none. */
+typedef bool (*motion_turn_abort_fn)(void);
+
+/** @brief Set the turn check (the controller: lift and STOP). */
+void motion_set_turn_abort(motion_turn_abort_fn fn);
+
 #endif /* MOTION_TASK_H */
