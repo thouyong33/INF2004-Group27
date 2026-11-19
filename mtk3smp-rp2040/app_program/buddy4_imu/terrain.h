@@ -84,7 +84,7 @@ uint32_t terrain_update(int32_t dist_mm, const imu_attitude_t *p_att,
  * sample. All three IRs black (no floor under them) for 1 s is a lift.
  * An IMU cue (tilted past 25 deg from rest for 0.1 s, or the
  * acceleration's size off 1 g by 300 mg: a pull up or a drop) arms a
- * quicker check for 2 s: no floor for 0.3 s. A cross blackens all three
+ * quicker check for 2 s: no floor for 0.5 s. A cross blackens all three
  * for about 18 mm only. On the ramp (and 1 s after it) the acceleration
  * cue is ignored, its bumps being normal there. A black ramp that
  * blackens all three IRs for 1 s would read as a lift (untested).

@@ -78,6 +78,15 @@ main(void)
     printf("     peaks so far: tilt %d x0.01 deg, |a| off 1 g %d mg\n",
            tilt, acc);
 
+    /* Normal driving trips a cue (v60 run: 32 deg, 328 mg), then a slow,
+     * angled cross gives 0.4 s of all-black: no lift */
+    start(0, 0);
+    (void)run(40U, 0, 0, 0, -1340, 0, 0, &lift);
+    check(0U == run(400U, 0, 0, 0, -1000, 1, 0, &lift),
+          "cue armed by driving, then 0.4 s of cross: no lift");
+    (void)run(500U, 0, 0, 0, -1000, 0, 0, &lift);
+    start(100, -50);
+
     /* Level lift: a pull up, then no floor */
     (void)run(60U, 100, -50, 0, -1450, 0, 0, &lift);
     check((0U != run(1000U, 100, -50, 0, -1000, 1, 0, &lift))
@@ -130,7 +139,7 @@ main(void)
     (void)run(40U, 0, 0, 0, -1500, 0, 0, &lift);
     (void)run(2100U, 0, 0, 0, -1000, 0, 0, &lift);
     check(0U == run(900U, 0, 0, 0, -1000, 1, 0, &lift),
-          "a cue older than 2 s does not arm the 0.3 s check");
+          "a cue older than 2 s does not arm the 0.5 s check");
 
     /* Upside down (roll across 180 deg) and a drop (|a| under 1 g) */
     start(0, 0);

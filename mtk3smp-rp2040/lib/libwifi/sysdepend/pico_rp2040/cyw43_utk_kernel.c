@@ -13,8 +13,11 @@ IMPORT void cyw43_utk_task(INT stacd, void *exinf);
 
 /* USB CDC drains at priority 3 on the same physical core.  Keep radio polling
  * below it so firmware download and the 2 ms poll cadence cannot overflow the
- * console ring, while remaining well above the qualification task. */
-#define CYW43_TASK_PRIORITY  4
+ * console ring, while remaining well above the qualification task.
+ * Robot car (19 Nov): below the motion task (5) too. At 4 it preempted the
+ * 2 ms motion loop, which fell to 469-472 passes/s once MQTT publishes
+ * stopped failing (v59); the car's control must not wait on the radio. */
+#define CYW43_TASK_PRIORITY  6
 #define CYW43_TASK_STACK     (6 * 1024)
 
 EXPORT ER cyw43_utk_start(void)

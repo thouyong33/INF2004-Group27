@@ -39,7 +39,7 @@ design choice needs its reason.
 | Line following (Buddy 3) | right-edge following by heading; curve mode for bends; junction = both IRs black for 6–35 mm, from either side | 3/3 bare-mat runs and 2/2 more on v29; lab circuit lapped 13 m each way (v45), clockwise laps consistent (v51) | Done |
 | Barcode (Buddy 3) | Code 39, ratio decoding at any 1:3 scale, one bar short accepted at either end; mapping sent from the PC over MQTT; gentle following while reading | 5/5 decoded on v29; commands at the cross 8/8 correct; on the circuit the A4 code read every lap, the 50% `A` after a curve 2/3 laps (v49) | Done |
 | Ramp (Buddy 4) | height from roll over a 30 mm plateau, h = 114 mm × sin(roll); straight hold on the ramp | small ramp (10 mm) read 11–12 mm; tall ramp (24 mm) read 23–26 mm | Done |
-| Lift (Buddy 4) | all three IRs see no floor for 1 s, or 0.3 s after an IMU tilt or acceleration cue; motors stop, run ends LIFTED | v58: quick lift stopped in ~0.3 s (acceleration cue), slow lift in 1.0 s (no floor); light ramp never read as no floor; host tests pass | Done (black ramp untested) |
+| Lift (Buddy 4) | all three IRs see no floor for 1 s, or 0.5 s after an IMU tilt or acceleration cue; motors stop, run ends LIFTED | v58: quick lift stopped in ~0.3 s (acceleration cue), slow lift in 1.0 s (no floor); light ramp never read as no floor; host tests pass | Done (black ramp untested) |
 | Obstacle (Buddy 5) | stop at 300 mm, creep to 200 mm, side-step to both edges, width = left − right; go round on the left with depth = width, return until the line is seen | every stop ≥ 5 cm (about 13 cm after the creep); width ±3 cm typical over 13 runs; rounded 9.5 cm box 95/96 mm, line met within 5–7 mm (v49) | Done |
 | Controller | event-driven task; ramp, barcode and obstacle sequences; continuous course (`c`, `f`); rolling log and scenario reports; motion state | each sequence on its own; continuous laps on the lab circuit (v45–v52); full course with commands, 13.3 m (v57) | Done |
 | Telemetry (Buddy 1) | MQTT over Wi-Fi: 11-byte bit-packed status every 500 ms, events, last will, run commands, barcode mapping from the PC | codec tests pass; on the car 29 Oct (status, events, reconnect, last will); mapping round trip with a simulated car (v54) | Done (v54 mapping to confirm on the car) |
@@ -263,7 +263,9 @@ Gentle following keeps both the heading and the sideways position.
   - an IMU cue makes it quicker: tilted more than 25° from rest for
     0.1 s, or the acceleration's size more than 300 mg off 1 g (a pull
     up or a drop; ignored on the ramp and for 1 s after it) arms a 2 s
-    window in which 0.3 s of no floor is a lift;
+    window in which 0.5 s of no floor is a lift (0.3 s until v60:
+    normal driving reached 32° and 328 mg, both cues, so the margin to a
+    0.18 s cross was too small);
   - a cross blackens all three IRs for only ~18 mm (0.18 s).
   - Why the IRs lead (v57 runs, 18 Nov): two `l` runs lifted by hand
     stopped only after 3 s (the v56 fallback). In both the IRs lost the
