@@ -644,3 +644,31 @@ is 8% of its 2 ms period.
   hotspot; place the phone near the middle of the course.
 - **CR1 packing:** the MQTT data is packed; `robot_status` and the event
   messages are not.
+
+## 13. Tribunal 2 verification (18–19 Nov, v57–v62)
+
+Requirement IDs are the Tribunal 2 submission's (A1). Runs on the taped
+line and the straight + cross mats unless stated; course firmware v59–v62,
+Wi-Fi build with the dashboard.
+
+| ID | Test | Result |
+|---|---|---|
+| FR1, FR11, NFR10 | Full course with commands on the new circuit (v57, 18 Nov) | 13.3 m, every scenario, no fault, about 3.5 min (79 s at the obstacle) |
+| FR2, FR3 | Codes read both ways on the circuit and the mats | `A`, `Z`, `S`, `F`, `Q` read, forward and reversed |
+| FR4, NFR6 | `b` runs, mapping from the dashboard | U-turn 178.7–179.7° (5 runs); forward: JUNCTION then STRAIGHT (3 runs); left 89.4°, right 89.2–90.2° (circuit). The mapping survives a car restart (the broker keeps it) |
+| FR5, NFR5 | 11 mm ramp | read 13 mm |
+| FR6, NFR3 | Dead sonar (ECHO unplugged), `o` runs (v62) | run ends FAULT (0x10) at 0 mm, no movement. Nose gap at every obstacle stop 5–7 cm (user) |
+| FR7, NFR4 | 9.5 cm and 15 cm boxes | 95–96 mm (v49) and 145 mm (v57) |
+| FR8 | `a` run, circuit (v57) | went round, line met 9 mm from plan, turns within 0.34° |
+| FR9, NFR7 | Dashboard and MQTT | START/STOP and run buttons work; buttons return after an `o` run; a run key starts the next run after `c`; hotspot off mid-run: WIFI fault, car drives on, reconnects; car off: OFFLINE after 15 s; on again: ONLINE in about 15 s. v59: no publish failures (16 in-flight, Nagle off) |
+| FR10, NFR8 | Lifts (v61–v62) | quick lift on the line 0.5 s (acceleration cue); slow lift 1.0 s (no floor); lift during an obstacle side-step turn 1.2 s (v60 turn check; 2.3 s before) |
+| NFR2 | STOP (v61) | mid-turn: stopped 32° into a U-turn; in the obstacle measure: stopped, no width published; START then STOP within 1 s: never moved (0 mm). Mode 20: at rest 368 ms after STOP from 300 mm/s, queued moves discarded |
+| NFR1 | Mode 20 / mode 5 (v60 motion code), course runs (v61) | loop 500/s; speed error 150/300/500 mm/s: -1/0/0 % (mode 20); step test 300: L 303 R 299, 500: L 506 R 500, 150: 148/148, -300: -297/-298 (all within ±2%); course runs 500/s after v61 (469–472/s on v59–v60, fixed by putting the Wi-Fi task below the motion task) |
+| Faults | Mode 20 parts C–E | stall trips (MOTOR_STALL), left encoder trips (ENC_LEFT), 10 s free run: no trip |
+| NFR9 | v58 build | RAM 31.7 KB (66.7 KB with Wi-Fi), CPU about 14% busy in course runs |
+
+Fixes made during these tests: v59 (MQTT in-flight limit and Nagle; no
+width from an aborted probe; STOP logged when it ends a sequence;
+distance reset at run start), v60 (lift and STOP checked inside a turn on
+the spot), v61 (Wi-Fi task below motion; lift cue path 0.5 s), v62 (dead
+sonar stops the run before it moves; line trace cleared at run start).
