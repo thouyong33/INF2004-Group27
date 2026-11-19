@@ -76,6 +76,11 @@
 #if TM_WIFI_MQTT
 #define MQTT_OUTPUT_RINGBUF_SIZE        1024
 #define MQTT_CONNECT_TIMOUT             10
+/* lwIP holds even a QoS-0 publish in a request slot until TCP reports it
+ * sent; with the default 4, telemetry (2/s), timing (1/s) and bursts of
+ * up to 4 events filled them while the laptop's ACK was delayed, and
+ * publishes failed with ERR_MEM (19 Nov, car next to the phone) */
+#define MQTT_REQ_MAX_IN_FLIGHT          16
 #endif
 
 #define LWIP_STATS                      0

@@ -10,6 +10,8 @@
 #include "buddy1_hooks.h"
 
 #include "lwip/apps/mqtt.h"
+#include "lwip/apps/mqtt_priv.h"
+#include "lwip/altcp.h"
 #include "lwip/dhcp.h"
 #include "lwip/dns.h"
 #include "lwip/err.h"
@@ -241,13 +243,18 @@ static void
 mqtt_connection_callback(mqtt_client_t *client, void *arg,
                          mqtt_connection_status_t status)
 {
-    (void)client;
     (void)arg;
 
     if (MQTT_CONNECT_ACCEPTED == status)
     {
         g_b_telemetry_due_now = 1U;
         g_mqtt_status.state = MQTT_STATE_CONNECTED;
+        /* Send each small publish at once: with Nagle on, the next one
+         * waited for the laptop's delayed ACK (up to 200 ms on Windows) */
+        if (NULL != client->conn)
+        {
+            altcp_nagle_disable(client->conn);
+        }
         g_b_was_connected = 1U;
         if (g_b_link_lost)
         {
