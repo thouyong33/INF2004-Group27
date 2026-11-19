@@ -724,6 +724,13 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     left = probe_edge(dir, +1, &ref, &y, &b_cap_l) - PROBE_EDGE_OVER_MM;
     log_evt(EVT_OBST_EDGE, b_cap_l ? 3u : 1u, (int16_t)left, dist_mm());
 
+    if (seq_abort())
+    {
+        /* stopped or lifted part-way: no width (an aborted probe read
+         * -55 mm and published it, 19 Nov) */
+        log_evt(EVT_OBST_WIDTH, 0u, -1, dist_mm());
+        return 0;
+    }
     g_obst_width = (int16_t)(left - right);
     log_evt(EVT_OBST_WIDTH, (b_cap_r || b_cap_l) ? 2u : 1u, g_obst_width,
             dist_mm());
@@ -895,6 +902,10 @@ ctrl_task_main(INT stacd, void *exinf)
         g_status.last_evt = EVT_NONE;   /* not the previous run's */
         g_obst_width = 0;
         g_max_ramp = 0u;
+        g_probe_n = 0u;            /* no previous run's probe in this log */
+        /* a run that stops before it moves must not report the last
+         * run's distance (line_follow_start resets it too) */
+        motion_reset_odometry();
         status_set(CTRL_ST_START, EVT_NONE, flags, 0, 0, 0);
         if (!g_b_imu_ok)
         {
@@ -990,8 +1001,15 @@ ctrl_task_main(INT stacd, void *exinf)
                             log_evt(EVT_OBST_DONE, 0u,
                                     (int16_t)((now_ms() - t_obst) / 100u),
                                     dist_mm());
-                            state = (0u != g_stop_req) ? CTRL_ST_DONE
-                                                       : CTRL_ST_FAULT;
+                            if (0u != g_stop_req)
+                            {
+                                log_evt(EVT_STOP_REQ, 0u, 0, dist_mm());
+                                state = CTRL_ST_DONE;
+                            }
+                            else
+                            {
+                                state = CTRL_ST_FAULT;
+                            }
                             break;
                         }
                         log_evt(EVT_OBST_DONE, 1u,
@@ -1098,6 +1116,7 @@ ctrl_task_main(INT stacd, void *exinf)
                         requeue_events();
                         if (0u != g_stop_req)
                         {
+                            log_evt(EVT_STOP_REQ, 0u, 0, dist_mm());
                             state = CTRL_ST_DONE;
                         }
                         else if (0u != (fault_get() & FAULT_MOTION_MASK))
