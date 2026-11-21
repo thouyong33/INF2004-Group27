@@ -569,9 +569,11 @@ line_task_main(INT stacd, void *exinf)
              * the turn swept the car across the line (R, C, then L), so it
              * is now on the left. C can be black for under
              * LINE_RIGHT_CLEAR_MM while the car turns this fast: it once
-             * did, the car kept turning right and spiralled (21 Nov). */
+             * did, the car kept turning right and spiralled (21 Nov).
+             * Not during a barcode read: the bars are under L there, and
+             * one taken for the line turned the car left off it (21 Nov). */
             if (b_line_right && (curve_ff < 0) && !b_c_on && !b_r_on
-                && (0u != (bits & IR_BIT_LEFT)))
+                && (0u != (bits & IR_BIT_LEFT)) && (0u == g_straight))
             {
                 b_line_right = false;
                 curve_ff = 0;
