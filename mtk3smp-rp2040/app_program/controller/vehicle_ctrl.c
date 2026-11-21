@@ -56,6 +56,12 @@
 #define CTRL_TRIM_CDEG       60      /* re-turn if a turn misses by more */
 /* Both IRs report a cross: the second report within this is the same one */
 #define CTRL_JUNC_SAME_MM    60
+/* A left-IR junction (EVT_JUNCTION arg 1) within this distance after the
+ * line follower's curve turn is ignored: on a left curve the line passes
+ * under the left IR at an angle and reads as a 10-35 mm arm (ghost
+ * junctions, 21 Nov: one caused a wrong right turn). Crosses are on
+ * straights; the C-and-R junction (arg 0) is unchanged. */
+#define CTRL_JUNC_CURVE_MM   100
 
 #define UM_PER_EDGE          328L
 #define TRACK_MM             114L
@@ -896,6 +902,7 @@ ctrl_task_main(INT stacd, void *exinf)
     bool b_on_ramp;
     bool b_got;
     int32_t junc_last;
+    int32_t curve_d;          /* last distance in a curve turn */
     uint32_t t_obst;
     TMO wait;
 
@@ -962,6 +969,7 @@ ctrl_task_main(INT stacd, void *exinf)
         b_on_ramp = false;
         ramp_h = 0;
         junc_last = -10000;
+        curve_d = -10000;
         t_obst = 0u;
         g_dist_base = 0;
         imu_fail = 0u;
@@ -1060,6 +1068,7 @@ ctrl_task_main(INT stacd, void *exinf)
                             barcode_scan_enable(true);
                         }
                         junc_last = -10000;
+                        curve_d = -10000;
                         t_sample = now_ms();
                         d = dist_mm();
                     }
@@ -1105,6 +1114,12 @@ ctrl_task_main(INT stacd, void *exinf)
                     }
                     break;
                 case EVT_JUNCTION:
+                    if ((1u == evt.arg) && ((d - curve_d) < CTRL_JUNC_CURVE_MM))
+                    {
+                        /* logged with arg 3: a left-IR "arm" on a curve */
+                        log_evt(evt.type, 3u, evt.val, d);
+                        break;
+                    }
                     log_evt(evt.type, evt.arg, evt.val, d);
                     if (((evt.val > junc_last) ? (evt.val - junc_last)
                                                : (junc_last - evt.val))
@@ -1172,6 +1187,7 @@ ctrl_task_main(INT stacd, void *exinf)
                                                     (g_max_mm > 0) ? g_after_mm
                                                                    : 0);
                             junc_last = -10000;
+                            curve_d = -10000;
                             if (0u != (opts & CTRL_OPT_BARCODE))
                             {
                                 barcode_scan_enable(true);
@@ -1202,6 +1218,11 @@ ctrl_task_main(INT stacd, void *exinf)
             t_sample = t;
             d = dist_mm();
             hdg = heading_cdeg();
+            if ((LINE_TURN_LEFT == line_turn())
+                || (LINE_TURN_RIGHT == line_turn()))
+            {
+                curve_d = d;        /* see CTRL_JUNC_CURVE_MM */
+            }
 
             if (b_imu_ok)
             {

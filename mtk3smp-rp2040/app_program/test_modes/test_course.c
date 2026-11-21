@@ -444,6 +444,8 @@ void ctrl_test_course(void)
                 tm_printf((UB *)"   (%s done, turned %d x0.01 deg)",
                           ctrlt_cmd(lg[i].arg),
                           lg[i].val);
+            } else if((EVT_JUNCTION == lg[i].type) && (3u == lg[i].arg)) {
+                tm_printf((UB *)"   (left IR on a curve: ignored)");
             } else if(EVT_LIFT == lg[i].type) {
                 tm_printf((UB *)"   (picked up: motors stopped; cue %s %d%s)",
                           (TERRAIN_LIFT_TILT == lg[i].arg) ? "tilt"
