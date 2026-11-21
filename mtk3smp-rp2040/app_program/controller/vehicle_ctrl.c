@@ -636,6 +636,83 @@ probe_ping(void)
     return v[PROBE_PINGS / 2u];
 }
 
+/*----------------------------------------------------------------------------
+ * The avoid squares up to the line's direction and measures every move
+ * from it. Just after a curve or the ramp there is no plain straight to
+ * take it from, and the fallback (the curve's running average) was 13 deg
+ * short of where the line went: the car crept in at an angle, slid past
+ * the face and found nothing to measure (21 Nov). So then the car finds
+ * the face itself: it turns FACE_STEP_CDEG at a time each way from where it
+ * stopped until the echo is lost, and faces the middle of that span. A flat
+ * face echoes only near square-on, so the middle is square to the face.
+ *---------------------------------------------------------------------------*/
+#define FACE_STEP_CDEG       500
+#define FACE_MAX_CDEG        4000    /* each way */
+/* still the face if no further than this beyond the first reading (the
+ * range along the beam grows as the car turns off square) */
+#define FACE_BAND_MM         60
+
+static int32_t g_obst_dir = 0;       /* the avoid's reference, see above */
+static bool g_obst_face = false;     /* g_obst_dir came from the face */
+
+/* Turn from h0 toward side (+1 left, -1 right) a step at a time while the
+ * face still echoes; returns the last heading that saw it */
+static int32_t
+face_edge(int32_t h0, int32_t side, int32_t r0)
+{
+    int32_t k;
+    int32_t mm;
+    int32_t on = h0;
+
+    for (k = FACE_STEP_CDEG; k <= FACE_MAX_CDEG; k += FACE_STEP_CDEG)
+    {
+        if (seq_abort())
+        {
+            break;
+        }
+        probe_turn_to(h0 + (side * k));
+        seq_wait(PROBE_SETTLE_MS);
+        mm = probe_ping();
+        if ((mm <= 0) || (mm > (r0 + FACE_BAND_MM)))
+        {
+            break;
+        }
+        on = h0 + (side * k);
+    }
+    return on;
+}
+
+/* The avoid's reference direction (sets g_obst_dir, g_obst_face) */
+static int32_t
+obstacle_dir(void)
+{
+    int32_t h0;
+    int32_t r0;
+    int32_t left;
+    int32_t right;
+
+    g_obst_face = false;
+    g_obst_dir = line_clean_direction_cdeg();
+    if (line_clean_ok() || seq_abort())
+    {
+        return g_obst_dir;
+    }
+    h0 = heading_raw_cdeg();
+    r0 = probe_ping();
+    if (r0 <= 0)
+    {
+        return g_obst_dir;              /* nothing ahead: the fallback */
+    }
+    left = face_edge(h0, 1, r0);
+    right = face_edge(h0, -1, r0);
+    if (!seq_abort())
+    {
+        g_obst_dir = (left + right) / 2;
+        g_obst_face = true;
+    }
+    return g_obst_dir;
+}
+
 static void
 probe_log(int32_t y, int32_t mm)
 {
@@ -724,10 +801,12 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
 
     g_probe_n = 0u;
     g_face_n = 0u;
-    dir = line_clean_direction_cdeg();
-    /* the reference: plain following or the fallback, and how far it is
-       from the plain 100 mm average */
-    log_evt(EVT_OBST_HDG, line_clean_ok() ? OBST_HDG_CLEAN : OBST_HDG_PLAIN,
+    dir = g_obst_dir;                   /* set by obstacle_dir() */
+    /* the reference: plain following, the face or the fallback, and how
+       far it is from the plain 100 mm average */
+    log_evt(EVT_OBST_HDG,
+            g_obst_face ? OBST_HDG_FACE
+                        : (line_clean_ok() ? OBST_HDG_CLEAN : OBST_HDG_PLAIN),
             (int16_t)(dir - line_direction_cdeg()), dist_mm());
     avoid_turn_to(dir, 0u);
     seq_wait(PROBE_SETTLE_MS);
@@ -1035,7 +1114,7 @@ ctrl_task_main(INT stacd, void *exinf)
                         line_wind_down();
                         obstacle_watch(false);
                         seq_wait(300u);
-                        probe_turn_to(line_clean_direction_cdeg());
+                        probe_turn_to(obstacle_dir());
                         log_evt(EVT_OBST_CREEP, 0u,
                                 (int16_t)creep_to_scan_range(), dist_mm());
                         if (!avoid_obstacle())
@@ -1331,7 +1410,7 @@ ctrl_task_main(INT stacd, void *exinf)
         if ((CTRL_ST_OBSTACLE == state) && (0u == g_stop_req))
         {
             seq_wait(300u);
-            probe_turn_to(line_clean_direction_cdeg());
+            probe_turn_to(obstacle_dir());
             log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
                     dist_mm());
             {

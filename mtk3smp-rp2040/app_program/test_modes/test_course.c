@@ -434,7 +434,10 @@ void ctrl_test_course(void)
                     tm_printf((UB *)"   (reference from %s, %d x0.01 deg"
                               " from the plain average)",
                               (OBST_HDG_CLEAN == lg[i].arg)
-                              ? "plain following" : "the fallback",
+                              ? "plain following"
+                              : ((OBST_HDG_FACE == lg[i].arg)
+                                 ? "the face found by turning"
+                                 : "the fallback"),
                               lg[i].val);
                 }
             } else if(EVT_OBST_CREEP == lg[i].type) {

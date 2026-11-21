@@ -554,6 +554,18 @@ line_task_main(INT stacd, void *exinf)
                 b_line_right = false;
                 curve_ff = (curve_ff < 0) ? 0 : curve_ff;
             }
+            /* ...and in a blind right turn the left IR seeing black means
+             * the turn swept the car across the line (R, C, then L), so it
+             * is now on the left. C can be black for under
+             * LINE_RIGHT_CLEAR_MM while the car turns this fast: it once
+             * did, the car kept turning right and spiralled (21 Nov). */
+            if (b_line_right && (curve_ff < 0) && !b_c_on && !b_r_on
+                && (0u != (bits & IR_BIT_LEFT)))
+            {
+                b_line_right = false;
+                curve_ff = 0;
+                white_since = -1;
+            }
 
             /* Barcode read mode (see LINE_READ_BIAS_CDEG), at most
              * STRAIGHT_MAX_MM per read */
