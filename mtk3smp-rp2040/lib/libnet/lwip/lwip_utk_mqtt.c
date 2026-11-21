@@ -23,6 +23,10 @@
 
 /* Console logging function provided by the project. */
 extern int tm_printf(const unsigned char *format, ...);
+/* The application's "no prints now" check: a course run is going, and a
+ * printed line masks interrupts and holds off its control loop. Absent =
+ * always print. */
+extern int app_console_quiet(void) __attribute__((weak));
 
 /* Topics added at integration (31 Oct); defaults so an older local
  * mqtt_config.h still builds */
@@ -443,8 +447,10 @@ lwip_utk_mqtt_poll(struct netif *netif)
                 /* Diagnostic: limit logging to once every 5 seconds. */
                 static uint32_t last_publish_error_log_ms = 0U;
 
-                if ((uint32_t)(now - last_publish_error_log_ms)
-                    >= PUBLISH_LOG_MS)
+                if (((uint32_t)(now - last_publish_error_log_ms)
+                     >= PUBLISH_LOG_MS)
+                    && ((0 == app_console_quiet)
+                        || (0 == app_console_quiet())))
                 {
                     last_publish_error_log_ms = now;
                     tm_printf((const unsigned char *)"[mqtt-debug] Publish"

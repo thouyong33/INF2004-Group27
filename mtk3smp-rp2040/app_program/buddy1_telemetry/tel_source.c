@@ -168,8 +168,13 @@ buddy1_mapping(const uint8_t p_in[BUDDY1_MAPPING_LEN])
         return false;
     }
     (void)cmd_map_get(c);
-    tm_printf((UB *)"[mqtt] mapping: forward %c, U-turn %c, left %c,"
-                    " right %c\n", c[0], c[1], c[2], c[3]);
+    /* not during a run (see app_console_quiet in wifi_status.c): the menu
+     * after the run shows the mapping */
+    if (!ctrl_running())
+    {
+        tm_printf((UB *)"[mqtt] mapping: forward %c, U-turn %c, left %c,"
+                        " right %c\n", c[0], c[1], c[2], c[3]);
+    }
     return true;
 }
 

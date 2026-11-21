@@ -11,6 +11,10 @@
 #include "cyw43_utk.h"
 /* µT-Kernel monitor output */
 extern int tm_printf(const unsigned char *format, ...);
+/* The application's "no prints now" check (see lwip_utk_mqtt.c) */
+extern int app_console_quiet(void) __attribute__((weak));
+#define CYW43_UTK_QUIET() \
+    ((0 != app_console_quiet) && (0 != app_console_quiet()))
 
 #if TM_WIFI_NETIF
 #include "lwip/init.h"
@@ -551,7 +555,7 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
             char command[64];
 
             if (lwip_utk_mqtt_get_command(
-                    command, sizeof(command))) {
+                    command, sizeof(command)) && !CYW43_UTK_QUIET()) {
                 tm_printf("[mqtt] Received command: %s\n", command);
             }
         }
@@ -565,7 +569,9 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 
             lwip_utk_mqtt_get_status(&mqtt_status);
 
-            if (mqtt_status.state != previous_state) {
+            /* held during a run: the change is printed after it */
+            if ((mqtt_status.state != previous_state)
+                && !CYW43_UTK_QUIET()) {
                 previous_state = mqtt_status.state;
 
                 if (mqtt_status.state ==

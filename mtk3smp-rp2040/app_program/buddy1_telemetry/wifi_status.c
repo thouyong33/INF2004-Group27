@@ -15,6 +15,7 @@
 #include <tm/tmonitor.h>
 
 #include "common/usb_console_compat.h"
+#include "controller/vehicle_ctrl.h"
 #include "wifi_status.h"
 
 #if TM_WIFI_CYW43
@@ -36,6 +37,19 @@
  * ------------------------------------------------------------------ */
 
 #define WIFI_IDLE_MS 3000  /* nothing happening: report rarely */
+#define WIFI_QUIET_MS 200  /* re-check this often while a run holds prints */
+
+/* No radio prints while a course run is going. tm_printf masks every
+   interrupt for the whole line (~87 us a character at 115200), so a few
+   status lines held the 1 ms tick and the 2 ms motion loop off for ~60 ms
+   and a second read 470 passes (21 Nov). The state is kept, so what changed
+   is printed once the run ends. The radio library (lwip_utk_mqtt.c,
+   cyw43_utk.c) asks through this weak hook as well. */
+int
+app_console_quiet(void)
+{
+    return ctrl_running() ? 1 : 0;
+}
 #define WIFI_BUSY_MS 200   /* session running: drain the echo ring */
 
 /* Compose, then emit. tm_printf is atomic per call, but a line built from
@@ -70,6 +84,10 @@ LOCAL void wifi_status_task(INT stacd, void *exinf)
     tk_dly_tsk(700);   /* let the monitor print its banner first */
 
     while(1) {
+        if(0 != app_console_quiet()) {
+            tk_dly_tsk(WIFI_QUIET_MS);
+            continue;
+        }
         cyw43_utk_get_status(&st);
 
         /* Link transitions, printed once each rather than every tick. */
