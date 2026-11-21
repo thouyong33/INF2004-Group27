@@ -709,7 +709,7 @@ the dashboard. Each fix came from a trace in the run before it.
 | FR7, FR8, NFR4 | Box one mat (33 cm) after a curve's exit, face found by turning (3 runs) | 15 cm face: 142 mm; 9.5 cm face: 71 mm and 96 mm; went round and rejoined each time. On the straight (plain following): 148 and 150 mm (15 cm face) |
 | FR8 (limit) | Box 20 cm after a curve's exit | measured 96 mm, but the car passed it at an angle and its tail clipped the box. Closer than the one mat of plain line assumed between scenarios |
 | NFR2 | STOP from the console during the turning search | stopped at once; no width published (run ended DONE, STOP_REQ) |
-| FR5, NFR5 | Two ramps on the laps, under the right wheel as intended | pointed 11 mm ramp: 10 and 13 mm; flat-topped ramp (about 11.5 mm): 11 mm. (One 21 mm reading is not a test: the ramp had been placed on the car's left, the left IR bracket pushed it aside and the car jolted part-way up and dropped back.) |
+| FR5, NFR5, NFR8 | Two ramps on the laps, under the right wheel as intended, one of them black | pointed 11 mm ramp: 10 and 13 mm; flat-topped ramp (about 11.5 mm): 11 mm. The black ramp read like the light one and never stopped the car: under the right wheel it is outside the IRs' path, so the lift check's "all three IRs black" cannot happen. (One 21 mm reading is not a test: the ramp had been placed on the car's left, the left IR bracket pushed it aside and the car jolted part-way up and dropped back.) |
 | NFR1, NFR9 | TIMING and CPU lines | motion loop at least 496/s, longest pass 135 µs; each task 0.3–8.8% |
 
 Earlier v67 firmware: `tests/full_auto/ctrl_course_v67_smp0.uf2` (commit 48f68ec).
