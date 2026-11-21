@@ -7,7 +7,7 @@ original design with the revised one; earlier steps appear only where a
 design choice needs its reason.
 
 - **Code:** `mtk3smp-rp2040/app_program`, branch `thouyong`; the final build
-  (commit 9069d3d, 21 Nov) is v69; sections 13 and 14 cover v57–v69. Commits
+  is v71 (commit 3f2ff11, 21 Nov); sections 13 and 14 cover v57–v71. Commits
   are quoted for each result.
 - **Builds:** the course test (mode 31, `CTRL_TEST_COURSE`) is the
   default. The test UF2s are in `tests/full_auto/` (`ctrl_course_vNN`)
@@ -673,7 +673,7 @@ distance reset at run start), v60 (lift and STOP checked inside a turn on
 the spot), v61 (Wi-Fi task below motion; lift cue path 0.5 s), v62 (dead
 sonar stops the run before it moves; line trace cleared at run start).
 
-## 14. Full-circuit laps and fixes (21 Nov, v63–v69)
+## 14. Full-circuit laps and fixes (21 Nov, v63–v71)
 
 Runs on the full circuit, `f` (full course, commands on), Wi-Fi build with
 the dashboard. Each fix came from a trace in the run before it.
@@ -713,3 +713,25 @@ the dashboard. Each fix came from a trace in the run before it.
 | NFR1, NFR9 | TIMING and CPU lines | motion loop at least 496/s, longest pass 135 µs; each task 0.3–8.8% |
 
 Earlier v67 firmware: `tests/full_auto/ctrl_course_v67_smp0.uf2` (commit 48f68ec).
+
+**v70** (3aab01f): bug-hunt group C tidy-up, no change to driving: the
+telemetry event read skips the slot being overwritten; distance never
+negative (it showed 655 m after a turn); obstacle width never negative and a
+step limit on the side-step probe; the I2C disable wait bounded; the unused
+drive-a-distance function and dead variables removed.
+
+**v71** (3f2ff11): NFR1 loop dips. A few Wi-Fi course runs read 470 motion
+passes in their worst second. `tm_printf` masks every interrupt for the
+whole line (about 87 µs a character at 115200), so the radio's status
+lines (`[wifi] link`, `[mqtt]` state, received command, mapping) held the
+1 ms tick, and the 2 ms loop, off for about 60 ms when the link changed
+mid-run. They are now held while a run is going and printed after it
+(`app_console_quiet`, Buddy 1); telemetry, commands and reconnection are
+unchanged.
+
+| ID | Test (v71, 21 Nov) | Result |
+|---|---|---|
+| NFR1, NFR7, FR9 | `f` lap, hotspot off at the start for ~10 s then on, ended by STOP | FAULT_WIFI_LOSS raised, the car drove on and finished the lap (12.0 m, 200 s); motion loop **at least 496/s**, longest pass 114 µs |
+| FR1–FR8, FR11 | the same lap | Z forward then left 89.5°; A then U-turn 179.0°; Q reversed then straight at the cross; 15 cm box 148 mm, rejoined 12 mm from plan; ramp 11 mm |
+
+Final firmware: `tests/full_auto/ctrl_course_v71_smp0.uf2`.

@@ -2,7 +2,7 @@
 
 INF2004 Group 27 (CSC27) robot car on micro T-Kernel 3.0 (Raspberry Pi
 Pico W on a Robo Pico board). These are the final requirements from the
-Tribunal 2 pre-tribunal submission (A1), for firmware **v69**. Each one is
+Tribunal 2 pre-tribunal submission (A1), for firmware **v71**. Each one is
 mapped to the code that meets it, the test that checks it and the measured
 result.
 
@@ -11,7 +11,7 @@ result.
   are under `app_program/` unless they start with `lib/` or `tools/`.
 - **Results:** [`docs/tribunal1/cr1_evidence.md`](docs/tribunal1/cr1_evidence.md),
   section 13 has the table of every test below (18–19 Nov) and section 14
-  the full-circuit laps and fixes of 21 Nov (v63–v69); earlier sections
+  the full-circuit laps and fixes of 21 Nov (v63–v71); earlier sections
   have the design reasons and older runs.
 - **Build and flash:** [`README_QUICKSTART.md`](README_QUICKSTART.md).
 - **Code overview** (tasks, priorities, folders, pins):
@@ -43,13 +43,13 @@ course with commands off, `m` type the barcode mapping.
 
 | ID | Requirement | Code | Test | Result |
 |---|---|---|---|---|
-| NFR1 | Motion loop every 2 ms (at least 495 passes/s), PI every 20 ms; each wheel holds 150, 300, 500 mm/s within ±2%. | `buddy2_motion/motion_task.c` | mode 20 part A, mode 5; TIMING line of every course run | 500 passes/s; step test 148/148, 303/299, 506/500 mm/s |
+| NFR1 | Motion loop every 2 ms (at least 495 passes/s), PI every 20 ms; each wheel holds 150, 300, 500 mm/s within ±2%. | `buddy2_motion/motion_task.c` | mode 20 part A, mode 5; TIMING line of every course run | 500 passes/s; step test 148/148, 303/299, 506/500 mm/s. A few Wi-Fi course runs read 470/s for one second: the radio's status lines (printed with interrupts masked) held the loop off; from v71 they are held until the run ends, and a lap with the hotspot off and on mid-run read at least 496/s |
 | NFR2 | STOP from MQTT or the console reaches the motors within 2 ms in any state (including a turn on the spot and the width measurement) and discards queued moves; at rest within 400 ms from 300 mm/s. | `buddy2_motion/motion_task.c` (STOP checked first every 2 ms pass), `controller/vehicle_ctrl.c` (`seq_abort`) | mode 20 part B; STOP during `a`, `b` runs; START then STOP | at rest in 368 ms; stops mid-turn, mid-measurement and during the face search (v69); a STOP right after START never moves |
 | NFR3 | While watching for obstacles: at most 300 mm/s, ping every 65 ms, stop when 2 of the last 3 readings are 300 mm or less, nose gap at least 5 cm. | `buddy5_ultrasonic/obstacle.c` | `o`, `a` runs | nose gap 5–7 cm at every stop |
 | NFR4 | Obstacle width within ±3 cm in typical runs. | `controller/vehicle_ctrl.c` (`probe_obstacle`) | `a` runs on measured boxes | 9.5 cm box: 95–96 mm; 15 cm box: 145 mm; 9 cm box after the ramp: 93 mm (v65); one mat after a curve (v69): 15 cm face 142 mm, 9.5 cm face 71 and 96 mm |
 | NFR5 | IMU read every 20 ms; hump height within ±3 mm; humps below about 5 mm not reported. | `buddy4_imu/terrain.c` | `l` runs over a measured ramp | 11 mm ramp: 13 mm; on the laps 10–13 mm; a flat-topped 11.5 mm ramp read 11 mm |
 | NFR6 | Barcodes decode with the left IR 9 ± 0.5 mm above the floor; junction turns 90° ± 3°, U-turn 180°. | `buddy3_line_barcode/barcode_scan.c`, `controller/vehicle_ctrl.c` | `b` runs; IR height by ruler | IR at 9 mm; turns 89.2–90.2°, U-turns 178.7–179.7° |
-| NFR7 | 11-byte (88-bit) telemetry every 500 ms; a lost link raises FAULT_WIFI_LOSS within 3 s, retries every 5 s and never stops or slows the car; the last will marks the car OFFLINE. | `lib/libnet/lwip/lwip_utk_mqtt.c`, `lib/libnet/lwip/telemetry_codec.c` | hotspot off mid-run; car power-off with the control page open | fault raised, car drove on, reconnected; OFFLINE after 15 s |
+| NFR7 | 11-byte (88-bit) telemetry every 500 ms; a lost link raises FAULT_WIFI_LOSS within 3 s, retries every 5 s and never stops or slows the car; the last will marks the car OFFLINE. | `lib/libnet/lwip/lwip_utk_mqtt.c`, `lib/libnet/lwip/telemetry_codec.c` | hotspot off mid-run; car power-off with the control page open | fault raised, car drove on, reconnected; OFFLINE after 15 s; v71 lap with the hotspot off for ~10 s: FAULT_WIFI_LOSS, car drove the whole lap, loop at least 496/s |
 | NFR8 | Lift-to-stop: motors stop when all three IRs see no floor for 1 s, or for 0.5 s after an IMU cue (tilt over 25° for 0.1 s, or acceleration more than 300 mg off 1 g); no trigger on a cross or a ramp. | `buddy4_imu/terrain.c` | lifts during `l` and `a` runs; host test `terrain_lift_test.c` | quick lift 0.5 s, slow lift 1.0 s, lift during an obstacle side-step turn 1.2 s; no false stop in any course run |
 | NFR9 | All tasks under 50% CPU; fixed RAM under half of 264 KB. | `common/cpu_meter.c` | CPU line of every course run; build size | about 14–18.5% busy (v67 laps: each task 0.3–8.8%); 31.7 KB (66.7 KB with Wi-Fi, v58) |
 | NFR10 | One lap under 5 minutes. | — | `f` run on the circuit | about 10.1 m in 2.6 min a lap (30.3 m in 470 s, v67), 75–80 s of it at the obstacle |
@@ -77,10 +77,11 @@ course with commands off, `m` type the barcode mapping.
 Each UF2 holds one test mode, picked by `MOTION_TEST_MODE` in
 `app_program/test_modes/test_modes.h`. The course build used for the
 Tribunal 2 tests is `tests/full_auto/ctrl_course_v62_smp0.uf2` and the final
-build `ctrl_course_v69_smp0.uf2` (line following and obstacle squaring
-fixes from the full-circuit laps, v63–v69); the motion test builds are
+build `ctrl_course_v71_smp0.uf2` (line following and obstacle squaring
+fixes from the full-circuit laps, v63–v69; tidy-up v70; radio prints held
+during runs v71); the motion test builds are
 `motion_safety_v60_smp0.uf2` (mode 20) and `motion_pi_step_v60_smp0.uf2`
-(mode 5) in the same folder (their motion code is the same as v69). Older builds cited by the evidence log are
+(mode 5) in the same folder (their motion code is the same as v71). Older builds cited by the evidence log are
 there and in `tests/ir_test/`. The Wi-Fi build needs the local
 `config/wifi_credentials.h` and `mqtt_config.h` (see `README_QUICKSTART.md`).
 
