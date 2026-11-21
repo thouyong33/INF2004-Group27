@@ -57,10 +57,11 @@
 /* Both IRs report a cross: the second report within this is the same one */
 #define CTRL_JUNC_SAME_MM    60
 /* A left-IR junction (EVT_JUNCTION arg 1) within this distance after the
- * line follower's curve turn is ignored: on a left curve the line passes
- * under the left IR at an angle and reads as a 10-35 mm arm (ghost
- * junctions, 21 Nov: one caused a wrong right turn). Crosses are on
- * straights; the C-and-R junction (arg 0) is unchanged. */
+ * line follower's curve turn, or the ramp, is ignored: on a left curve the
+ * line passes under the left IR at an angle and reads as a 10-35 mm arm
+ * (ghost junctions, 21 Nov: one caused a wrong right turn), and the ramp's
+ * edge did the same. Crosses are on straights; the C-and-R junction (arg 0)
+ * is unchanged. */
 #define CTRL_JUNC_CURVE_MM   100
 
 #define UM_PER_EDGE          328L
@@ -1183,6 +1184,9 @@ ctrl_task_main(INT stacd, void *exinf)
                                 seq_wait(CTRL_WATCH_SETTLE_MS);
                             }
                             g_dist_base += dist_mm();
+                            /* the turn leaves the line under R: acquire
+                             * it before any curve turn (line.h) */
+                            line_acquire_next();
                             (void)line_follow_start(g_speed,
                                                     (g_max_mm > 0) ? g_after_mm
                                                                    : 0);
@@ -1219,7 +1223,7 @@ ctrl_task_main(INT stacd, void *exinf)
             d = dist_mm();
             hdg = heading_cdeg();
             if ((LINE_TURN_LEFT == line_turn())
-                || (LINE_TURN_RIGHT == line_turn()))
+                || (LINE_TURN_RIGHT == line_turn()) || b_on_ramp)
             {
                 curve_d = d;        /* see CTRL_JUNC_CURVE_MM */
             }

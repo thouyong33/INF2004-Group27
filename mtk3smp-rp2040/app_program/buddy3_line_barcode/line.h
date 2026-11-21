@@ -85,6 +85,15 @@ void line_follow_stop(void);
 void line_set_hold(bool b_hold);
 
 /**
+ * @brief The next line_follow_start() acquires the line before any curve
+ * turn: after a junction turn on the spot the line sits under R (a U-turn
+ * about the axle mirrors C's place on the right edge), which read as the
+ * start of a right curve and spiralled the car off it (21 Nov). Until C is
+ * on the line's right edge, or LINE_ACQUIRE_MAX_MM, the car only steers.
+ */
+void line_acquire_next(void);
+
+/**
  * @brief Barcode read mode: while set, keep following the edge with a small
  * fixed aim (+/-1 deg, no growth) so the left IR crosses the code steadily
  * (at most 400 mm). Set by the barcode task from the first bar of a read

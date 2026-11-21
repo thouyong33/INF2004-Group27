@@ -445,7 +445,7 @@ void ctrl_test_course(void)
                           ctrlt_cmd(lg[i].arg),
                           lg[i].val);
             } else if((EVT_JUNCTION == lg[i].type) && (3u == lg[i].arg)) {
-                tm_printf((UB *)"   (left IR on a curve: ignored)");
+                tm_printf((UB *)"   (left IR on a curve or ramp: ignored)");
             } else if(EVT_LIFT == lg[i].type) {
                 tm_printf((UB *)"   (picked up: motors stopped; cue %s %d%s)",
                           (TERRAIN_LIFT_TILT == lg[i].arg) ? "tilt"

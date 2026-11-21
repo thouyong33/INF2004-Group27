@@ -38,6 +38,9 @@
 #define LINE_CORR_MAX_MM_S   120     /* the hard-right case (line under R) */
 #define LINE_SLEW_MM_S       15      /* max steering change per period */
 #define LINE_JUNCTION_MM     30      /* drive straight this far over an arm */
+/* after a junction turn: steer onto the right edge, no curve turns, for at
+ * most this far (line_acquire_next) */
+#define LINE_ACQUIRE_MAX_MM  250
 /* C and R both black this far before it counts as a junction: a cross arm
  * keeps both black ~18 mm, but a diagonal glance across the line's edge
  * only a few mm, which gave false junctions on plain straights */
@@ -208,6 +211,9 @@ static volatile int16_t g_max_mm = 450;
 static volatile uint8_t g_end = LINE_END_NONE;
 static volatile uint8_t g_stop_req = 0u;
 static volatile uint8_t g_hold = 0u;
+/* line_acquire_next(): the next start follows without curve turns until C
+ * is on the line's right edge (see LINE_ACQUIRE_MAX_MM) */
+static volatile uint8_t g_acquire = 0u;
 static volatile uint8_t g_straight = 0u;
 static volatile int32_t g_line_dir = 0;     /* published for the controller */
 static volatile int32_t g_clean_dir = 0;    /* see LINE_CLEAN_MIN_MM */
@@ -397,6 +403,7 @@ line_task_main(INT stacd, void *exinf)
     int32_t ff_prev;
     bool b_after_curve;
     int32_t run_grow = LINE_BIAS_GROW_CDEG;   /* this side's growth */
+    int32_t acquire_until;   /* no curve turns before this, -1 = off */
 
     (void)stacd;
     (void)exinf;
@@ -415,6 +422,8 @@ line_task_main(INT stacd, void *exinf)
         last_side = 1;
         white_since = -1;
         straight_until = -1;
+        acquire_until = (0u != g_acquire) ? LINE_ACQUIRE_MAX_MM : -1;
+        g_acquire = 0u;
         both_since = -1;
         r_since = -1;
         b_junc_ok = false;
@@ -835,6 +844,11 @@ line_task_main(INT stacd, void *exinf)
                                          : LINE_BIAS_GROW_CDEG;
             }
             prev_off = off;
+            if ((acquire_until >= 0)
+                && ((1 == off) || (d >= acquire_until)))
+            {
+                acquire_until = -1;   /* C on the right edge: normal */
+            }
             if (0 == off)
             {
                 bias = 0;
@@ -857,9 +871,9 @@ line_task_main(INT stacd, void *exinf)
                 bias = (off < 0) ? -(bias * ((off < -1) ? 2 : 1)) : bias;
             }
             /* Curve feed-forward (see LINE_CURVE_WHITE_MM) */
-            if (b_reading || (d < straight_until))
+            if (b_reading || (d < straight_until) || (acquire_until >= 0))
             {
-                curve_ff = 0;          /* barcodes, arms: straights */
+                curve_ff = 0;          /* barcodes, arms, after a turn */
             }
             else if ((1 == off) && (white_since >= 0)
                      && ((curve_ff > 0)
@@ -1024,6 +1038,12 @@ int32_t
 line_clean_direction_cdeg(void)
 {
     return line_clean_ok() ? g_clean_dir : g_line_dir;
+}
+
+void
+line_acquire_next(void)
+{
+    g_acquire = 1u;
 }
 
 void
