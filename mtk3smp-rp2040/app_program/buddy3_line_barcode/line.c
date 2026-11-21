@@ -546,6 +546,15 @@ line_task_main(INT stacd, void *exinf)
             }
             else
             {
+                /* C alone, then white, while turning right: the turn swept
+                 * the line past C to the left (moving right it would have
+                 * crossed R first), however short C's black was. Waiting
+                 * for LINE_RIGHT_CLEAR_MM there spiralled the car past the
+                 * line out of the S-bend (21 Nov). */
+                if ((c_only_since >= 0) && (curve_ff < 0))
+                {
+                    b_line_right = false;
+                }
                 c_only_since = -1;
             }
             if (b_line_right && ((d - cr_d) <= LINE_CROSS_WINDOW_MM)
