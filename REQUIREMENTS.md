@@ -2,7 +2,7 @@
 
 INF2004 Group 27 (CSC27) robot car on micro T-Kernel 3.0 (Raspberry Pi
 Pico W on a Robo Pico board). These are the final requirements from the
-Tribunal 2 pre-tribunal submission (A1), for firmware **v67**. Each one is
+Tribunal 2 pre-tribunal submission (A1), for firmware **v69**. Each one is
 mapped to the code that meets it, the test that checks it and the measured
 result.
 
@@ -11,7 +11,7 @@ result.
   are under `app_program/` unless they start with `lib/` or `tools/`.
 - **Results:** [`docs/tribunal1/cr1_evidence.md`](docs/tribunal1/cr1_evidence.md),
   section 13 has the table of every test below (18–19 Nov) and section 14
-  the full-circuit laps and fixes of 21 Nov (v63–v67); earlier sections
+  the full-circuit laps and fixes of 21 Nov (v63–v69); earlier sections
   have the design reasons and older runs.
 - **Build and flash:** [`README_QUICKSTART.md`](README_QUICKSTART.md).
 - **Code overview** (tasks, priorities, folders, pins):
@@ -27,27 +27,27 @@ course with commands off, `m` type the barcode mapping.
 
 | ID | Requirement | Code | Test | Result |
 |---|---|---|---|---|
-| FR1 | Follow the black line course (straights, curves and cross junctions) with the three IR sensors; search for the line and rejoin it after losing it for up to 100 mm of travel. | `buddy3_line_barcode/line.c` | `l`, `c`, `f` runs | 3 laps of the full circuit, 30.3 m, curves, S-bend and crosses, no fault (v67, 21 Nov) |
+| FR1 | Follow the black line course (straights, curves and cross junctions) with the three IR sensors; search for the line and rejoin it after losing it for up to 100 mm of travel. | `buddy3_line_barcode/line.c` | `l`, `c`, `f` runs | 3 laps of the full circuit, 30.3 m (v67) and 2 laps, 22.9 m (v69), curves, S-bend and crosses, no fault (21 Nov) |
 | FR2 | Detect a Code 39 barcode left of the line with the left IR's analogue output, sampled once per encoder edge (0.328 mm). | `buddy3_line_barcode/barcode_scan.c` | `r`, `b` runs | codes detected on the circuit and the mats |
 | FR3 | Decode the character in either direction, at any bar size with a 1:3 ratio (narrow bar 3 to 6 mm). | `buddy3_line_barcode/barcode.c` | `r` runs; host test `barcode_decode_test.c` | `A`, `Z`, `S`, `F`, `Q` read forward and reversed (50% and full A4 codes) |
 | FR4 | At the next cross after a barcode, perform the movement mapped to the character (forward, U-turn, left, right). The mapping is sent from the PC over MQTT and acknowledged, not hard-coded. | `controller/vehicle_ctrl.c` (`junction_turn`), `buddy1_telemetry/cmd_map.c` | `b` runs with the mapping from the control page; host test `cmd_map_test.c` | U-turn 178.7–179.7°, forward crosses straight, left 87.9–89.4°, right 89.2–90.2°; line picked up after every turn on the laps; mapping kept across a car restart |
 | FR5 | Detect a hump with the IMU and report the peak height in mm in telemetry. | `buddy4_imu/terrain.c` | `l` run over the ramp; laps | 11 mm ramp read 13 mm; 10–12 mm on the laps |
 | FR6 | Detect an obstacle on the line with the ultrasonic sensor and stop before touching it. | `buddy5_ultrasonic/obstacle.c` | `o` runs; dead sonar (ECHO unplugged) | stops with a 5–7 cm nose gap; a dead sonar ends the run before it moves |
 | FR7 | Estimate the obstacle's width and record it in the event log. | `controller/vehicle_ctrl.c` (`probe_obstacle`) | `o`, `a` runs | see NFR4 |
-| FR8 | Drive round the obstacle without touching it, rejoin the line behind it and carry on. | `controller/vehicle_ctrl.c` (`avoid_obstacle`, `avoid_return`) | `a`, `f` runs | went round, line met 9 mm from plan, turns within 0.34°; on the laps every avoid rejoined within 22 mm of plan, including a box just after the ramp (v65 face-finding turn) |
+| FR8 | Drive round the obstacle without touching it, rejoin the line behind it and carry on. | `controller/vehicle_ctrl.c` (`avoid_obstacle`, `avoid_return`) | `a`, `f` runs | went round, line met 9 mm from plan, turns within 0.34°; on the laps every avoid rejoined within 22 mm of plan, including boxes one mat after a curve (v69 face search, 3 runs); a box only 20 cm after a curve was clipped by the tail (closer than the course's one mat between scenarios) |
 | FR9 | Publish telemetry over MQTT (state, motion, wheel speeds, distance, barcode command, hump height, obstacle distance, faults, heartbeat) and accept START, STOP and run selection from the PC. | `lib/libnet/lwip/lwip_utk_mqtt.c`, `lib/libnet/lwip/telemetry_codec.c`, `buddy1_telemetry/tel_source.c` | Wi-Fi build with the control page; host test `telemetry_codec_test.c` | all buttons work; run buttons return after a run; hotspot loss and car restart recover |
 | FR10 | Stop the motors and end the run when picked up; report LIFTED. | `buddy4_imu/terrain.c` (`terrain_lift_update`), `controller/vehicle_ctrl.c` (`lift_check`) | lift the car during `l`, `a` runs; host test `terrain_lift_test.c` | see NFR8 |
-| FR11 | Clear the whole course, scenarios in any order, in one run started by one START; keep lapping until STOP, a lift or a stopping fault. | `controller/vehicle_ctrl.c` | `f` run on the circuit | 3 laps, 30.3 m, every scenario each lap, one START, ended by STOP (v67, 21 Nov) |
+| FR11 | Clear the whole course, scenarios in any order, in one run started by one START; keep lapping until STOP, a lift or a stopping fault. | `controller/vehicle_ctrl.c` | `f` run on the circuit | 3 laps, 30.3 m (v67); 2 laps, 22.9 m (v69); every scenario each lap, one START, ended by STOP (21 Nov) |
 
 ## Non-functional requirements
 
 | ID | Requirement | Code | Test | Result |
 |---|---|---|---|---|
 | NFR1 | Motion loop every 2 ms (at least 495 passes/s), PI every 20 ms; each wheel holds 150, 300, 500 mm/s within ±2%. | `buddy2_motion/motion_task.c` | mode 20 part A, mode 5; TIMING line of every course run | 500 passes/s; step test 148/148, 303/299, 506/500 mm/s |
-| NFR2 | STOP from MQTT or the console reaches the motors within 2 ms in any state (including a turn on the spot and the width measurement) and discards queued moves; at rest within 400 ms from 300 mm/s. | `buddy2_motion/motion_task.c` (STOP checked first every 2 ms pass), `controller/vehicle_ctrl.c` (`seq_abort`) | mode 20 part B; STOP during `a`, `b` runs; START then STOP | at rest in 368 ms; stops mid-turn and mid-measurement; a STOP right after START never moves |
+| NFR2 | STOP from MQTT or the console reaches the motors within 2 ms in any state (including a turn on the spot and the width measurement) and discards queued moves; at rest within 400 ms from 300 mm/s. | `buddy2_motion/motion_task.c` (STOP checked first every 2 ms pass), `controller/vehicle_ctrl.c` (`seq_abort`) | mode 20 part B; STOP during `a`, `b` runs; START then STOP | at rest in 368 ms; stops mid-turn, mid-measurement and during the face search (v69); a STOP right after START never moves |
 | NFR3 | While watching for obstacles: at most 300 mm/s, ping every 65 ms, stop when 2 of the last 3 readings are 300 mm or less, nose gap at least 5 cm. | `buddy5_ultrasonic/obstacle.c` | `o`, `a` runs | nose gap 5–7 cm at every stop |
-| NFR4 | Obstacle width within ±3 cm in typical runs. | `controller/vehicle_ctrl.c` (`probe_obstacle`) | `a` runs on measured boxes | 9.5 cm box: 95–96 mm; 15 cm box: 145 mm; 9 cm box after the ramp: 93 mm (v65) |
-| NFR5 | IMU read every 20 ms; hump height within ±3 mm; humps below about 5 mm not reported. | `buddy4_imu/terrain.c` | `l` runs over a measured ramp | 11 mm ramp: 13 mm |
+| NFR4 | Obstacle width within ±3 cm in typical runs. | `controller/vehicle_ctrl.c` (`probe_obstacle`) | `a` runs on measured boxes | 9.5 cm box: 95–96 mm; 15 cm box: 145 mm; 9 cm box after the ramp: 93 mm (v65); one mat after a curve (v69): 15 cm face 142 mm, 9.5 cm face 71 and 96 mm |
+| NFR5 | IMU read every 20 ms; hump height within ±3 mm; humps below about 5 mm not reported. | `buddy4_imu/terrain.c` | `l` runs over a measured ramp | 11 mm ramp: 13 mm; on the laps 10–13 mm; a flat-topped 11.5 mm ramp read 11 mm and once 21 mm (outside ±3 mm) |
 | NFR6 | Barcodes decode with the left IR 9 ± 0.5 mm above the floor; junction turns 90° ± 3°, U-turn 180°. | `buddy3_line_barcode/barcode_scan.c`, `controller/vehicle_ctrl.c` | `b` runs; IR height by ruler | IR at 9 mm; turns 89.2–90.2°, U-turns 178.7–179.7° |
 | NFR7 | 11-byte (88-bit) telemetry every 500 ms; a lost link raises FAULT_WIFI_LOSS within 3 s, retries every 5 s and never stops or slows the car; the last will marks the car OFFLINE. | `lib/libnet/lwip/lwip_utk_mqtt.c`, `lib/libnet/lwip/telemetry_codec.c` | hotspot off mid-run; car power-off with the control page open | fault raised, car drove on, reconnected; OFFLINE after 15 s |
 | NFR8 | Lift-to-stop: motors stop when all three IRs see no floor for 1 s, or for 0.5 s after an IMU cue (tilt over 25° for 0.1 s, or acceleration more than 300 mg off 1 g); no trigger on a cross or a ramp. | `buddy4_imu/terrain.c` | lifts during `l` and `a` runs; host test `terrain_lift_test.c` | quick lift 0.5 s, slow lift 1.0 s, lift during an obstacle side-step turn 1.2 s; no false stop in any course run |
@@ -77,10 +77,10 @@ course with commands off, `m` type the barcode mapping.
 Each UF2 holds one test mode, picked by `MOTION_TEST_MODE` in
 `app_program/test_modes/test_modes.h`. The course build used for the
 Tribunal 2 tests is `tests/full_auto/ctrl_course_v62_smp0.uf2` and the final
-build `ctrl_course_v67_smp0.uf2` (line following and obstacle squaring
-fixes from the full-circuit laps); the motion test builds are
+build `ctrl_course_v69_smp0.uf2` (line following and obstacle squaring
+fixes from the full-circuit laps, v63–v69); the motion test builds are
 `motion_safety_v60_smp0.uf2` (mode 20) and `motion_pi_step_v60_smp0.uf2`
-(mode 5) in the same folder (their motion code is the same as v67). Older builds cited by the evidence log are
+(mode 5) in the same folder (their motion code is the same as v69). Older builds cited by the evidence log are
 there and in `tests/ir_test/`. The Wi-Fi build needs the local
 `config/wifi_credentials.h` and `mqtt_config.h` (see `README_QUICKSTART.md`).
 

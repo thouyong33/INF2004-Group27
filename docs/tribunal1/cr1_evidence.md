@@ -6,8 +6,8 @@ evidence. Per the professor's note (29 Oct), it does not compare the
 original design with the revised one; earlier steps appear only where a
 design choice needs its reason.
 
-- **Code:** `mtk3smp-rp2040/app_program`, branch `thouyong`, up to v67
-  (commit 48f68ec, 21 Nov); sections 13 and 14 cover v57–v67. Commits
+- **Code:** `mtk3smp-rp2040/app_program`, branch `thouyong`; the final build
+  (commit 9069d3d, 21 Nov) is v69; sections 13 and 14 cover v57–v69. Commits
   are quoted for each result.
 - **Builds:** the course test (mode 31, `CTRL_TEST_COURSE`) is the
   default. The test UF2s are in `tests/full_auto/` (`ctrl_course_vNN`)
@@ -673,7 +673,7 @@ distance reset at run start), v60 (lift and STOP checked inside a turn on
 the spot), v61 (Wi-Fi task below motion; lift cue path 0.5 s), v62 (dead
 sonar stops the run before it moves; line trace cleared at run start).
 
-## 14. Full-circuit laps and fixes (21 Nov, v63–v67)
+## 14. Full-circuit laps and fixes (21 Nov, v63–v69)
 
 Runs on the full circuit, `f` (full course, commands on), Wi-Fi build with
 the dashboard. Each fix came from a trace in the run before it.
@@ -685,6 +685,8 @@ the dashboard. Each fix came from a trace in the run before it.
 | v65 | S-bend: a blind right turn swept the car across the line (R, C, then L) and kept turning; an obstacle just after a curve was squared to a direction 13° off and the probe found no face | L seeing black in a blind right turn means the line is left; with no clean straight to square to, the car finds the face by turning (5° steps each way until the echo is lost) and faces the middle of that span |
 | v66 | After a right junction turn the acquire window ended at once (before C had seen the line); a barcode read held a fixed aim with the line under R alone and the car left the line | The window ends only once C has seen the line; the line under R alone steers back as usual during a read |
 | v67 | Leaving the S-bend, C saw the line for only 8 mm while turning right, so the car kept turning past it and reached the next barcode at an angle | C alone then white while turning right means the line is left, however short C's black |
+| v68 | During a read, a bar under L was taken for the line (the v65 check) and the car turned left off it | The L check is off while a barcode read is in progress |
+| v69 | An obstacle on a curve: after the creep the first ping had no echo (face ~7° off square at 197 mm) and the probe gave up | The face search runs again from the scan range after the creep, and searches outward when the heading it is on has no echo |
 
 | ID | Test | Result |
 |---|---|---|
@@ -696,4 +698,18 @@ the dashboard. Each fix came from a trace in the run before it.
 | NFR1, NFR9 | TIMING and CPU lines (v67) | motion loop at least 496/s, longest pass 116 µs; tasks 0.3–8.8% each |
 | NFR11 | v63–v67 builds | all 7 test modes and the Wi-Fi build: 0 warnings; host tests pass |
 
-Firmware: `tests/full_auto/ctrl_course_v67_smp0.uf2` (commit 48f68ec).
+**Final build v69** (`tests/full_auto/ctrl_course_v69_smp0.uf2`, commit
+9069d3d), 21 Nov:
+
+| ID | Test | Result |
+|---|---|---|
+| FR1, FR11, NFR10 | `f`, one START, ended by STOP | **2 laps, 22.9 m** in 387 s, no fault (about 3.2 min a lap, 80 s of it at the obstacle) |
+| FR4, NFR6 | Commands on the laps | left 88.4°, 90.2°, 90.3°, 89.5°; U-turn 178.5°; forward cross straight |
+| FR2, FR3 | Codes on the laps | `Z` (forward and reversed), `A`, `Q` read |
+| FR7, FR8, NFR4 | Box one mat (33 cm) after a curve's exit, face found by turning (3 runs) | 15 cm face: 142 mm; 9.5 cm face: 71 mm and 96 mm; went round and rejoined each time. On the straight (plain following): 148 and 150 mm (15 cm face) |
+| FR8 (limit) | Box 20 cm after a curve's exit | measured 96 mm, but the car passed it at an angle and its tail clipped the box. Closer than the one mat of plain line assumed between scenarios |
+| NFR2 | STOP from the console during the turning search | stopped at once; no width published (run ended DONE, STOP_REQ) |
+| FR5, NFR5 | Two ramps on the laps | pointed 11 mm ramp: 10 and 13 mm. Flat-topped ramp (about 11.5 mm): 11 mm, and once 21 mm (a short 37 mm ramp event, outside ±3 mm) |
+| NFR1, NFR9 | TIMING and CPU lines | motion loop at least 496/s, longest pass 135 µs; each task 0.3–8.8% |
+
+Earlier v67 firmware: `tests/full_auto/ctrl_course_v67_smp0.uf2` (commit 48f68ec).
