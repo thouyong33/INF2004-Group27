@@ -404,6 +404,7 @@ line_task_main(INT stacd, void *exinf)
     bool b_after_curve;
     int32_t run_grow = LINE_BIAS_GROW_CDEG;   /* this side's growth */
     int32_t acquire_until;   /* no curve turns before this, -1 = off */
+    bool b_acq_c;            /* C has seen the line since the start */
 
     (void)stacd;
     (void)exinf;
@@ -424,6 +425,7 @@ line_task_main(INT stacd, void *exinf)
         straight_until = -1;
         acquire_until = (0u != g_acquire) ? LINE_ACQUIRE_MAX_MM : -1;
         g_acquire = 0u;
+        b_acq_c = false;
         both_since = -1;
         r_since = -1;
         b_junc_ok = false;
@@ -856,19 +858,25 @@ line_task_main(INT stacd, void *exinf)
                                          : LINE_BIAS_GROW_CDEG;
             }
             prev_off = off;
+            /* C on the right edge (black, then white): normal. Ending on
+             * the first white, before C had seen the line, ended it at
+             * once whenever the car started off the line (21 Nov). */
+            b_acq_c = b_acq_c || b_c_on;
             if ((acquire_until >= 0)
-                && ((1 == off) || (d >= acquire_until)))
+                && ((b_acq_c && (1 == off)) || (d >= acquire_until)))
             {
-                acquire_until = -1;   /* C on the right edge: normal */
+                acquire_until = -1;
             }
             if (0 == off)
             {
                 bias = 0;
             }
-            else if (b_reading)
+            else if (b_reading && (off > -2))
             {
-                bias = (off < 0) ? -(LINE_READ_BIAS_CDEG * ((off < -1) ? 2 : 1))
-                                 : LINE_READ_BIAS_CDEG;
+                /* the line under R alone is not the edge: steer back as
+                 * usual. With the read's fixed aim the car started a read
+                 * at an angle, held it and drove off the line (21 Nov). */
+                bias = (off < 0) ? -LINE_READ_BIAS_CDEG : LINE_READ_BIAS_CDEG;
             }
             else if (0 != curve_ff)
             {
