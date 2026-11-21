@@ -6,8 +6,8 @@ evidence. Per the professor's note (29 Oct), it does not compare the
 original design with the revised one; earlier steps appear only where a
 design choice needs its reason.
 
-- **Code:** `mtk3smp-rp2040/app_program`, branch `thouyong`, up to v54
-  (commit 0f732f8, 5 Nov). `main` matches it up to v52 (2 Nov). Commits
+- **Code:** `mtk3smp-rp2040/app_program`, branch `thouyong`, up to v67
+  (commit 48f68ec, 21 Nov); sections 13 and 14 cover v57–v67. Commits
   are quoted for each result.
 - **Builds:** the course test (mode 31, `CTRL_TEST_COURSE`) is the
   default. The test UF2s are in `tests/full_auto/` (`ctrl_course_vNN`)
@@ -672,3 +672,28 @@ width from an aborted probe; STOP logged when it ends a sequence;
 distance reset at run start), v60 (lift and STOP checked inside a turn on
 the spot), v61 (Wi-Fi task below motion; lift cue path 0.5 s), v62 (dead
 sonar stops the run before it moves; line trace cleared at run start).
+
+## 14. Full-circuit laps and fixes (21 Nov, v63–v67)
+
+Runs on the full circuit, `f` (full course, commands on), Wi-Fi build with
+the dashboard. Each fix came from a trace in the run before it.
+
+| Build | Problem in the run before | Fix |
+|---|---|---|
+| v63 | The left IR crossed the line on curves and reported false junctions | Left-IR junctions within 100 mm of a curve turn are logged (JUNCTION arg 3) and ignored |
+| v64 | After a U-turn the line sat under R and the car spiralled; a left-IR junction on the ramp | After a junction turn, no curve turn until C is on the line's right edge (at most 250 mm); the ramp counts as a curve for the junction filter |
+| v65 | S-bend: a blind right turn swept the car across the line (R, C, then L) and kept turning; an obstacle just after a curve was squared to a direction 13° off and the probe found no face | L seeing black in a blind right turn means the line is left; with no clean straight to square to, the car finds the face by turning (5° steps each way until the echo is lost) and faces the middle of that span |
+| v66 | After a right junction turn the acquire window ended at once (before C had seen the line); a barcode read held a fixed aim with the line under R alone and the car left the line | The window ends only once C has seen the line; the line under R alone steers back as usual during a read |
+| v67 | Leaving the S-bend, C saw the line for only 8 mm while turning right, so the car kept turning past it and reached the next barcode at an angle | C alone then white while turning right means the line is left, however short C's black |
+
+| ID | Test | Result |
+|---|---|---|
+| FR1, FR11, NFR10 | v67, one START, ended by STOP | **3 laps, 30.3 m** in 470 s, no fault (about 10.1 m and 2.6 min a lap, 75–80 s of it at the obstacle). v66: 2 laps, 20.9 m |
+| FR4, NFR6 | Commands on the laps (v66, v67) | left 87.9° and 88.5°, U-turn 179.2°, forward crosses straight; the car picked the line up after every turn |
+| FR2, FR3 | Codes on the laps (v67) | `Z` (forward and reversed), `A`, `Q` read; one `A` failed on the third lap: narrow bars peaked at 234–263 mV against 650–1700 mV in good reads and one bar was lost, the faint-print or lifted-paper fault seen before |
+| FR6, FR7, FR8, NFR3, NFR4 | Obstacles on the laps (v65–v67) | 9 cm box just after the ramp (v65, face found by turning): 93 mm, rejoined 8 mm from plan. On the straight: 71 mm (v65), 146 and 123 mm (v66), 147 mm (v67); every avoid rejoined the line, within 22 mm of plan |
+| FR5, NFR5 | Ramp on the laps | 10–12 mm (11 mm ramp) |
+| NFR1, NFR9 | TIMING and CPU lines (v67) | motion loop at least 496/s, longest pass 116 µs; tasks 0.3–8.8% each |
+| NFR11 | v63–v67 builds | all 7 test modes and the Wi-Fi build: 0 warnings; host tests pass |
+
+Firmware: `tests/full_auto/ctrl_course_v67_smp0.uf2` (commit 48f68ec).
