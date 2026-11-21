@@ -655,15 +655,21 @@ probe_ping(void)
 static int32_t g_obst_dir = 0;       /* the avoid's reference, see above */
 static bool g_obst_face = false;     /* g_obst_dir came from the face */
 
-/* Turn from h0 toward side (+1 left, -1 right) a step at a time while the
- * face still echoes; returns the last heading that saw it */
-static int32_t
-face_edge(int32_t h0, int32_t side, int32_t r0)
+/* Turn from h0 toward side (+1 left, -1 right) a step at a time. If h0
+ * already sees the face (b_seen) it stops at the first step off it;
+ * otherwise it carries on until it finds the face, then stops at the first
+ * step off it. *p_first / *p_last: the first and last headings that saw it.
+ * Returns false if it never did. */
+static bool
+face_edge(int32_t h0, int32_t side, int32_t r_max, bool b_seen,
+          int32_t *p_first, int32_t *p_last)
 {
     int32_t k;
     int32_t mm;
-    int32_t on = h0;
+    bool b_found = false;
 
+    *p_first = h0;
+    *p_last = h0;
     for (k = FACE_STEP_CDEG; k <= FACE_MAX_CDEG; k += FACE_STEP_CDEG)
     {
         if (seq_abort())
@@ -673,43 +679,109 @@ face_edge(int32_t h0, int32_t side, int32_t r0)
         probe_turn_to(h0 + (side * k));
         seq_wait(PROBE_SETTLE_MS);
         mm = probe_ping();
-        if ((mm <= 0) || (mm > (r0 + FACE_BAND_MM)))
+        if ((mm > 0) && (mm <= r_max))
         {
-            break;
+            if (!b_found)
+            {
+                *p_first = h0 + (side * k);
+            }
+            b_found = true;
+            *p_last = h0 + (side * k);
         }
-        on = h0 + (side * k);
+        else if (b_seen || b_found)
+        {
+            break;                      /* off the face again */
+        }
+        else
+        {
+            /* not found yet: keep looking */
+        }
     }
-    return on;
+    return b_found;
 }
 
-/* The avoid's reference direction (sets g_obst_dir, g_obst_face) */
-static int32_t
-obstacle_dir(void)
+/* Find the face's echo span by turning on the spot and set g_obst_dir to
+ * its middle. r_hint: the range last read (used when the heading the car
+ * is on does not echo now). Returns false if no face was found. A failed
+ * first ping after the creep (median of 3 at 197 mm, the face 7 deg off
+ * square) ended the avoid before (21 Nov), so the edges are searched
+ * outward from a heading that does not see the face as well. */
+static bool
+face_sweep(int32_t r_hint)
 {
     int32_t h0;
     int32_t r0;
+    int32_t r_max;
+    int32_t lf;
+    int32_t ll;
+    int32_t rf;
+    int32_t rl;
+    bool b0;
+    bool bl;
+    bool br;
     int32_t left;
     int32_t right;
 
-    g_obst_face = false;
-    g_obst_dir = line_clean_direction_cdeg();
-    if (line_clean_ok() || seq_abort())
+    if (seq_abort())
     {
-        return g_obst_dir;
+        return false;
     }
     h0 = heading_raw_cdeg();
     r0 = probe_ping();
-    if (r0 <= 0)
+    b0 = (r0 > 0);
+    r_max = (b0 ? r0 : r_hint) + FACE_BAND_MM;
+    if ((!b0) && (r_hint <= 0))
     {
-        return g_obst_dir;              /* nothing ahead: the fallback */
+        return false;
     }
-    left = face_edge(h0, 1, r0);
-    right = face_edge(h0, -1, r0);
-    if (!seq_abort())
+    bl = face_edge(h0, 1, r_max, b0, &lf, &ll);
+    br = face_edge(h0, -1, r_max, b0, &rf, &rl);
+    if (seq_abort())
     {
-        g_obst_dir = (left + right) / 2;
-        g_obst_face = true;
+        return false;
     }
+    if (b0)
+    {
+        left = ll;                      /* h0 if the left step missed */
+        right = rl;
+    }
+    else if (bl && br)
+    {
+        left = ll;
+        right = rl;
+    }
+    else if (bl)
+    {
+        left = ll;
+        right = lf;
+    }
+    else if (br)
+    {
+        left = rf;
+        right = rl;
+    }
+    else
+    {
+        probe_turn_to(h0);
+        return false;
+    }
+    g_obst_dir = (left + right) / 2;
+    return true;
+}
+
+/* The avoid's reference direction (sets g_obst_dir, g_obst_face): plain
+ * following if there was enough of it, else the face found by turning,
+ * else the fallback */
+static int32_t
+obstacle_dir(void)
+{
+    g_obst_face = false;
+    g_obst_dir = line_clean_direction_cdeg();
+    if (line_clean_ok())
+    {
+        return g_obst_dir;
+    }
+    g_obst_face = face_sweep(-1);
     return g_obst_dir;
 }
 
@@ -801,6 +873,12 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
 
     g_probe_n = 0u;
     g_face_n = 0u;
+    if (g_obst_face)
+    {
+        /* again from the scan range (the creep's reading): the first
+           sweep was at ~300 mm, where the span is less sure */
+        (void)face_sweep(CTRL_SCAN_RANGE_MM);
+    }
     dir = g_obst_dir;                   /* set by obstacle_dir() */
     /* the reference: plain following, the face or the fallback, and how
        far it is from the plain 100 mm average */
