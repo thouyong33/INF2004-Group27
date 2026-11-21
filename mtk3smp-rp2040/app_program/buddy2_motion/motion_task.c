@@ -33,9 +33,8 @@
 /* Hardware edge counter: rising edges of one encoder channel per wheel turn.
  * Measured 2026-10-07, 10 hand turns x 2 per wheel: L 6301/6363, R 6349/6333.
  */
-#define EDGES_PER_REV             634u
-#define WHEEL_DIAMETER_MM         65u
-#define WHEEL_CIRCUMFERENCE_MM    204u
+/* (634 edges per wheel turn, 65 mm wheel, 204 mm round: the figures
+ * below are calibrated from these) */
 
 /* Nominal 204 mm / 634 edges = 0.322 mm per edge, but floor tape tests
  * (2026-10-07: 509/501, 305/298, 516/507 mm tape/encoder) show the car
@@ -178,12 +177,6 @@ static int16_t g_target_right_x10 = 0;
  * ~2 s at 100 mm/s; a mask held this long while driving is a stall. */
 #define HUMP_MASK_MAX_MS          4000u
 
-/* motion_move_forward_cm() */
-#define MOVE_MIN_SPEED_MM_S       50
-#define MOVE_POLL_MS              10u
-#define MOVE_STILL_MS             100u  /* no edges for this long = stopped */
-#define MOVE_SETTLE_MAX_MS        2000u
-
 typedef struct {
     int32_t target_eps;    /* requested speed, edges/s */
     int32_t setpoint_eps;  /* slewed toward target to limit inrush */
@@ -252,23 +245,6 @@ static int8_t
 sign_i16(int16_t value)
 {
     return (value > 0) ? 1 : ((value < 0) ? -1 : 0);
-}
-
-/* Distance progress as the average of both wheels. (The old minimum-of-
- * both workaround is no longer needed: the hardware counts are trusted.) */
-static int32_t
-average_progress_counts(void)
-{
-    UINT sts;
-    int32_t l;
-    int32_t r;
-
-    CRIT_ENTER(&g_odom_lock, sts);
-    l = g_hw_left_count;
-    r = g_hw_right_count;
-    CRIT_EXIT(&g_odom_lock, sts);
-
-    return (abs_i32(l) + abs_i32(r)) / 2;
 }
 
 /*----------------------------------------------------------------------------
@@ -1271,91 +1247,6 @@ motion_print_encoder_diag(const char *p_label)
               right.hw_edges, right.hw_count);
 }
 
-/*
- * Drive straight for distance_cm under PI control, then stop.
- *
- * The stop is commanded early by the braking distance: after a 0 mm/s
- * command the PI setpoint ramps down at PID_SLEW_EPS per period, so the
- * wheels cover v^2 / (2a) while slowing, plus about two control periods of
- * lag behind the setpoint. No printing while the motors run: the caller
- * usually outranks the motion task and a blocking print would stall it.
- */
-ER
-motion_move_forward_cm(uint16_t distance_cm, uint16_t speed_mm_s)
-{
-    ER err;
-    int32_t target_edges;
-    int32_t v_mm_s;
-    int32_t v_eps;
-    int32_t decel_eps_per_s;
-    int32_t brake_edges;
-    int32_t progress;
-    int32_t last_progress;
-    int32_t final_mm;
-    uint32_t still_ms;
-    uint32_t waited_ms;
-
-    if (0u == distance_cm)
-    {
-        tm_printf((UB *)"[MOTION] Invalid distance: 0 cm\n");
-        return E_PAR;
-    }
-
-    v_mm_s = clamp_i32((int32_t)speed_mm_s, MOVE_MIN_SPEED_MM_S,
-                       PID_MAX_SPEED_MM_S);
-    v_eps = mm_s_to_eps(v_mm_s);
-    target_edges = ((int32_t)distance_cm * 10L * 1000L) / UM_PER_EDGE;
-
-    decel_eps_per_s = (PID_SLEW_EPS * 1000L) / (int32_t)PID_PERIOD_MS;
-    brake_edges = (v_eps * v_eps) / (2L * decel_eps_per_s)
-                + (v_eps * 2L * (int32_t)PID_PERIOD_MS) / 1000L;
-
-    tm_printf((UB *)"[MOTION] move_forward_cm: %u cm at %ld mm/s "
-              "(target %ld edges, brake at -%ld)\n",
-              distance_cm, v_mm_s, target_edges, brake_edges);
-
-    motion_reset_odometry();
-
-    err = motion_set_velocity((int16_t)v_mm_s, (int16_t)v_mm_s);
-    if (E_OK != err)
-    {
-        return err;
-    }
-
-    do
-    {
-        cpu_dly(MOVE_POLL_MS);
-        progress = average_progress_counts();
-    } while ((progress + brake_edges) < target_edges);
-
-    err = motion_set_velocity(0, 0);
-    if (E_OK != err)
-    {
-        return err;
-    }
-
-    /* Wait until the wheels have stopped, or give up after
-       MOVE_SETTLE_MAX_MS */
-    last_progress = average_progress_counts();
-    still_ms = 0u;
-    waited_ms = 0u;
-    while ((still_ms < MOVE_STILL_MS) && (waited_ms < MOVE_SETTLE_MAX_MS))
-    {
-        cpu_dly(MOVE_POLL_MS);
-        waited_ms += MOVE_POLL_MS;
-        progress = average_progress_counts();
-        still_ms = (progress == last_progress) ? (still_ms + MOVE_POLL_MS) : 0u;
-        last_progress = progress;
-    }
-
-    final_mm = (progress * UM_PER_EDGE) / 1000L;
-    tm_printf((UB *)"[MOTION] Done: target %u mm, encoders %ld mm "
-              "(error %ld mm)\n",
-              (unsigned int)(distance_cm * 10u), final_mm,
-              final_mm - ((int32_t)distance_cm * 10L));
-
-    return E_OK;
-}
 /*
  * Turn on the spot by cdeg (left positive) under PI, measured by the
  * encoders: angle = (right - left) / 2 x um/edge / (pi x track). Brakes

@@ -171,7 +171,9 @@ status_set(uint8_t state, uint8_t last_evt, uint8_t flags, int32_t d,
     g_status.obstacle_mm = obstacle_last_mm();
     g_status.obstacle_width_mm = g_obst_width;
     g_status.max_ramp_mm = g_max_ramp;
-    g_status.total_cm = (uint16_t)((g_dist_base + d) / 10);
+    /* a few mm below zero just after a turn read as 655 m */
+    g_status.total_cm = ((g_dist_base + d) < 0) ? 0u
+                        : (uint16_t)((g_dist_base + d) / 10);
     CRIT_EXIT(&g_status_lock, sts);
 }
 
@@ -480,6 +482,7 @@ creep_to_scan_range(void)
  * the wheels. The range stays ~190 mm, clear of the ~290 mm floor echo.
  *---------------------------------------------------------------------------*/
 #define PROBE_STEP_MM        25      /* sideways step: edge to +/-12 mm */
+#define PROBE_STEPS_MAX      24u     /* per side: 2 x PROBE_MAX_MM / step */
 #define PROBE_MAX_MM         250     /* per side: faces up to ~50 cm */
 /* A reading is the face if it is no further than this beyond the median
  * of the face readings so far (a nearer one always is): the face's range
@@ -810,12 +813,16 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t *p_ref, int32_t *p_y,
     int32_t y_on = *p_y;
     int32_t y_off = *p_y;
     uint32_t offs = 0u;
+    uint32_t steps = 0u;
 
     *p_capped = false;
     for (;;)
     {
+        /* PROBE_STEPS_MAX: a car that cannot move (and does not fault)
+         * never reaches PROBE_MAX_MM */
         if (((side > 0) && (*p_y >= PROBE_MAX_MM))
             || ((side < 0) && (*p_y <= -PROBE_MAX_MM))
+            || (++steps > PROBE_STEPS_MAX)
             || seq_abort())
         {
             *p_capped = true;
@@ -918,14 +925,17 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
         log_evt(EVT_OBST_WIDTH, 0u, -1, dist_mm());
         return 0;
     }
-    g_obst_width = (int16_t)(left - right);
+    /* An object narrower than a step loses the echo at once on both
+     * sides, and the edge correction makes left - right negative (-34
+     * mm): report 0 and plan the avoid for AVOID_MIN_WIDTH_MM */
+    g_obst_width = (int16_t)(((left - right) > 0) ? (left - right) : 0);
     log_evt(EVT_OBST_WIDTH, (b_cap_r || b_cap_l) ? 2u : 1u, g_obst_width,
             dist_mm());
     *p_dir = dir;
     *p_y = y;
     *p_left = left;
     *p_face_mm = face_mm;
-    return left - right;
+    return ((left - right) > 0) ? (left - right) : 1;
 }
 
 /* The sideways leg back to the line (facing it), planned as y mm: stops
@@ -1696,8 +1706,10 @@ ctrl_log_at(uint32_t idx, ctrl_log_t *p_out)
     {
         *p_out = g_log[idx % CTRL_LOG_LEN];
         __asm__ volatile ("" ::: "memory");
-        /* still this entry if the writer has not wrapped onto it */
-        b_ok = ((g_log_n - idx) <= CTRL_LOG_LEN);
+        /* still this entry if the writer has not wrapped onto it, and is
+         * not writing it now (n - idx == CTRL_LOG_LEN is the slot the next
+         * event overwrites) */
+        b_ok = ((g_log_n - idx) < CTRL_LOG_LEN);
     }
     return b_ok;
 }

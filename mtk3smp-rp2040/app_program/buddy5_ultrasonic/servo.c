@@ -26,7 +26,6 @@
 
 static uint16_t g_min_us = SERVO_ABS_MIN_US;
 static uint16_t g_max_us = SERVO_ABS_MAX_US;
-static uint16_t g_pulse_us = 1500u;
 
 void
 servo_init(uint16_t start_us)
@@ -76,6 +75,5 @@ servo_set_us(uint16_t pulse_us)
     /* Channel A is the low half of CC; keep channel B (GP13, unused) */
     cc = in_w(PWM_REG(PWM_CHx_CC));
     out_w(PWM_REG(PWM_CHx_CC), (cc & 0xFFFF0000u) | pulse_us);
-    g_pulse_us = pulse_us;
     return pulse_us;
 }

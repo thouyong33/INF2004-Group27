@@ -90,7 +90,6 @@ static side_hump_event_t g_side;
 static int16_t g_max_roll = 0;           /* largest |filtered roll| seen */
 /* largest |filtered roll| in a pitch hump */
 static int16_t g_hump_roll_max = 0;
-static uint32_t g_pitch_dropped = 0u;    /* pitch humps dropped as one-sided */
 
 static terrain_state_t g_state = STATE_LEVEL;
 static int32_t g_below_since = -1;
@@ -300,7 +299,6 @@ terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg)
     g_side_out_since = -1;
     g_max_roll = 0;
     g_hump_roll_max = 0;
-    g_pitch_dropped = 0u;
     g_state = STATE_LEVEL;
     g_below_since = -1;
     g_above_since = -1;
@@ -390,10 +388,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att, bool b_steady,
             {
                 events |= TERRAIN_EVT_HUMP;
             }
-            else
-            {
-                g_pitch_dropped++;
-            }
+            /* else: dropped as one-sided */
         }
         else if (fp > HUMP_EXIT_CDEG)
         {
@@ -407,10 +402,7 @@ terrain_update(int32_t dist_mm, const imu_attitude_t *p_att, bool b_steady,
                 {
                     events |= TERRAIN_EVT_HUMP;
                 }
-                else
-                {
-                    g_pitch_dropped++;
-                }
+                /* else: dropped as one-sided */
             }
         }
         else

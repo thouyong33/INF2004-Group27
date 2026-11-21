@@ -35,6 +35,8 @@
 #define IC_SDA_HOLD              I2C1_REG(0x7Cu)
 #define IC_TX_ABRT_SOURCE        I2C1_REG(0x80u)
 #define IC_ENABLE_STATUS         I2C1_REG(0x9Cu)
+/* i2c1_set_target: disabling takes a few bus clocks; ~1 ms at 125 MHz */
+#define I2C_DISABLE_SPINS        100000u
 #define IC_FS_SPKLEN             I2C1_REG(0xA0u)
 
 #define IC_CON_MASTER_MODE       (1u << 0)
@@ -133,10 +135,14 @@ i2c1_wait_stop(uint32_t start_ms)
 static void
 i2c1_set_target(uint8_t addr)
 {
+    uint32_t n = 0u;
+
     out_w(IC_ENABLE, 0u);
-    while (0u != (in_w(IC_ENABLE_STATUS) & 1u))
+    /* bounded: a stuck bus must not hang the task (the next transfer
+     * then times out and the IMU is reported faulty) */
+    while ((0u != (in_w(IC_ENABLE_STATUS) & 1u)) && (n < I2C_DISABLE_SPINS))
     {
-        ;
+        n++;
     }
     out_w(IC_TAR, (UW)addr);
     out_w(IC_ENABLE, 1u);
