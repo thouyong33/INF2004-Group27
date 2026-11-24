@@ -436,6 +436,12 @@ void ctrl_test_course(void)
                     tm_printf((UB *)"   (turn %d: %d x0.01 deg off the"
                               " target)", (INT)(lg[i].arg - OBST_HDG_TURN),
                               lg[i].val);
+                } else if(OBST_HDG_SKEW == lg[i].arg) {
+                    tm_printf((UB *)"   (face skew from the width probe:"
+                              " reference turned %d x0.01 deg)", lg[i].val);
+                } else if(OBST_HDG_SKEW_KEPT == lg[i].arg) {
+                    tm_printf((UB *)"   (face skew %d x0.01 deg measured,"
+                              " kept the line's direction)", lg[i].val);
                 } else {
                     tm_printf((UB *)"   (reference from %s, %d x0.01 deg"
                               " from the plain average)",

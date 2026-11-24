@@ -568,6 +568,94 @@ static volatile uint32_t g_probe_n = 0u;
 static int16_t g_face[CTRL_PROBE_MAX];      /* face readings, sorted */
 static uint32_t g_face_n = 0u;
 
+/* Face angle (24 Nov). Squared up crooked (after a curve the face search
+ * was ~14 deg off), the avoid's whole path was skewed: the width read 47
+ * mm for a 70 mm face and the car met another piece of track on the way
+ * back. Stepping sideways while facing dir, a square face reads the same
+ * range all along; a skewed one changes steadily. The slope of range
+ * against sideways position (least squares over the face readings) is
+ * tan(skew): if it is at least FACE_SKEW_MIN_CDEG, from FACE_FIT_MIN_N
+ * readings over FACE_FIT_MIN_SPAN_MM, the avoid turns its reference by it
+ * (capped at FACE_SKEW_MAX_CDEG) and the width is corrected, unless the
+ * reference came from plain following (see probe_obstacle). */
+#define FACE_FIT_MIN_N       3u
+#define FACE_FIT_MIN_SPAN_MM 50
+#define FACE_SKEW_MIN_CDEG   200
+#define FACE_SKEW_MAX_CDEG   2000
+static int16_t g_fit_y[CTRL_PROBE_MAX];      /* face readings: position */
+static int16_t g_fit_mm[CTRL_PROBE_MAX];     /* ...and range */
+static uint32_t g_fit_n = 0u;
+static int32_t g_face_skew = 0;              /* x0.01 deg, + = turn left */
+
+static void
+face_fit_add(int32_t y, int32_t mm)
+{
+    if (g_fit_n < CTRL_PROBE_MAX)
+    {
+        g_fit_y[g_fit_n] = (int16_t)y;
+        g_fit_mm[g_fit_n] = (int16_t)mm;
+        g_fit_n++;
+    }
+}
+
+/* The face's skew from the fit, x0.01 deg (+ = the square heading is to
+ * the left of the probe's), 0 if too few readings or under the minimum.
+ * The face is the line x = r0 + s y (x ahead, y left); its normal away
+ * from the car points atan(-s) from ahead. atan(s) ~ s - s^3/3, within
+ * 0.1 deg up to the 20 deg cap. */
+static int32_t
+face_skew_cdeg(void)
+{
+    int64_t n = (int64_t)g_fit_n;
+    int64_t sy = 0;
+    int64_t sr = 0;
+    int64_t syy = 0;
+    int64_t syr = 0;
+    int64_t den;
+    int32_t ymin = 32767;
+    int32_t ymax = -32768;
+    int32_t s;          /* slope x1000 */
+    int32_t a;          /* atan x1000 rad */
+    int32_t cdeg;
+    uint32_t i;
+
+    for (i = 0u; i < g_fit_n; i++)
+    {
+        sy += g_fit_y[i];
+        sr += g_fit_mm[i];
+        syy += (int64_t)g_fit_y[i] * g_fit_y[i];
+        syr += (int64_t)g_fit_y[i] * g_fit_mm[i];
+        ymin = (g_fit_y[i] < ymin) ? g_fit_y[i] : ymin;
+        ymax = (g_fit_y[i] > ymax) ? g_fit_y[i] : ymax;
+    }
+    den = (n * syy) - (sy * sy);
+    if ((g_fit_n < FACE_FIT_MIN_N) || ((ymax - ymin) < FACE_FIT_MIN_SPAN_MM)
+        || (0 == den))
+    {
+        return 0;
+    }
+    s = (int32_t)((((n * syr) - (sy * sr)) * 1000) / den);
+    s = (s > 400) ? 400 : ((s < -400) ? -400 : s);
+    a = s - (((s * s) / 1000) * s) / 3000;
+    cdeg = -((a * 5730) / 1000);
+    if ((cdeg < FACE_SKEW_MIN_CDEG) && (cdeg > -FACE_SKEW_MIN_CDEG))
+    {
+        return 0;
+    }
+    return (cdeg > FACE_SKEW_MAX_CDEG) ? FACE_SKEW_MAX_CDEG
+         : ((cdeg < -FACE_SKEW_MAX_CDEG) ? -FACE_SKEW_MAX_CDEG : cdeg);
+}
+
+/* sin and cos of cdeg, x1000 (small angles: up to the 20 deg cap) */
+static void
+small_sin_cos(int32_t cdeg, int32_t *p_sin, int32_t *p_cos)
+{
+    int32_t a = (cdeg * 1000) / 5730;   /* rad x1000 */
+
+    *p_sin = a - (((a * a) / 1000) * a) / 6000;
+    *p_cos = 1000 - ((a * a) / 2000);
+}
+
 /* Keep a face reading (sorted) and return the median of those kept */
 static int32_t
 face_add(int32_t mm)
@@ -871,6 +959,7 @@ probe_edge(int32_t dir_cdeg, int32_t side, int32_t *p_ref, int32_t *p_y,
             y_on = *p_y;
             offs = 0u;
             *p_ref = face_add(mm);
+            face_fit_add(*p_y, mm);
         }
         else if ((mm > 0) && (mm <= (*p_ref + PROBE_SHOULDER_MM)))
         {
@@ -906,11 +995,14 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     int32_t left;
     int32_t moved;
     int32_t ref;
+    int32_t width;
     bool b_cap_r;
     bool b_cap_l;
 
     g_probe_n = 0u;
     g_face_n = 0u;
+    g_fit_n = 0u;
+    g_face_skew = 0;
     if (g_obst_face)
     {
         /* again from the scan range (the creep's reading): the first
@@ -934,6 +1026,7 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
         return 0;
     }
     ref = face_add(face_mm);
+    face_fit_add(0, face_mm);
 
     right = probe_edge(dir, -1, &ref, &y, &b_cap_r) + PROBE_EDGE_OVER_MM;
     log_evt(EVT_OBST_EDGE, b_cap_r ? 2u : 0u, (int16_t)right, dist_mm());
@@ -959,14 +1052,41 @@ probe_obstacle(int32_t *p_dir, int32_t *p_y, int32_t *p_left,
     /* An object narrower than a step loses the echo at once on both
      * sides, and the edge correction makes left - right negative (-34
      * mm): report 0 and plan the avoid for AVOID_MIN_WIDTH_MM */
-    g_obst_width = (int16_t)(((left - right) > 0) ? (left - right) : 0);
+    /* a skewed face (see FACE_SKEW_MIN_CDEG) is wider than its sideways
+     * extent: width / cos(skew) */
+    /* Applied only when the reference did not come from plain following:
+     * the line's own direction is what the way back must meet (a v77 run on
+     * a straight measured ~10 deg, a box not square to the line or the
+     * beam's edge returns) */
+    g_face_skew = face_skew_cdeg();
+    if (line_clean_ok() && !g_obst_face)
+    {
+        log_evt(EVT_OBST_HDG, OBST_HDG_SKEW_KEPT, (int16_t)g_face_skew,
+                dist_mm());
+        g_face_skew = 0;
+    }
+    else
+    {
+        log_evt(EVT_OBST_HDG, OBST_HDG_SKEW, (int16_t)g_face_skew,
+                dist_mm());
+    }
+    width = (left - right > 0) ? (left - right) : 0;
+    if (0 != g_face_skew)
+    {
+        int32_t sn;
+        int32_t cs;
+
+        small_sin_cos(g_face_skew, &sn, &cs);
+        width = (width * 1000) / cs;
+    }
+    g_obst_width = (int16_t)width;
     log_evt(EVT_OBST_WIDTH, (b_cap_r || b_cap_l) ? 2u : 1u, g_obst_width,
             dist_mm());
     *p_dir = dir;
     *p_y = y;
     *p_left = left;
     *p_face_mm = face_mm;
-    return ((left - right) > 0) ? (left - right) : 1;
+    return (width > 0) ? width : 1;
 }
 
 /* The sideways leg back to the line (facing it), planned as y mm: stops
@@ -1101,6 +1221,27 @@ avoid_obstacle(void)
     if ((0 >= probe_obstacle(&dir, &y, &left, &face_mm)) || seq_abort())
     {
         return false;
+    }
+    if (0 != g_face_skew)
+    {
+        /* Square to the face (see FACE_SKEW_MIN_CDEG): turn the reference
+         * and restate the car (y left of the start, on the probe's x) and
+         * the face's left edge (face_mm + the sonar's 70 mm ahead, left)
+         * in the turned frame: (x, y) -> (x cos + y sin, -x sin + y cos) */
+        int32_t sn;
+        int32_t cs;
+        int32_t xe = face_mm + AVOID_SENSOR_AHEAD_MM;
+        int32_t yc;
+        int32_t xc;
+
+        small_sin_cos(g_face_skew, &sn, &cs);
+        xc = (y * sn) / 1000;
+        yc = (y * cs) / 1000;
+        face_mm = (((xe * cs) + (left * sn)) / 1000) - xc
+                  - AVOID_SENSOR_AHEAD_MM;
+        left = ((left * cs) - (xe * sn)) / 1000;
+        y = yc;
+        dir += g_face_skew;
     }
     width = g_obst_width;
     if (width < AVOID_MIN_WIDTH_MM)

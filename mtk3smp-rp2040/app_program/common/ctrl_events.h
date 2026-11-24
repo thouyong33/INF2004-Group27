@@ -63,6 +63,12 @@
 #define OBST_HDG_PLAIN       0u
 #define OBST_HDG_CLEAN       1u
 #define OBST_HDG_FACE        2u
+/** arg OBST_HDG_SKEW: the face's skew measured by the width probe, val =
+ * the turn applied to the avoid's reference, x0.01 deg (0 = square) */
+#define OBST_HDG_SKEW        3u
+/** arg OBST_HDG_SKEW_KEPT: skew measured, val x0.01 deg, but not applied
+ * (the reference came from plain following) */
+#define OBST_HDG_SKEW_KEPT   4u
 #define OBST_HDG_TURN        10u
 
 /** One event, 4 bytes */
