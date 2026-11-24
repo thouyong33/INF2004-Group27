@@ -550,11 +550,11 @@ creep_to_scan_range(void)
  * AVOID_DEPTH_MAX_EXTRA_MM still blocked: stop (fault), not guess. */
 #define AVOID_DEPTH_NEAR_MAX_MM 260
 #define AVOID_DEPTH_STEP_MM  60
-/* 50 (24 Nov): with AVOID_DEPTH_OFF_NEEDED clear readings the car is
+/* 70 (24 Nov): with AVOID_DEPTH_OFF_NEEDED clear readings the car is
  * already past the back face; 110 and 180 after a single clear reading
- * left the rear clipping the box (that reading came a step early), and 180
- * after two left ~1.5 car lengths spare */
-#define AVOID_DEPTH_CLEAR_MM 50
+ * left the rear clipping the box (that reading came a step early), 180
+ * after two left ~1.5 car lengths spare, and 50 cleared it but close */
+#define AVOID_DEPTH_CLEAR_MM 70
 #define AVOID_DEPTH_MAX_EXTRA_MM 600
 #define AVOID_DEPTH_OFF_NEEDED 2u      /* clear readings in a row, once seen */
 #define AVOID_AFTER_MM       300     /* follow this far after rejoining */
