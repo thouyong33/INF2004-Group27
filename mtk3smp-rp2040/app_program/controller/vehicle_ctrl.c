@@ -1319,6 +1319,7 @@ ctrl_task_main(INT stacd, void *exinf)
     int32_t junc_last;
     int32_t curve_d;          /* last distance in a curve turn */
     uint32_t t_obst;
+    bool b_avoided;
     TMO wait;
 
     (void)stacd;
@@ -1448,11 +1449,16 @@ ctrl_task_main(INT stacd, void *exinf)
                         barcode_scan_enable(false);
                         line_wind_down();
                         obstacle_watch(false);
+                        /* no 1 s no-floor lift in the sequence (a cross
+                         * arm under the IRs), while the IMU can cue one */
+                        terrain_lift_alone(!g_b_run_imu);
                         seq_wait(300u);
                         probe_turn_to(obstacle_dir());
                         log_evt(EVT_OBST_CREEP, 0u,
                                 (int16_t)creep_to_scan_range(), dist_mm());
-                        if (!avoid_obstacle())
+                        b_avoided = avoid_obstacle();
+                        terrain_lift_alone(true);
+                        if (!b_avoided)
                         {
                             log_evt(EVT_OBST_DONE, 0u,
                                     (int16_t)((now_ms() - t_obst) / 100u),
@@ -1744,6 +1750,7 @@ ctrl_task_main(INT stacd, void *exinf)
          * side-stepping (see probe_obstacle) and report its width */
         if ((CTRL_ST_OBSTACLE == state) && (0u == g_stop_req))
         {
+            terrain_lift_alone(!g_b_run_imu);   /* see the avoid above */
             seq_wait(300u);
             probe_turn_to(obstacle_dir());
             log_evt(EVT_OBST_CREEP, 0u, (int16_t)creep_to_scan_range(),
@@ -1756,6 +1763,7 @@ ctrl_task_main(INT stacd, void *exinf)
 
                 (void)probe_obstacle(&dir, &y, &left, &face_mm);
             }
+            terrain_lift_alone(true);
             if (0u != (fault_get() & FAULT_LIFTED))
             {
                 state = CTRL_ST_LIFTED;     /* picked up while probing */

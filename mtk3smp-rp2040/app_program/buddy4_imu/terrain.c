@@ -57,6 +57,10 @@
 #define LIFT_RAMP_QUIET_MS       1000u   /* accel cue ignored after a ramp */
 /* all three IRs black this long is a lift with or without an IMU cue */
 #define LIFT_NO_FLOOR_ALONE_MS   1000u
+/* ...unless switched off (terrain_lift_alone): turning on the spot in the
+ * obstacle sequence, all three IRs sat on a cross arm for 1 s and it read
+ * as a lift (24 Nov). The IMU cue path stays on. */
+static bool g_b_alone = true;
 #define ONE_G_MG                 1000
 
 typedef enum {
@@ -286,6 +290,7 @@ hump_finish(int32_t dist_mm, hump_event_t *p_hump)
 void
 terrain_reset(int16_t rest_pitch_cdeg, int16_t rest_roll_cdeg)
 {
+    g_b_alone = true;
     g_rest_pitch = rest_pitch_cdeg;
     g_pitch_n = 0u;
     g_pwin.head = 0u;
@@ -551,7 +556,8 @@ terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
     if ((g_b_lift_armed
          && ((!b_on_ramp) || (TERRAIN_LIFT_TILT == g_lift_cue.cue))
          && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_MS))
-        || ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_ALONE_MS))
+        || (g_b_alone
+            && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_ALONE_MS)))
     {
         if ((!g_b_lift_armed)
             || (b_on_ramp && (TERRAIN_LIFT_TILT != g_lift_cue.cue)))
@@ -567,6 +573,12 @@ terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
         return true;
     }
     return false;
+}
+
+void
+terrain_lift_alone(bool b_on)
+{
+    g_b_alone = b_on;
 }
 
 void

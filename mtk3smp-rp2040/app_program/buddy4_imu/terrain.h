@@ -100,6 +100,14 @@ bool terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
                          const imu_raw_t *p_cal, bool b_no_floor,
                          bool b_on_ramp, lift_event_t *p_lift);
 
+/**
+ * @brief Switch the "no floor for LIFT_NO_FLOOR_ALONE_MS is a lift on its
+ * own" rule on or off (on after terrain_reset). Off, a lift needs an IMU
+ * cue first. The controller switches it off during the obstacle sequence
+ * (stops and turns on the spot over a cross arm), only while the IMU works.
+ */
+void terrain_lift_alone(bool b_on);
+
 /** @brief Largest tilt from rest (x0.01 deg) and |a| - 1 g (mg) seen off
  * the ramp since terrain_reset: the margin a normal run keeps below the
  * lift cues (tuning and evidence). */
