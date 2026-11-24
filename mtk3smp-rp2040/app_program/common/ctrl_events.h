@@ -48,7 +48,9 @@
  * it stopped (0 = back on the line's position) */
 #define EVT_OBST_AVOID       15u
 /* (EVT_OBST_AVOID arg 1: the way back stopped over the line, val = mm
- * further than planned; arg 2: the line was not seen) */
+ * further than planned; arg 2: the line was not seen; arg 3: the box was
+ * longer than planned, val = mm driven further past it; arg 4: still there
+ * after the depth limit, val = mm: the avoid stops) */
 /** controller: obstacle sequence over (the one-off report), arg 1 = went
  * round and rejoined the line, 0 = failed; val = time taken, x0.1 s */
 #define EVT_OBST_DONE        16u

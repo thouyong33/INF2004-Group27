@@ -421,6 +421,12 @@ void ctrl_test_course(void)
                               " %s than planned)",
                               (lg[i].val < 0) ? -lg[i].val : lg[i].val,
                               (lg[i].val < 0) ? "nearer" : "further");
+                } else if(3u == lg[i].arg) {
+                    tm_printf((UB *)"   (box longer than planned: went %d mm"
+                              " further past it)", lg[i].val);
+                } else if(4u == lg[i].arg) {
+                    tm_printf((UB *)"   (box still there %d mm past the"
+                              " plan: stopped)", lg[i].val);
                 } else {
                     tm_printf((UB *)"   (line not seen on the way back:"
                               " planned distance)");

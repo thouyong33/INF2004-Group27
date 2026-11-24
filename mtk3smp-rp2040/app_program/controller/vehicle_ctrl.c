@@ -497,7 +497,9 @@ creep_to_scan_range(void)
 #define PROBE_OFF_NEEDED     2       /* off-face readings in a row = edge */
 #define PROBE_DRIVE_MM_S     60
 #define PROBE_BRAKE_MM       3       /* stop command this early */
-#define PROBE_TURN_MM_S      80
+/* 120 (was 80, 24 Nov): each side step is two 90 deg turns, ~1.1 s each
+ * at 80; the turn is trimmed to CTRL_TRIM_CDEG and logged (OBST_HDG) */
+#define PROBE_TURN_MM_S      120
 #define PROBE_PINGS          3       /* median of */
 #define PROBE_PING_MS        65u
 #define PROBE_SETTLE_MS      150u
@@ -511,6 +513,10 @@ creep_to_scan_range(void)
 #define AVOID_HALF_R_MM      70      /* centre to the right wheel's outside */
 /* centre to the left IR bracket: wheel outside (70) + 20 mm */
 #define AVOID_HALF_L_MM      90
+/* Turning on the spot, the left IR tip (140 mm ahead of the axle, 65 mm
+ * left) sweeps a circle of this radius: the car must be this far from the
+ * box's side, plus AVOID_MARGIN_MM, to turn beside it (the depth check) */
+#define AVOID_SWING_MM       155
 #define AVOID_SENSOR_AHEAD_MM 70     /* sonar ahead of the axle */
 #define AVOID_MARGIN_MM      40      /* beyond the width estimate's error */
 /* plan for at least this width (course obstacles are 10-20 cm): a low
@@ -530,6 +536,20 @@ creep_to_scan_range(void)
 /* ...and this much further than planned once the line has been seen */
 #define AVOID_SEEK_EXTRA_MM  60
 #define AVOID_MM_S           100
+/* Depth check (24 Nov). The demo box may be much deeper than its face is
+ * wide, so the depth taken as the width is only a first guess. Facing the
+ * line before the way back, the sonar looks along the car's path in: an
+ * echo no further than the box's side would be (plus AVOID_DEPTH_BAND_MM;
+ * ~125 mm away after the out leg) is the box, so the car goes
+ * AVOID_DEPTH_STEP_MM further and looks again. Only that near: the floor
+ * echoes at ~290 mm. Once clear,
+ * AVOID_DEPTH_CLEAR_MM more: facing the line, the right wheel's side (70)
+ * trails toward the box's back face, plus the margin. Past
+ * AVOID_DEPTH_MAX_EXTRA_MM still blocked: stop (fault), not guess. */
+#define AVOID_DEPTH_BAND_MM  60
+#define AVOID_DEPTH_STEP_MM  60
+#define AVOID_DEPTH_CLEAR_MM (AVOID_HALF_R_MM + AVOID_MARGIN_MM)
+#define AVOID_DEPTH_MAX_EXTRA_MM 600
 #define AVOID_AFTER_MM       300     /* follow this far after rejoining */
 
 static ctrl_probe_pt_t g_probe[CTRL_PROBE_MAX];
@@ -981,11 +1001,59 @@ avoid_return(int32_t y)
     return moved;
 }
 
+/* Facing the line beside or past the box (see AVOID_DEPTH_STEP_MM): step
+ * along the line's direction dir until the sonar no longer sees the box
+ * (its left side is left mm, and the car y mm, left of the start), then
+ * clear it by AVOID_DEPTH_CLEAR_MM. Ends facing the line. Logs EVT_OBST_AVOID arg 3,
+ * val = mm driven further than planned (only if the box was longer), or
+ * arg 4 if it was still there after AVOID_DEPTH_MAX_EXTRA_MM. Returns
+ * false then, or on STOP or a fault. */
+static bool
+avoid_depth_check(int32_t dir, int32_t y, int32_t left)
+{
+    int32_t mm;
+    int32_t extra = 0;
+    int32_t near_mm;
+
+    /* the box's side, seen from the sonar, plus the band */
+    near_mm = (y - left - AVOID_SENSOR_AHEAD_MM) + AVOID_DEPTH_BAND_MM;
+    for (;;)
+    {
+        if (seq_abort())
+        {
+            return false;
+        }
+        mm = probe_ping();
+        if ((mm <= 0) || (mm > near_mm))
+        {
+            break;                      /* the box is not beside the car */
+        }
+        if (extra >= AVOID_DEPTH_MAX_EXTRA_MM)
+        {
+            log_evt(EVT_OBST_AVOID, 4u, (int16_t)extra, dist_mm());
+            return false;
+        }
+        probe_turn_to(dir);
+        extra += probe_drive(AVOID_DEPTH_STEP_MM, AVOID_MM_S);
+        probe_turn_to(dir - 9000);
+    }
+    if (extra > 0)
+    {
+        probe_turn_to(dir);
+        extra += probe_drive(AVOID_DEPTH_CLEAR_MM, AVOID_MM_S);
+        probe_turn_to(dir - 9000);
+        log_evt(EVT_OBST_AVOID, 3u, (int16_t)extra, dist_mm());
+    }
+    return !seq_abort();
+}
+
 /* Probe the obstacle, then go round it on the left and stop back on the
  * line behind it, facing the line's direction:
- *   out:  sideways to AVOID_HALF_R_MM + AVOID_MARGIN_MM left of its edge
+ *   out:  sideways to AVOID_SWING_MM + AVOID_MARGIN_MM left of its edge
  *   past: forward to the face, a depth taken as its width (100-200 mm),
  *         and far enough that the car's widest side clears its back face
+ *   check: facing the line, further while the box is still seen
+ *         (avoid_depth_check)
  *   in:   sideways back until the line is seen (avoid_return)
  * Returns false if the probe failed or a motion fault stopped it. */
 static bool
@@ -1009,7 +1077,8 @@ avoid_obstacle(void)
         left += AVOID_MIN_WIDTH_MM - width;  /* all the shortfall this side */
         width = AVOID_MIN_WIDTH_MM;
     }
-    out = left + AVOID_HALF_R_MM + AVOID_MARGIN_MM;
+    /* room to turn on the spot beside the box (the depth check) */
+    out = left + AVOID_SWING_MM + AVOID_MARGIN_MM;
     if (out > y)
     {
         avoid_turn_to(dir + 9000, 1u);
@@ -1021,6 +1090,10 @@ avoid_obstacle(void)
            + AVOID_HALF_L_MM + AVOID_MARGIN_MM;
     (void)probe_drive(past, AVOID_MM_S);
     avoid_turn_to(dir - 9000, 3u);
+    if (!avoid_depth_check(dir, y, left))
+    {
+        return false;
+    }
     y -= avoid_return(y);
     avoid_turn_to(dir, 4u);
     log_evt(EVT_OBST_AVOID, 0u, (int16_t)y, dist_mm());
