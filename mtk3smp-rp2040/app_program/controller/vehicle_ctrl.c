@@ -552,6 +552,7 @@ creep_to_scan_range(void)
  * the box's line, so the axle must be that far past the back face */
 #define AVOID_DEPTH_CLEAR_MM 180
 #define AVOID_DEPTH_MAX_EXTRA_MM 600
+#define AVOID_DEPTH_OFF_NEEDED 2u      /* clear readings in a row, once seen */
 #define AVOID_AFTER_MM       300     /* follow this far after rejoining */
 
 static ctrl_probe_pt_t g_probe[CTRL_PROBE_MAX];
@@ -1016,6 +1017,7 @@ avoid_depth_check(int32_t dir, int32_t y, int32_t left)
     int32_t mm;
     int32_t extra = 0;
     int32_t near_mm;
+    uint32_t clear = 0u;
 
     /* the box's side, seen from the sonar, plus the band */
     near_mm = (y - left - AVOID_SENSOR_AHEAD_MM) + AVOID_DEPTH_BAND_MM;
@@ -1028,7 +1030,19 @@ avoid_depth_check(int32_t dir, int32_t y, int32_t left)
         mm = probe_ping();
         if ((mm <= 0) || (mm > near_mm))
         {
-            break;                      /* the box is not beside the car */
+            /* the box is not beside the car. Once it has been, believe
+             * that only on AVOID_DEPTH_OFF_NEEDED readings in a row: the
+             * echo can drop out one step before the back corner (the rear
+             * clipped the box, 24 Nov) */
+            clear++;
+            if ((0 == extra) || (clear >= AVOID_DEPTH_OFF_NEEDED))
+            {
+                break;
+            }
+        }
+        else
+        {
+            clear = 0u;
         }
         if (extra >= AVOID_DEPTH_MAX_EXTRA_MM)
         {
