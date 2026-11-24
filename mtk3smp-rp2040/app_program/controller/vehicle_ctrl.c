@@ -515,7 +515,8 @@ creep_to_scan_range(void)
 #define AVOID_HALF_L_MM      90
 /* Turning on the spot, the left IR tip (140 mm ahead of the axle, 65 mm
  * left) sweeps a circle of this radius: the car must be this far from the
- * box's side, plus AVOID_MARGIN_MM, to turn beside it (the depth check) */
+ * box's side, plus AVOID_SIDE_MARGIN_MM, to turn beside it (the depth
+ * check) */
 #define AVOID_SWING_MM       155
 /* ...and this beyond it (80, was 40, 24 Nov): a width read a few cm
  * narrow put the car close enough that the turn toward the line touched
@@ -550,8 +551,8 @@ creep_to_scan_range(void)
  * AVOID_DEPTH_MAX_EXTRA_MM still blocked: stop (fault), not guess. */
 #define AVOID_DEPTH_NEAR_MAX_MM 260
 #define AVOID_DEPTH_STEP_MM  60
-/* 70 (24 Nov): with AVOID_DEPTH_OFF_NEEDED clear readings the car is
- * already past the back face; 110 and 180 after a single clear reading
+/* 70 (24 Nov), after every depth check: with AVOID_DEPTH_OFF_NEEDED clear
+ * readings the car is already past the back face; 110 and 180 after a single clear reading
  * left the rear clipping the box (that reading came a step early), 180
  * after two left ~1.5 car lengths spare, and 50 cleared it but close */
 #define AVOID_DEPTH_CLEAR_MM 70
@@ -1022,6 +1023,7 @@ avoid_depth_check(int32_t dir, int32_t y)
     int32_t extra = 0;
     int32_t near_mm;
     uint32_t clear = 0u;
+    bool b_seen = false;
 
     /* anything nearer than the line is the box (not worked out from the box's
      * left edge: a width over-read by 50 mm put the box just past that
@@ -1038,12 +1040,13 @@ avoid_depth_check(int32_t dir, int32_t y)
         mm = probe_ping();
         if ((mm <= 0) || (mm > near_mm))
         {
-            /* the box is not beside the car. Once it has been, believe
-             * that only on AVOID_DEPTH_OFF_NEEDED readings in a row: the
-             * echo can drop out one step before the back corner (the rear
-             * clipped the box, 24 Nov) */
+            /* the box is not beside the car: believe that only on
+             * AVOID_DEPTH_OFF_NEEDED readings in a row, even the first time
+             * (the past leg ends at the box's assumed back face, where the
+             * echo can drop out a step before the corner: the rear clipped
+             * the box, 24 Nov) */
             clear++;
-            if ((0 == extra) || (clear >= AVOID_DEPTH_OFF_NEEDED))
+            if (clear >= AVOID_DEPTH_OFF_NEEDED)
             {
                 break;
             }
@@ -1051,6 +1054,7 @@ avoid_depth_check(int32_t dir, int32_t y)
         else
         {
             clear = 0u;
+            b_seen = true;
         }
         if (extra >= AVOID_DEPTH_MAX_EXTRA_MM)
         {
@@ -1061,11 +1065,12 @@ avoid_depth_check(int32_t dir, int32_t y)
         extra += probe_drive(AVOID_DEPTH_STEP_MM, AVOID_MM_S);
         probe_turn_to(dir - 9000);
     }
-    if (extra > 0)
+    /* every time: the past leg leaves no margin of its own */
+    probe_turn_to(dir);
+    extra += probe_drive(AVOID_DEPTH_CLEAR_MM, AVOID_MM_S);
+    probe_turn_to(dir - 9000);
+    if (b_seen)
     {
-        probe_turn_to(dir);
-        extra += probe_drive(AVOID_DEPTH_CLEAR_MM, AVOID_MM_S);
-        probe_turn_to(dir - 9000);
         log_evt(EVT_OBST_AVOID, 3u, (int16_t)extra, dist_mm());
     }
     return !seq_abort();
@@ -1074,8 +1079,7 @@ avoid_depth_check(int32_t dir, int32_t y)
 /* Probe the obstacle, then go round it on the left and stop back on the
  * line behind it, facing the line's direction:
  *   out:  sideways to AVOID_SWING_MM + AVOID_SIDE_MARGIN_MM left of its edge
- *   past: forward to the face, a depth taken as its width (100-200 mm),
- *         and far enough that the car's widest side clears its back face
+ *   past: forward to the face and a depth taken as its width (100-200 mm)
  *   check: facing the line, further while the box is still seen
  *         (avoid_depth_check)
  *   in:   sideways back until the line is seen (avoid_return)
@@ -1109,9 +1113,11 @@ avoid_obstacle(void)
         y += probe_drive(out - y, AVOID_MM_S);
     }
     avoid_turn_to(dir, 2u);
+    /* to the box's assumed back face only (24 Nov): with a margin added,
+     * a box up to ~130 mm deeper than its width was never seen by the
+     * depth check, which now adds the clearance itself */
     past = face_mm + AVOID_SENSOR_AHEAD_MM
-           + ((width < AVOID_DEPTH_MAX_MM) ? width : AVOID_DEPTH_MAX_MM)
-           + AVOID_HALF_L_MM + AVOID_MARGIN_MM;
+           + ((width < AVOID_DEPTH_MAX_MM) ? width : AVOID_DEPTH_MAX_MM);
     (void)probe_drive(past, AVOID_MM_S);
     avoid_turn_to(dir - 9000, 3u);
     if (!avoid_depth_check(dir, y))
