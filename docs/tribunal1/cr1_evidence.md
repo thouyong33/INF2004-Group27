@@ -750,14 +750,14 @@ Runs in `c` mode on the mats, Wi-Fi build.
 | v75–v76 | A width over-read by 50 mm put the box past the "box seen" limit and the car turned in; the turn toward the line touched a box read narrow | Box seen = any echo nearer than the line (max 260 mm, below the ~290 mm floor echo); side margin 40 → 80 mm; clearance after the second clear reading 50 → 70 mm |
 | v77 | A box up to ~130 mm deeper than its width was already passed at the first look | The past leg ends at the assumed back face; the check always needs 2 clear readings and always adds the 70 mm |
 | v78–v79 | Heading drift over ~30 turns: line met 57 mm beyond plan; 120 mm reached another piece of track | Way-back search 60 → 80 mm |
-| v80 | Squared up 14° crooked after a curve (width 47 mm for a ~70 mm face) | Face skew fitted from the width probe's range-against-offset readings; when the reference is not from plain following, the avoid turns by it (capped 20°, ignored under 2°) and restates the car and the edge; width / cos(skew) |
+| v80 | Squared up 14° crooked after a curve (width 47 mm for a face that reads 69–71 mm on straights) | Face skew fitted from the width probe's range-against-offset readings; when the reference is not from plain following, the avoid turns by it (capped 20°, ignored under 2°) and restates the car and the edge; width / cos(skew) |
 | v81–v82 | Turning on the spot over a cross arm, all three IRs read black for 1 s: a false lift | Inside the obstacle sequence, no floor alone is a lift after 3 s (an arm fits under the IR row for at most ~2.3 s of the face search); an IMU cue still makes it 0.5 s; 1 s everywhere else (v81 switched the rule fully off and a gentle lift was not stopped) |
 
 | ID | Test (24 Nov) | Result |
 |---|---|---|
 | FR8 | Long box (18 cm face, longer than wide) `a`/`c` runs, v77–v82 | seen beside the car each time, went 255–344 mm further than the square guess, no contact, line rejoined 5–57 mm from plan |
-| FR8 | Box one mat after a curve, v81 | skew −3.3° applied, width 69 mm, went 344 mm further, rejoined 45 mm from plan (v80 without the correction: rejoined another piece of track) |
-| FR7, NFR4 | Widths with the 120 mm/s probe turns | 18 cm face 171–174 and 200 mm; 17 cm face 147 mm; ~7 cm face 69–71 mm (all within ±3 cm) |
+| FR8 | Box one mat after a curve, v81 | skew −3.3° applied, width 69 mm (as on straights), went 344 mm further, rejoined 45 mm from plan (v80 without the correction: rejoined another piece of track) |
+| FR7, NFR4 | Widths with the 120 mm/s probe turns | 18 cm face 171–174 and 200 mm; 17 cm face 147 mm (within ±3 cm); a third box 69–71 mm in every run (face size not recorded) |
 | NFR2 | STOP from the console during the depth check, v78 | stopped at once, no width used, OBST_DONE failed + STOP_REQ |
 | FR10, NFR8 | Gentle lift during the face search, v82 | stopped at 3.0 s (cue no floor 3016 ms) |
 | CR2 | Depth cap | still blocked 600 mm past the plan: the avoid stops (EVT_OBST_AVOID arg 4), run ends FAULT; by design, not driven |
