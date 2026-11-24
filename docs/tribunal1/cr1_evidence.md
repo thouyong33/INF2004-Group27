@@ -7,7 +7,7 @@ original design with the revised one; earlier steps appear only where a
 design choice needs its reason.
 
 - **Code:** `mtk3smp-rp2040/app_program`, branch `thouyong`; the final build
-  is v71 (commit 3f2ff11, 21 Nov); sections 13 and 14 cover v57–v71. Commits
+  is v82 (commit d11dd12, 24 Nov); sections 13–15 cover v57–v82. Commits
   are quoted for each result.
 - **Builds:** the course test (mode 31, `CTRL_TEST_COURSE`) is the
   default. The test UF2s are in `tests/full_auto/` (`ctrl_course_vNN`)
@@ -735,3 +735,37 @@ unchanged.
 | FR1–FR8, FR11 | the same lap | Z forward then left 89.5°; A then U-turn 179.0°; Q reversed then straight at the cross; 15 cm box 148 mm, rejoined 12 mm from plan; ramp 11 mm |
 
 Final firmware: `tests/full_auto/ctrl_course_v71_smp0.uf2`.
+
+## 15. Long-box obstacle avoid (24 Nov, v72–v82)
+
+The demo obstacle is likely a rectangular box much deeper than its face is
+wide. Until v71 the avoid took the depth as the measured width (capped at
+200 mm), so a long box would be hit when the car turned back to the line.
+Runs in `c` mode on the mats, Wi-Fi build.
+
+| Build | Problem | Change |
+|---|---|---|
+| v72 | Depth assumed square | Side step to the box's left edge + 155 mm (the IR tip's swing when turning on the spot, from 140 mm ahead and 65 mm left of the axle) + 40 mm. Before driving back, facing the line, the sonar checks for the box's side; while it is there the car steps 60 mm further and looks again (cap 600 mm extra, then stop with a fault). Probe turns 80 → 120 mm/s |
+| v73–v74 | The rear clipped the box on the final turn onto the line | The echo can drop out one step before the back corner: once seen, 2 clear readings in a row are needed |
+| v75–v76 | A width over-read by 50 mm put the box past the "box seen" limit and the car turned in; the turn toward the line touched a box read narrow | Box seen = any echo nearer than the line (max 260 mm, below the ~290 mm floor echo); side margin 40 → 80 mm; clearance after the second clear reading 50 → 70 mm |
+| v77 | A box up to ~130 mm deeper than its width was already passed at the first look | The past leg ends at the assumed back face; the check always needs 2 clear readings and always adds the 70 mm |
+| v78–v79 | Heading drift over ~30 turns: line met 57 mm beyond plan; 120 mm reached another piece of track | Way-back search 60 → 80 mm |
+| v80 | Squared up 14° crooked after a curve (width 47 mm for a ~70 mm face) | Face skew fitted from the width probe's range-against-offset readings; when the reference is not from plain following, the avoid turns by it (capped 20°, ignored under 2°) and restates the car and the edge; width / cos(skew) |
+| v81–v82 | Turning on the spot over a cross arm, all three IRs read black for 1 s: a false lift | Inside the obstacle sequence, no floor alone is a lift after 3 s (an arm fits under the IR row for at most ~2.3 s of the face search); an IMU cue still makes it 0.5 s; 1 s everywhere else (v81 switched the rule fully off and a gentle lift was not stopped) |
+
+| ID | Test (24 Nov) | Result |
+|---|---|---|
+| FR8 | Long box (18 cm face, longer than wide) `a`/`c` runs, v77–v82 | seen beside the car each time, went 255–344 mm further than the square guess, no contact, line rejoined 5–57 mm from plan |
+| FR8 | Box one mat after a curve, v81 | skew −3.3° applied, width 69 mm, went 344 mm further, rejoined 45 mm from plan (v80 without the correction: rejoined another piece of track) |
+| FR7, NFR4 | Widths with the 120 mm/s probe turns | 18 cm face 171–174 and 200 mm; 17 cm face 147 mm; ~7 cm face 69–71 mm (all within ±3 cm) |
+| NFR2 | STOP from the console during the depth check, v78 | stopped at once, no width used, OBST_DONE failed + STOP_REQ |
+| FR10, NFR8 | Gentle lift during the face search, v82 | stopped at 3.0 s (cue no floor 3016 ms) |
+| CR2 | Depth cap | still blocked 600 mm past the plan: the avoid stops (EVT_OBST_AVOID arg 4), run ends FAULT; by design, not driven |
+
+**Pending on v82:** one `f` lap with commands on and the long box, ended
+by STOP (FR11, NFR10 lap time with the 100–120 s obstacle sequence, FR4,
+NFR1); a firm lift during the obstacle sequence (expected 0.5 s, IMU cue).
+Not tested: a square box on v77+ (the course is not expected to use one; the
+same depth-check loop runs for every box).
+
+Build: `tests/full_auto/ctrl_course_v82_smp0.uf2` (commit d11dd12).
