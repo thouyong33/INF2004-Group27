@@ -57,9 +57,12 @@
 #define LIFT_RAMP_QUIET_MS       1000u   /* accel cue ignored after a ramp */
 /* all three IRs black this long is a lift with or without an IMU cue */
 #define LIFT_NO_FLOOR_ALONE_MS   1000u
-/* ...unless switched off (terrain_lift_alone): turning on the spot in the
- * obstacle sequence, all three IRs sat on a cross arm for 1 s and it read
- * as a lift (24 Nov). The IMU cue path stays on. */
+/* ...or this long while terrain_lift_alone(false): turning on the spot in
+ * the obstacle sequence, all three IRs sat on a cross arm for 1 s and it
+ * read as a lift (24 Nov). The arm fits under the IR row within about +/-12
+ * deg, at most ~5 of the face search's 5 deg steps (~2.3 s); switched fully
+ * off instead, a gentle lift the IMU missed was not stopped for seconds. */
+#define LIFT_NO_FLOOR_SEQ_MS     3000u
 static bool g_b_alone = true;
 #define ONE_G_MG                 1000
 
@@ -556,8 +559,8 @@ terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
     if ((g_b_lift_armed
          && ((!b_on_ramp) || (TERRAIN_LIFT_TILT == g_lift_cue.cue))
          && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_MS))
-        || (g_b_alone
-            && ((t_ms - g_no_floor_since) >= LIFT_NO_FLOOR_ALONE_MS)))
+        || ((t_ms - g_no_floor_since)
+            >= (g_b_alone ? LIFT_NO_FLOOR_ALONE_MS : LIFT_NO_FLOOR_SEQ_MS)))
     {
         if ((!g_b_lift_armed)
             || (b_on_ramp && (TERRAIN_LIFT_TILT != g_lift_cue.cue)))

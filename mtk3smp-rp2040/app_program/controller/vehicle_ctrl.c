@@ -1449,8 +1449,9 @@ ctrl_task_main(INT stacd, void *exinf)
                         barcode_scan_enable(false);
                         line_wind_down();
                         obstacle_watch(false);
-                        /* no 1 s no-floor lift in the sequence (a cross
-                         * arm under the IRs), while the IMU can cue one */
+                        /* 3 s, not 1 s, of no floor alone is a lift in
+                         * the sequence (a cross arm under the IRs), while
+                         * the IMU can cue one */
                         terrain_lift_alone(!g_b_run_imu);
                         seq_wait(300u);
                         probe_turn_to(obstacle_dir());

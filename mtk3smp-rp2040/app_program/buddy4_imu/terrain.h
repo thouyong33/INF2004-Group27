@@ -101,10 +101,11 @@ bool terrain_lift_update(uint32_t t_ms, const imu_attitude_t *p_att,
                          bool b_on_ramp, lift_event_t *p_lift);
 
 /**
- * @brief Switch the "no floor for LIFT_NO_FLOOR_ALONE_MS is a lift on its
- * own" rule on or off (on after terrain_reset). Off, a lift needs an IMU
- * cue first. The controller switches it off during the obstacle sequence
- * (stops and turns on the spot over a cross arm), only while the IMU works.
+ * @brief Normal (true) or long (false) "no floor alone is a lift" time:
+ * LIFT_NO_FLOOR_ALONE_MS (1 s) or LIFT_NO_FLOOR_SEQ_MS (3 s); normal after
+ * terrain_reset. The controller uses the long one during the obstacle
+ * sequence (stops and turns on the spot over a cross arm), only while the
+ * IMU works; an IMU cue still makes it 0.5 s.
  */
 void terrain_lift_alone(bool b_on);
 
