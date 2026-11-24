@@ -543,12 +543,14 @@ creep_to_scan_range(void)
  * ~125 mm away after the out leg) is the box, so the car goes
  * AVOID_DEPTH_STEP_MM further and looks again. Only that near: the floor
  * echoes at ~290 mm. Once clear,
- * AVOID_DEPTH_CLEAR_MM more: facing the line, the right wheel's side (70)
- * trails toward the box's back face, plus the margin. Past
+ * AVOID_DEPTH_CLEAR_MM more (see there). Past
  * AVOID_DEPTH_MAX_EXTRA_MM still blocked: stop (fault), not guess. */
 #define AVOID_DEPTH_BAND_MM  60
 #define AVOID_DEPTH_STEP_MM  60
-#define AVOID_DEPTH_CLEAR_MM (AVOID_HALF_R_MM + AVOID_MARGIN_MM)
+/* 180 (24 Nov): 110 left the rear clipping the box. Back on the line, the
+ * turn to face along it swings the rear corner back round the axle, over
+ * the box's line, so the axle must be that far past the back face */
+#define AVOID_DEPTH_CLEAR_MM 180
 #define AVOID_DEPTH_MAX_EXTRA_MM 600
 #define AVOID_AFTER_MM       300     /* follow this far after rejoining */
 
