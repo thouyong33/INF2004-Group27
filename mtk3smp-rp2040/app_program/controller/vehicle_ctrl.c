@@ -539,9 +539,10 @@ creep_to_scan_range(void)
 #define AVOID_IR_AHEAD_MM    139     /* = CTRL_JUNC_AHEAD_MM */
 #define AVOID_LINE_W_MM      18
 /* ...and this much further than planned once the line has been seen
- * (120, was 60, 24 Nov: the turns' heading drift past a long box put the
- * line 57 mm further than planned) */
-#define AVOID_SEEK_EXTRA_MM  120
+ * (80, 24 Nov: the turns' heading drift past a long box put the line 57 mm
+ * further than planned; 120 let a car squared up crooked after a curve
+ * reach the next piece of track) */
+#define AVOID_SEEK_EXTRA_MM  80
 #define AVOID_MM_S           100
 /* Depth check (24 Nov). The demo box may be much deeper than its face is
  * wide, so the depth taken as the width is only a first guess. Facing the
