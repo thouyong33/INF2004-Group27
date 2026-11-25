@@ -762,9 +762,17 @@ Runs in `c` mode on the mats, Wi-Fi build.
 | FR10, NFR8 | Gentle lift during the face search, v82 | stopped at 3.0 s (cue no floor 3016 ms) |
 | CR2 | Depth cap | still blocked 600 mm past the plan: the avoid stops (EVT_OBST_AVOID arg 4), run ends FAULT; by design, not driven |
 
-**Pending on v82:** one `f` lap with commands on and the long box, ended
-by STOP (FR11, NFR10 lap time with the 100–120 s obstacle sequence, FR4,
-NFR1); a firm lift during the obstacle sequence (expected 0.5 s, IMU cue).
+**Final checks on v82 (25 Nov):**
+
+| ID | Test | Result |
+|---|---|---|
+| FR11, NFR10 | `f` lap, commands on, long box, ramp and barcodes, ended by STOP | one full lap, 13.5 m in 235 s (3.9 min), 103 s of it at the obstacle; no fault |
+| FR4, NFR6 | the same lap (mapping forward Z, U-turn A, left B, right Q) | `A` read, U-turn 179.9°; `Q` reversed, right 91.7°; `Z` read |
+| FR7, FR8, NFR4 | the same lap, long box (18 cm face) on a straight | width 196 mm; face skew 9.9° measured and the line's direction kept; went 209 mm further past it, line met 134 mm nearer than planned, rejoined |
+| FR5, NFR5 | the same lap | ramp 11 mm |
+| NFR1 | the same lap (phone not in a pocket) | motion loop at least 496/s, longest pass 144 µs |
+| FR10, NFR8 | firm lift during the obstacle sequence | stopped on the IMU cue (acceleration 319 mg off 1 g, the 0.5 s path) |
+
 Not tested: a square box on v77+ (the course is not expected to use one; the
 same depth-check loop runs for every box).
 
